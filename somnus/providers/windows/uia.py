@@ -140,6 +140,8 @@ class UiaProvider:
         # can auto-initialise it in STA (dev doc section 13).
         self._executor.submit(self._init_com).result(timeout=10)
         self._windows: dict[str, Any] = {}
+        #: (pid, title) -> "wN", so window ids persist across enumerations.
+        self._window_id_by_key: dict[tuple[int, str], str] = {}
         self._lock = threading.Lock()
         #: runtime_id -> live UIA element, refreshed on every snapshot.
         self._element_cache: dict[tuple[int, ...], Any] = {}
@@ -315,7 +317,20 @@ class UiaProvider:
         for existing in out:
             if existing.pid == pid and existing.title == name:
                 return
-        wid = f"w{len(out) + 1}"
+        # Stable window ids: numbering by list position renumbers every window
+        # after one closes, silently retargeting agents that hold old refs
+        # (found driving Steam live: w3 flipped between Steam and QQ between
+        # enumerations). Key ids by (pid, title) instead; new windows get the
+        # next free number.
+        key = (pid, name)
+        wid = self._window_id_by_key.get(key)
+        if wid is None:
+            used = set(self._window_id_by_key.values())
+            n = len(used) + 1
+            while f"w{n}" in used:
+                n += 1
+            wid = f"w{n}"
+            self._window_id_by_key[key] = wid
         with self._lock:
             self._windows[wid] = el
         out.append(
@@ -362,13 +377,26 @@ class UiaProvider:
             if el is None:
                 raise KeyError(window_id)
         else:
-            win_info = WindowInfo(
-                window_id=window_id,
-                title=el.CurrentName or "",
-                process=_process_name(el.CurrentProcessId),
-                pid=el.CurrentProcessId,
-                active=bool(el.CurrentHasKeyboardFocus),
-            )
+            try:
+                win_info = WindowInfo(
+                    window_id=window_id,
+                    title=el.CurrentName or "",
+                    process=_process_name(el.CurrentProcessId),
+                    pid=el.CurrentProcessId,
+                    active=bool(el.CurrentHasKeyboardFocus),
+                )
+            except Exception:
+                # The window died between enumeration and snapshot (agent was
+                # too slow, app closed). Re-enumerate: either it is really gone
+                # (KeyError -> clean STALE) or a live element replaces it.
+                el = None
+                for w in self._list_windows_sync():
+                    if w.window_id == window_id:
+                        win_info = w
+                        break
+                el = self._windows.get(window_id)
+                if el is None:
+                    raise KeyError(window_id)
 
         root_el = el
         if scope is not None:

@@ -251,9 +251,15 @@ class Session:
             )
 
         if windows_only:
-            # Keep the delta baseline fresh even when only listing windows.
-            self._window_delta()
-            text = self._render_window_list()
+            # Report windows that appeared/vanished since the last look, and
+            # bump rev so the agent notices the change (a bare list that looks
+            # identical to the previous one carries no signal).
+            window_delta = self._window_delta()
+            if window_delta:
+                self._bump_rev()
+                text = f"@rev {self.rev}\n{window_delta}\n" + self._render_window_list()
+            else:
+                text = f"@rev {self.rev}\n" + self._render_window_list()
             return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
 
         result = self._recompile()
@@ -267,8 +273,20 @@ class Session:
         header = self._window_header(result)
         if window_delta:
             header.append(window_delta)
-        budget = self.budget.for_level(level) if level else self.budget
-        engine = ProjectionEngine(budget)
+        # The header (other windows + deltas) consumes part of the observation
+        # budget: reserve tokens for it so the total stays within the level's
+        # cap instead of max_tokens + header (found live: Steam L0 came out at
+        # 365 tokens against a 300 cap because the 74-token header was extra).
+        budget = self.budget.for_level(level)
+        header_tokens = count_tokens("\n".join(header)) if header else 0
+        # +6 reserves room for the ``@rev N`` line the renderer prepends.
+        body_budget = ObservationBudget(
+            max_nodes=budget.max_nodes,
+            max_depth=budget.max_depth,
+            max_tokens=max(100, budget.max_tokens - header_tokens - 6),
+            hard_tokens=budget.hard_tokens,
+        )
+        engine = ProjectionEngine(body_budget)
         projection = apply_projection(result.root, self._pack_projection())
         plan = engine.plan(result.root, projection)
 
@@ -281,7 +299,7 @@ class Session:
         The refs are the same ones ``CALL wN.focus()`` accepts, so an agent can
         list, then switch, then observe - the way a person alt-tabs.
         """
-        lines = [f"@rev {self.rev}", f"WINDOWS count={len(self.windows)}"]
+        lines = [f"WINDOWS count={len(self.windows)}"]
         for w in self.windows:
             ref = self._header_window_ref(w.window_id)
             flags = []
@@ -411,7 +429,14 @@ class Session:
         for node in nodes:
             if scope_ids is not None and node.ref not in scope_ids:
                 continue
-            if entity_filter and (node.entity or node.role) != entity_filter:
+            if entity_filter and not (
+                (node.entity or node.role) == entity_filter
+                # A FIND by primitive role must also reach nodes that a pack
+                # typed as domain entities (e.g. FIND button "Send" when the
+                # qq pack typed the button as entity=send) - the agent may not
+                # know the pack's entity vocabulary.
+                or node.role == entity_filter
+            ):
                 continue
             if not _node_matches(node, query):
                 continue
