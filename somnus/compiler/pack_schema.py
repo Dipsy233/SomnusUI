@@ -45,6 +45,9 @@ class MatchRule:
     role: str | tuple[str, ...] | None = None
     name: str | None = None  # regex
     value: str | None = None  # regex
+    #: Regex on the native class name (WPF/WinUI control classes such as
+    #: ``ToggleSwitch`` or ``ComboBox`` are stable where names are localised).
+    class_name: str | None = None
     has_name: bool | None = None
     min_children: int | None = None
     #: Pattern names that must all be present (e.g. ``("value", "text")``).
@@ -62,6 +65,8 @@ class MatchRule:
         if self.name and not _re_search(self.name, node.name):
             return False
         if self.value and not _re_search(self.value, node.value):
+            return False
+        if self.class_name and not _re_search(self.class_name, node.native.class_name):
             return False
         if self.has_name is not None and bool(node.name) != self.has_name:
             return False

@@ -1,0 +1,121 @@
+# Windows Settings App Pack — v0.2 format.
+#
+# Settings is a UWP/WinUI app. Its window is hosted by ApplicationFrameHost.exe,
+# but the provider resolves the real process (SystemSettings.exe), so matching
+# is by process as usual (see docs/packs.md, "UWP windows").
+#
+# The accessibility tree is a WinUI NavigationView: a left "list" of categories,
+# and a right pane of setting cards, each a listitem holding a title text and a
+# control (ToggleSwitch, ComboBox, Button, or Edit).
+app:
+  id: windows-settings
+  version: "0.2.0"
+  match:
+    process: "systemsettings.exe"
+
+projection:
+  # Title bar buttons (minimise/restore/close) are chrome, not settings.
+  - { select: "role=menubar", rule: "prune" }
+  # The left navigation is captured as a collection below; keep it collapsed so
+  # a long category list does not dominate the observation.
+  - { select: "name=Navigation", rule: "collapse" }
+
+named_refs:
+  search:
+    role: input
+    patterns: [value]
+
+entities:
+  # ---- Navigation ------------------------------------------------------
+  # A selectable entry: the left-hand categories ("System", "Bluetooth &
+  # devices", ...) and the home page's recommended-settings cards. In WinUI all
+  # of these are named ``listitem`` elements exposing the SelectionItem pattern,
+  # so a single match covers both without guessing at the tree shape.
+  category:
+    match:
+      role: listitem
+      has_name: true
+    key: "$self.name"
+    attrs:
+      name: "$self.name"
+    caps:
+      select:
+        via: ["$self.select"]
+        risk: safe
+
+  # ---- Setting controls ------------------------------------------------
+  # A ToggleSwitch: an on/off setting (Bluetooth, Wi-Fi, Night light, ...).
+  # WinUI exposes it as a Button with the Toggle pattern and the class name
+  # ToggleSwitch; the node's name is the setting's title.
+  toggle_setting:
+    match:
+      role: button
+      has_name: true
+      class_name: ToggleSwitch
+    key: "$self.name"
+    attrs:
+      name: "$self.name"
+    caps:
+      toggle:
+        via: ["$self.toggle"]
+        risk: normal
+
+  # A ComboBox setting (theme colour mode, refresh rate, ...). Expanding is
+  # safe; choosing an item is a normal state change.
+  choice_setting:
+    match:
+      role: select
+      has_name: true
+    key: "$self.name"
+    attrs:
+      name: "$self.name"
+    caps:
+      expand:
+        via: ["$self.expand"]
+        risk: safe
+      collapse:
+        via: ["$self.collapse"]
+        risk: safe
+      select:
+        via: ["$self.select"]
+        risk: normal
+
+  # A free-text setting (search box, computer name, ...).
+  text_setting:
+    match:
+      role: input
+    key: "$self.automation_id"
+    attrs:
+      name: "$self.name"
+      value: "$self.value"
+    caps:
+      set_text:
+        # Prefer the native Value pattern; fall back to focus + typing when the
+        # control only accepts keystrokes (dev doc section 12.2).
+        via:
+          - target: "$self"
+            primitive: set_text
+            value: "$text"
+            when_has: value
+          - target: "$self"
+            primitive: type_text
+            value: "$text"
+            when_missing: value
+        params:
+          text: { type: string, required: true }
+        risk: normal
+
+  # ---- Dangerous actions ------------------------------------------------
+  # The system menu's own entries (shut down, restart, sign out) reachable from
+  # Settings. Closing the window is critical: unsaved state is not recoverable.
+  system_action:
+    match:
+      role: menuitem
+      name: "/关机|重启|注销|睡眠|Shut down|Restart|Sign out|Sleep/i"
+    key: "$self.name"
+    attrs:
+      name: "$self.name"
+    caps:
+      activate:
+        via: ["$self.activate"]
+        risk: critical

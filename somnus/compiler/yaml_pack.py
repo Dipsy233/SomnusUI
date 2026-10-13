@@ -155,6 +155,7 @@ def _match_rule(body: dict[str, Any]) -> MatchRule:
         role=role,
         name=body.get("name"),
         value=body.get("value"),
+        class_name=body.get("class_name"),
         has_name=body.get("has_name"),
         min_children=body.get("min_children"),
         has_patterns=tuple(body.get("patterns") or ()),

@@ -182,20 +182,32 @@ custom-drawn one that only accepts keystrokes.
 | `restaurant-demo` | Python module (v0.1) | fixture + live WPF app |
 | `notepad` | YAML | live Windows 11 Notepad |
 | `explorer` | YAML | live Windows 11 File Explorer |
+| `windows-settings` | YAML | live Windows 11 Settings (UWP) |
 | `generic` | YAML-less defaults | projection rules for every app |
 
 ### Windows Settings (UWP)
 
 Settings is a UWP app: `SystemSettings.exe` is a small launcher and the real UI
-lives in a window hosted by `ApplicationFrameHost.exe`. The provider handles
-this - see "UWP windows" below - so a Settings pack can match on
-`systemsettings.exe` exactly like any other app.
+lives in a window hosted by `ApplicationFrameHost.exe`. The provider resolves
+the real process (see "UWP windows" below), so the pack matches on
+`systemsettings.exe` like any other app.
 
-The pack itself is **not written yet**. The UIA tree could not be captured in
-the development environment because UWP activation is unavailable there
-(`ms-settings:` and Calculator both fail to launch), and writing a pack from
-memory would violate the "never guess" rule. The steps above apply unchanged
-once a real tree is captured with `somnus --provider uia record wN -o settings.json`.
+`windows_settings.pack.yaml` models the WinUI NavigationView:
+
+* **`category`** - every named `listitem` (the left categories and the home
+  page's recommended cards), exposing `select`;
+* **`toggle_setting`** - a `Button` whose class name is `ToggleSwitch`
+  (Bluetooth, Wi-Fi, ...), exposing `toggle`;
+* **`choice_setting`** - a `ComboBox`, exposing `expand` / `collapse` /
+  `select`;
+* **`text_setting`** - a `TextBox` with the Value pattern, exposing `set_text`
+  (native, with a keyboard fallback);
+* **`system_action`** - system menu entries (shut down, restart, sign out),
+  marked `critical`.
+
+Verified on the live app: the Bluetooth toggle is recognised from its class
+name, the navigation categories are selectable, and selecting a category
+produces the expected delta. The fixture used in CI is de-identified.
 
 ## UWP windows (ApplicationFrameHost)
 

@@ -339,3 +339,110 @@ def test_type_text_primitive_is_not_a_default_capability():
     result = Compiler().compile(_editor_tree(has_value=False), pack=pack)
     for node in result.root.walk():
         assert "type_text" not in node.cap_names()
+
+
+# ---------------------------------------------------------------------------
+# Windows Settings pack (UWP / WinUI NavigationView)
+# ---------------------------------------------------------------------------
+
+
+def _settings_tree() -> RawTree:
+    """A trimmed, de-identified copy of the real Windows 11 Settings tree.
+
+    The structure and class names come from a captured snapshot; names are
+    placeholders so the fixture carries no personal data.
+    """
+
+    def node(role, name=None, class_name="", aid=None, patterns=(), children=()):
+        return RawNode(
+            native=NativeRef("w1", (abs(hash((role, name, class_name))) % 99999,),
+                             class_name=class_name, automation_id=aid),
+            role=role, name=name, patterns=frozenset(patterns),
+            children=list(children),
+        )
+
+    # Left navigation: named list items with the SelectionItem pattern.
+    nav = node(
+        "list",
+        name="导航",
+        class_name="NavigationViewList",
+        patterns=("selection",),
+        children=[
+            node("listitem", name="主页", patterns=("selectionitem",)),
+            node("listitem", name="系统", patterns=("selectionitem",)),
+            node("listitem", name="蓝牙和其他设备", patterns=("selectionitem",)),
+        ],
+    )
+
+    # A ToggleSwitch setting: Button + Toggle pattern + class ToggleSwitch.
+    bluetooth = node(
+        "button",
+        name="蓝牙",
+        class_name="ToggleSwitch",
+        patterns=("toggle", "invoke"),
+    )
+
+    # A ComboBox setting.
+    theme_mode = node(
+        "combobox",
+        name="选择模式",
+        class_name="ComboBox",
+        patterns=("expandcollapse", "selection"),
+    )
+
+    # A text setting: TextBox with the Value pattern.
+    search = node(
+        "edit",
+        name="查找设置",
+        class_name="TextBox",
+        aid="SearchBox",
+        patterns=("value", "text"),
+    )
+
+    root = node(
+        "window",
+        name="设置",
+        class_name="ApplicationFrameWindow",
+        children=[nav, bluetooth, theme_mode, search],
+    )
+    return RawTree(
+        window=WindowInfo("w1", "设置", "SystemSettings.exe", 4242, active=True),
+        root=root,
+    )
+
+
+def test_settings_pack_matches_navigation_and_controls():
+    result = Compiler().compile(_settings_tree(), pack=get_pack("windows-settings"))
+
+    categories = [n for n in result.root.walk() if n.entity == "category"]
+    names = {n.name for n in categories}
+    assert {"主页", "系统", "蓝牙和其他设备"} <= names
+    assert "select" in categories[0].cap_names()
+
+    toggles = [n for n in result.root.walk() if n.entity == "toggle_setting"]
+    assert len(toggles) == 1 and toggles[0].name == "蓝牙"
+    assert "toggle" in toggles[0].cap_names()
+
+    choices = [n for n in result.root.walk() if n.entity == "choice_setting"]
+    assert len(choices) == 1 and "expand" in choices[0].cap_names()
+
+    texts = [n for n in result.root.walk() if n.entity == "text_setting"]
+    assert len(texts) == 1 and "set_text" in texts[0].cap_names()
+
+
+def test_settings_toggle_switch_is_distinguished_by_class_name():
+    """ToggleSwitch vs a plain Button: the class name decides, not the name."""
+    result = Compiler().compile(_settings_tree(), pack=get_pack("windows-settings"))
+    plain_buttons = [
+        n for n in result.root.walk()
+        if n.role == "button" and n.entity is None
+    ]
+    # The ToggleSwitch must not also appear as a plain button entity.
+    assert all(b2.name != "蓝牙" for b2 in plain_buttons)
+
+
+def test_settings_pack_selects_by_process():
+    from somnus.compiler.pack_schema import select_pack
+
+    pack = select_pack("SystemSettings.exe")
+    assert pack is not None and pack.id == "windows-settings"
