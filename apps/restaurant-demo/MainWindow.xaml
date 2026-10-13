@@ -1,0 +1,69 @@
+<Window x:Class="RestaurantDemo.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:RestaurantDemo"
+        Title="Restaurant Demo" Height="640" Width="900"
+        AutomationProperties.AutomationId="main_window">
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- Screen header -->
+    <TextBlock Grid.Row="0" Text="Menu" FontSize="24" FontWeight="SemiBold"
+               AutomationProperties.AutomationId="screen_title" Margin="0,0,0,12" />
+
+    <!-- Product list: each item is a GROUP with a title TEXT, a price TEXT and
+         an Add BUTTON, which is what the pack matches. -->
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+      <ItemsControl x:Name="ProductList"
+                    AutomationProperties.AutomationId="products_list"
+                    AutomationProperties.Name="Products">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Border BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="4" Margin="0,2">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding Name}" FontSize="16"
+                           VerticalAlignment="Center"
+                           AutomationProperties.AutomationId="{Binding TitleAutomationId}" />
+                <TextBlock Grid.Column="1" Text="{Binding PriceText}" Margin="12,0"
+                           VerticalAlignment="Center"
+                           AutomationProperties.AutomationId="{Binding PriceAutomationId}" />
+                <Button Grid.Column="2" Content="Add" Width="80"
+                        AutomationProperties.Name="Add"
+                        AutomationProperties.AutomationId="{Binding AddAutomationId}"
+                        Click="OnAddClick" Tag="{Binding}" />
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+
+    <!-- Cart: a GroupBox exposes as a UIA group named "Cart", which is what
+         the pack matches. -->
+    <GroupBox Grid.Row="2" Header="Cart" Margin="0,12,0,0"
+              AutomationProperties.AutomationId="cart_group"
+              AutomationProperties.Name="Cart">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock x:Name="CartSummary" VerticalAlignment="Center" FontSize="16"
+                   AutomationProperties.AutomationId="cart_count" />
+        <Button Content="Open Cart" Margin="16,0,0,0"
+                AutomationProperties.Name="Open Cart"
+                AutomationProperties.AutomationId="open_cart"
+                Click="OnOpenCartClick" />
+        <Button Content="Checkout" Margin="16,0,0,0"
+                AutomationProperties.Name="Checkout"
+                AutomationProperties.AutomationId="checkout_btn"
+                Click="OnCheckoutClick" />
+      </StackPanel>
+    </GroupBox>
+  </Grid>
+</Window>

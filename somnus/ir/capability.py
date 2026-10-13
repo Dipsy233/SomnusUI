@@ -1,0 +1,179 @@
+"""Capability model: what an LLM is allowed to *do* to a node.
+
+A capability has two levels:
+
+* ``primitive`` - derived deterministically from native Patterns.
+* ``semantic``  - provided by an App Pack (or a confident heuristic) and
+  resolved to primitive steps via :attr:`Capability.via`.
+
+Every capability may declare :class:`Effect` post-conditions, which is how the
+verifier knows what "success" means (dev doc section 9.3).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+CapLevel = Literal["primitive", "semantic"]
+Risk = Literal["safe", "normal", "critical"]
+
+#: The complete primitive capability vocabulary (dev doc section 4.5).
+PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "activate",
+        "focus",
+        "read",
+        "set_text",
+        "toggle",
+        "select",
+        "expand",
+        "collapse",
+        "increment",
+        "decrement",
+        "scroll",
+        "open",
+        "close",
+    }
+)
+
+#: Capabilities that never change application state.
+SAFE_CAPABILITIES: frozenset[str] = frozenset(
+    {"read", "focus", "expand", "collapse", "scroll"}
+)
+
+#: Capabilities considered `critical` when they originate from a pack.
+CRITICAL_CAPABILITIES: frozenset[str] = frozenset(
+    {"submit", "pay", "delete", "send", "close", "checkout", "confirm"}
+)
+
+#: Native pattern name (lowercase) -> primitive capability it grants.
+PATTERN_TO_CAPABILITY: dict[str, str] = {
+    "invoke": "activate",
+    "toggle": "toggle",
+    "selectionitem": "select",
+    "value": "set_text",
+    "rangevalue": "increment",
+    "expandcollapse": "expand",
+    "scroll": "scroll",
+    "scrollitem": "scroll",
+    "selection": "select",
+    "text": "read",
+    "legacyiaccessible": "activate",
+    "window": "open",
+}
+
+
+@dataclass(slots=True, frozen=True)
+class ParamSpec:
+    """Declaration of one capability parameter."""
+
+    type: str = "string"  # string | number | bool | enum
+    required: bool = False
+    enum: tuple[str, ...] = ()
+    default: Any = None
+
+    def accepts(self, value: Any) -> bool:
+        if self.type == "string":
+            return isinstance(value, str)
+        if self.type == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if self.type == "bool":
+            return isinstance(value, bool)
+        if self.type == "enum":
+            return value in self.enum
+        return True
+
+    def render(self) -> str:
+        if self.type == "enum":
+            return "|".join(self.enum)
+        return self.type
+
+
+@dataclass(slots=True, frozen=True)
+class PrimitiveStep:
+    """One resolvable native step inside a semantic capability.
+
+    ``target`` selects which native element the step applies to:
+
+    * ``"$self"``   - the node's own native element
+    * ``"$<param>"``- names a parameter that carries a member/native selector
+    * any other string - a pack-declared member key (resolved at compile time)
+
+    ``value`` may be ``None``, a literal, or ``"$<param>"`` to forward an
+    argument supplied by the LLM.
+    """
+
+    primitive: str
+    target: str = "$self"
+    value: Any = None
+    label: str = ""  # human readable, used in the audit log only
+
+
+@dataclass(slots=True, frozen=True)
+class Effect:
+    """A verifiable post-condition.
+
+    Grammar (minimal, deterministic)::
+
+        <ref-selector> <field> <op> <value>
+
+    ``ref-selector`` is either a ref (``c1``), ``$self``, or a pack alias such
+    as ``cart``. ``field`` is one of ``count``, ``total``, ``value``, ``exists``,
+    ``state``, ``rows``. ``op`` is one of ``+=``, ``-=``, ``=``, ``!=``,
+    ``startswith``, ``contains``.
+    """
+
+    target: str
+    field: str
+    op: str
+    value: Any
+    raw: str = ""
+
+    def render(self) -> str:
+        return self.raw or f"{self.target}.{self.field} {self.op} {self.value}"
+
+
+@dataclass(slots=True)
+class Capability:
+    """A callable ability exposed to the LLM."""
+
+    name: str
+    level: CapLevel = "primitive"
+    params: dict[str, ParamSpec] = field(default_factory=dict)
+    via: list[PrimitiveStep] = field(default_factory=list)
+    effects: list[Effect] = field(default_factory=list)
+    risk: Risk = "safe"
+    #: True when this capability must be confirmed by the host before execution.
+    requires_confirmation: bool = False
+    #: Free-form aliases resolving to this capability name.
+    aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.risk == "safe" and self.name in CRITICAL_CAPABILITIES:
+            self.risk = "critical"
+        if self.risk == "critical":
+            self.requires_confirmation = True
+
+    # -- rendering ----------------------------------------------------------
+
+    def render_params(self) -> str:
+        if not self.params:
+            return ""
+        parts = []
+        for pname, spec in self.params.items():
+            token = spec.render()
+            if spec.required:
+                parts.append(pname)
+            else:
+                parts.append(f"{pname}:{token}" if token else pname)
+        return ",".join(parts)
+
+    def render(self) -> str:
+        head = f"+{self.name}"
+        params = self.render_params()
+        if params:
+            head += f"({params})"
+        if self.requires_confirmation:
+            head += "!"
+        return head

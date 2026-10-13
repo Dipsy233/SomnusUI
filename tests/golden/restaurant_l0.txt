@@ -1,0 +1,20 @@
+@rev 1
+WINDOW w1 "Restaurant Demo" active
+  SCREEN s1 "menu"
+    LIST l1 "Products" count=3 entity=product +find
+      PRODUCT p1 "Big Mac" price=5.99 +add +customize(size:small|medium|large)
+        TEXT tx1 "Big Mac"
+        TEXT tx2 "$5.99"
+        BUTTON b1 "Add"
+      PRODUCT p2 "Fries" price=2.49 +add +customize(size:small|medium|large)
+        TEXT tx3 "Fries"
+        TEXT tx4 "$2.49"
+        BUTTON b2 "Add"
+      PRODUCT p3 "Cola" price=1.99 +add +customize(size:small|medium|large)
+        TEXT tx5 "Cola"
+        TEXT tx6 "$1.99"
+        BUTTON b3 "Add"
+    CART c1 "Cart" count=0 total=0 +open
+      TEXT tx7 "0 items $0.00"
+      BUTTON b4 "Open Cart"
+    CHECKOUT b5 "Checkout" +submit!

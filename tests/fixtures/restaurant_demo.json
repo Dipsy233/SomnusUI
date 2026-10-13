@@ -1,0 +1,465 @@
+{
+  "window": {
+    "window_id": "w1",
+    "title": "Restaurant Demo",
+    "process": "RestaurantDemo.exe",
+    "pid": 4242,
+    "active": true,
+    "visible": true,
+    "rect": null
+  },
+  "root": {
+    "role": "pane",
+    "name": "menu",
+    "value": null,
+    "description": null,
+    "states": [],
+    "patterns": [],
+    "native": {
+      "window_id": "w1",
+      "runtime_id": [],
+      "automation_id": "screen_menu",
+      "class_name": "demo",
+      "control_type": "pane",
+      "path": []
+    },
+    "children": [
+      {
+        "role": "list",
+        "name": "Products",
+        "value": null,
+        "description": null,
+        "states": [],
+        "patterns": [
+          "scroll",
+          "selection"
+        ],
+        "native": {
+          "window_id": "w1",
+          "runtime_id": [
+            1001
+          ],
+          "automation_id": "products_list",
+          "class_name": "demo",
+          "control_type": "list",
+          "path": [
+            1
+          ]
+        },
+        "children": [
+          {
+            "role": "group",
+            "name": null,
+            "value": null,
+            "description": null,
+            "states": [],
+            "patterns": [],
+            "native": {
+              "window_id": "w1",
+              "runtime_id": [
+                1001,
+                1000
+              ],
+              "automation_id": "product_0",
+              "class_name": "demo",
+              "control_type": "group",
+              "path": [
+                1,
+                0
+              ]
+            },
+            "children": [
+              {
+                "role": "text",
+                "name": "Big Mac",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "text"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1000,
+                    1000
+                  ],
+                  "automation_id": "product_0_title",
+                  "class_name": "demo",
+                  "control_type": "text",
+                  "path": [
+                    1,
+                    0,
+                    0
+                  ]
+                },
+                "children": []
+              },
+              {
+                "role": "text",
+                "name": "$5.99",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "text"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1000,
+                    1001
+                  ],
+                  "automation_id": "product_0_price",
+                  "class_name": "demo",
+                  "control_type": "text",
+                  "path": [
+                    1,
+                    0,
+                    1
+                  ]
+                },
+                "children": []
+              },
+              {
+                "role": "button",
+                "name": "Add",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "invoke"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1000,
+                    1002
+                  ],
+                  "automation_id": "product_0_add",
+                  "class_name": "demo",
+                  "control_type": "button",
+                  "path": [
+                    1,
+                    0,
+                    2
+                  ]
+                },
+                "children": []
+              }
+            ]
+          },
+          {
+            "role": "group",
+            "name": null,
+            "value": null,
+            "description": null,
+            "states": [],
+            "patterns": [],
+            "native": {
+              "window_id": "w1",
+              "runtime_id": [
+                1001,
+                1001
+              ],
+              "automation_id": "product_1",
+              "class_name": "demo",
+              "control_type": "group",
+              "path": [
+                1,
+                1
+              ]
+            },
+            "children": [
+              {
+                "role": "text",
+                "name": "Fries",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "text"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1001,
+                    1000
+                  ],
+                  "automation_id": "product_1_title",
+                  "class_name": "demo",
+                  "control_type": "text",
+                  "path": [
+                    1,
+                    1,
+                    0
+                  ]
+                },
+                "children": []
+              },
+              {
+                "role": "text",
+                "name": "$2.49",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "text"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1001,
+                    1001
+                  ],
+                  "automation_id": "product_1_price",
+                  "class_name": "demo",
+                  "control_type": "text",
+                  "path": [
+                    1,
+                    1,
+                    1
+                  ]
+                },
+                "children": []
+              },
+              {
+                "role": "button",
+                "name": "Add",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "invoke"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1001,
+                    1002
+                  ],
+                  "automation_id": "product_1_add",
+                  "class_name": "demo",
+                  "control_type": "button",
+                  "path": [
+                    1,
+                    1,
+                    2
+                  ]
+                },
+                "children": []
+              }
+            ]
+          },
+          {
+            "role": "group",
+            "name": null,
+            "value": null,
+            "description": null,
+            "states": [],
+            "patterns": [],
+            "native": {
+              "window_id": "w1",
+              "runtime_id": [
+                1001,
+                1002
+              ],
+              "automation_id": "product_2",
+              "class_name": "demo",
+              "control_type": "group",
+              "path": [
+                1,
+                2
+              ]
+            },
+            "children": [
+              {
+                "role": "text",
+                "name": "Cola",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "text"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1002,
+                    1000
+                  ],
+                  "automation_id": "product_2_title",
+                  "class_name": "demo",
+                  "control_type": "text",
+                  "path": [
+                    1,
+                    2,
+                    0
+                  ]
+                },
+                "children": []
+              },
+              {
+                "role": "text",
+                "name": "$1.99",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "text"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1002,
+                    1001
+                  ],
+                  "automation_id": "product_2_price",
+                  "class_name": "demo",
+                  "control_type": "text",
+                  "path": [
+                    1,
+                    2,
+                    1
+                  ]
+                },
+                "children": []
+              },
+              {
+                "role": "button",
+                "name": "Add",
+                "value": null,
+                "description": null,
+                "states": [],
+                "patterns": [
+                  "invoke"
+                ],
+                "native": {
+                  "window_id": "w1",
+                  "runtime_id": [
+                    1001,
+                    1002,
+                    1002
+                  ],
+                  "automation_id": "product_2_add",
+                  "class_name": "demo",
+                  "control_type": "button",
+                  "path": [
+                    1,
+                    2,
+                    2
+                  ]
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "role": "group",
+        "name": "Cart",
+        "value": null,
+        "description": null,
+        "states": [],
+        "patterns": [],
+        "native": {
+          "window_id": "w1",
+          "runtime_id": [
+            1002
+          ],
+          "automation_id": "cart_group",
+          "class_name": "demo",
+          "control_type": "group",
+          "path": [
+            2
+          ]
+        },
+        "children": [
+          {
+            "role": "text",
+            "name": "0 items $0.00",
+            "value": null,
+            "description": null,
+            "states": [],
+            "patterns": [
+              "text"
+            ],
+            "native": {
+              "window_id": "w1",
+              "runtime_id": [
+                1002,
+                1000
+              ],
+              "automation_id": "cart_count",
+              "class_name": "demo",
+              "control_type": "text",
+              "path": [
+                2,
+                0
+              ]
+            },
+            "children": []
+          },
+          {
+            "role": "button",
+            "name": "Open Cart",
+            "value": null,
+            "description": null,
+            "states": [],
+            "patterns": [
+              "invoke"
+            ],
+            "native": {
+              "window_id": "w1",
+              "runtime_id": [
+                1002,
+                1001
+              ],
+              "automation_id": "open_cart",
+              "class_name": "demo",
+              "control_type": "button",
+              "path": [
+                2,
+                1
+              ]
+            },
+            "children": []
+          }
+        ]
+      },
+      {
+        "role": "button",
+        "name": "Checkout",
+        "value": null,
+        "description": null,
+        "states": [],
+        "patterns": [
+          "invoke"
+        ],
+        "native": {
+          "window_id": "w1",
+          "runtime_id": [
+            1003
+          ],
+          "automation_id": "checkout_btn",
+          "class_name": "demo",
+          "control_type": "button",
+          "path": [
+            3
+          ]
+        },
+        "children": []
+      }
+    ]
+  },
+  "raw_revision": 1
+}

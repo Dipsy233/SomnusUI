@@ -1,0 +1,18 @@
+# Normalise line endings in the repository. Windows-only sources keep CRLF on
+# checkout; everything else is stored with LF.
+* text=auto eol=lf
+
+# Windows / .NET sources
+*.cs       text eol=crlf
+*.xaml     text eol=crlf
+*.csproj   text eol=crlf
+
+# Binary-ish / generated
+*.png      binary
+*.jpg      binary
+*.pdf      binary
+*.dll      binary
+*.exe      binary
+
+# Keep golden fixtures byte-stable
+tests/golden/*.txt text eol=lf

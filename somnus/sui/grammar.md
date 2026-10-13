@@ -1,0 +1,128 @@
+# SUI-Text grammar (v0.2)
+
+The single LLM-facing format. Internal formats are JSON; SUI-Text is the wire
+format. All rules below are enforced by `somnus/sui/serialize.py` and
+`somnus/sui/parse.py`.
+
+## Observation
+
+```
+doc     := header line*
+header  := "@rev" INT
+line    := INDENT* node
+node    := TYPE REF [STRING] (attr | flag)* cap* [collapse]
+TYPE    := entity type (uppercase) | role (uppercase) | layer (uppercase)
+REF     := [a-z]{1,3}[0-9]+
+attr    := KEY "=" (NUMBER | STRING | BARE | "?")
+flag    := disabled | readonly | required | invalid | selected | checked
+         | unchecked | mixed | expanded | collapsed | focused | loading | active
+cap     := "+" NAME ["(" PARAMS ")"] ["!"]
+collapse:= "+" INT "more"
+unknown := "?" REF ROLE "reason=" REASON
+more    := "…" "+" INT "more"
+INDENT  := 2 spaces per level
+```
+
+### Rules
+
+1. **Capabilities live on the node line.**
+2. **Implicit capabilities are omitted** - `focus`/`read` everywhere; `activate`
+   on `BUTTON`, `set_text` on `INPUT`, `toggle` on `CHECKBOX`, `select` on
+   `LISTITEM`, `scroll` on containers. The system prompt carries this table.
+   They are always available to the resolver regardless of printing.
+3. **`enabled` is the default state** and never printed; only deviations appear.
+4. **Strings are double-quoted**, escape `\"` and `\n`, clip at 80 chars with `…`.
+5. **Numeric values drop the currency symbol** into an attribute (`price=5.99`,
+   optional `cur=USD`).
+6. **Refs are ASCII**; names keep their original language.
+7. **Bare attrs** are unquoted enum-ish identifiers: `entity=product`,
+   `cur=USD`, `type=primary`.
+8. Anything unreadable without vision is rendered as
+   `? r9 canvas reason=visual`, never guessed.
+
+### Examples
+
+```
+@rev 7
+SCREEN s1 "menu"
+  PRODUCT p1 "Big Mac" price=5.99 +add +customize(size)
+  PRODUCT p2 "Fries" price=2.49 +add(size)
+  … +125 more find
+  CART c1 count=0 total=0 +open
+  BUTTON b9 "Checkout" +submit!
+  ? r3 canvas reason=visual
+
+TEXT t1 len=5230 preview="…"
+LIST l1 "Products" count=128 entity=product +find
+```
+
+## Actions
+
+The only action syntax is `CALL`. Primitive verbs (`click`, `uia_invoke`) and
+native identifiers (`AutomationId`, RuntimeId, coordinates) are rejected at
+parse time with `PARSE_ERROR`.
+
+```
+action  := "CALL" REF "." CAP "(" [args] ")"
+args    := VALUE | KEY "=" VALUE ("," KEY "=" VALUE)*
+query   := "FIND" [TYPE] STRING ["in" REF]
+inspect := "INSPECT" REF ["depth=" INT] ["range=" INT ":" INT]
+abort   := "UNKNOWN" STRING
+observe := "OBSERVE" [REF]
+```
+
+```
+FIND product "Big Mac"
+CALL p1.add()
+CALL p1.customize(size="large")
+CALL q1.set_text("Big Mac")
+INSPECT l1 depth=1
+INSPECT t1 range=0:2000
+```
+
+The resolver maps `p1.add` to the entity's `product.add` rule using the ref's
+entity type; the LLM never writes `product.add(target=p1)`.
+
+## Results and deltas
+
+```
+OK rev=8
+~ c1 count 0→1 total 0→5.99
++ CARTITEM i1 "Big Mac" qty=1 in=c1
+- d2
+```
+
+```
+OK_UNVERIFIED rev=8          # executed, no declared effects to verify
+ERR STALE_TARGET p1 hint=find
+ERR CONFIRMATION_REQUIRED b9.submit hint=ask-user
+```
+
+Delta line kinds:
+
+| Kind | Meaning |
+| --- | --- |
+| `~ REF FIELD OLD→NEW` | value changed |
+| `+ NODE ...` | node added (full node line) |
+| `- REF` | node removed |
+
+## Error codes
+
+| Code | Meaning | Hint |
+| --- | --- | --- |
+| `PARSE_ERROR` | bad syntax | `fix-syntax` |
+| `TARGET_NOT_FOUND` | ref unknown | `observe` |
+| `TARGET_AMBIGUOUS` | multiple matches | `refine-query` |
+| `STALE_TARGET` | ref invalidated | `find` |
+| `CAPABILITY_NOT_FOUND` | target lacks capability | `inspect` |
+| `INVALID_ARGUMENT` | bad/missing argument | `inspect` |
+| `ACTION_NOT_SUPPORTED` | no native pattern | `report-user` |
+| `TARGET_DISABLED` | target disabled | `inspect` |
+| `CONFIRMATION_REQUIRED` | critical action needs consent | `ask-user` |
+| `PERMISSION_DENIED` | allow-list / UIPI | `report-user` |
+| `NATIVE_EXECUTION_FAILED` | pattern raised | `retry-once` |
+| `TIMEOUT` | exec/settle timed out | `observe` |
+| `EFFECT_NOT_CONFIRMED` | declared effect absent | `observe` |
+| `UNKNOWN_CONTENT` | needs vision | `report-unknown` |
+
+Errors are one line: `ERR CODE ref hint=...`; stack traces go to the log only.

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "somnusui"
+version = "0.1.0"
+description = "SomnusUI - compile native GUI accessibility trees into a low-token semantic API for LLMs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "SomnusUI" }]
+dependencies = [
+    "msgspec>=0.18",
+]
+
+[project.optional-dependencies]
+windows = [
+    "comtypes>=1.2",
+    "pywinauto>=0.6.8",
+]
+mcp = [
+    "mcp>=1.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+somnus = "somnus.cli:main"
+somnus-mcp = "somnus.protocol.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["somnus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "windows: tests requiring Windows + UIA",
+    "e2e: end-to-end tests requiring a live application",
+]
+
+[tool.coverage.run]
+source = ["somnus"]
