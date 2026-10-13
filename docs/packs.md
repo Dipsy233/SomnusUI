@@ -149,6 +149,35 @@ custom-drawn one that only accepts keystrokes.
 
 ## Writing a pack for a new app
 
+**A pack is optional.** Without one, the compiler runs in *Generic Mode*: it
+still normalises roles, derives capabilities from the native patterns, builds
+relations and projects the tree. Any app whose controls expose standard UIA
+patterns is usable the moment it opens - the same principle as dev doc section
+4.5 and 11.3.
+
+What a pack adds is *certainty*, not reachability:
+
+| | Generic Mode | App Mode |
+| --- | --- | --- |
+| Bluetooth switch | `BUTTON b10 "蓝牙" +toggle` | `TOGGLE_SETTING b10 "蓝牙" +toggle` |
+| What the agent must do | read the name and infer | the type states it |
+| Match basis | name + native pattern | `class_name` / `automation_id` (language-independent) |
+| Domain actions | the primitive vocabulary | semantic caps (`add`, `submit`, ...) |
+
+Generic capabilities are derived only from patterns, so they never guess
+(dev doc section 11.2); a control that exposes no pattern gets no capability
+rather than a wrong one.
+
+### Write a pack when
+
+- the app has domain objects worth naming (`product`, `invoice`, `file`),
+- the same control type must be told apart by class (a WinUI `ToggleSwitch`
+  next to a plain `Button`),
+- a capability needs several steps or an effect to verify,
+- an action is dangerous and must be gated (`risk: critical`).
+
+### Steps
+
 1. Record the app's tree:
 
    ```bash

@@ -105,11 +105,16 @@ _PATTERN_IDS = {
     "rangevalue": 10003,
     "scroll": 10004,
     "expandcollapse": 10005,
+    "griditem": 10007,
+    "grid": 10006,
+    "scrollitem": 10016,
     "text": 10014,
     "toggle": 10015,
     "selectionitem": 10010,
     "legacyiaccessible": 10018,
     "window": 10017,
+    "table": 10012,
+    "tableitem": 10011,
 }
 
 _TOGGLE_OFF = 0
@@ -505,6 +510,7 @@ class UiaProvider:
             "focus",
             "read",
             "type_text",
+            "scroll_into_view",
         ):
             return ExecResult(ok=False, error="ACTION_NOT_SUPPORTED")
         return run_primitive(el, primitive, value, self._UIA)

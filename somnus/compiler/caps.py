@@ -58,10 +58,14 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     if "invoke" in patterns or role in ("button", "link", "menuitem"):
         caps.setdefault("activate", _cap("activate"))
 
-    # set_text is granted to text-entry surfaces only. A read-only Value pattern
-    # (labels, status bars, tree items) must not advertise it, or CALL would fail
-    # at native execution (dev doc section 11.2: no capability without a pattern).
-    if role == "input" and "readonly" not in node.states:
+    # set_text is granted to text-entry surfaces. A read-only Value pattern
+    # (labels, status bars, tree items) must not advertise it, or CALL would
+    # fail at native execution (dev doc section 11.2: no capability without a
+    # pattern). Besides the `input` role, a Document or an editable custom
+    # control also exposes a writable Value pattern; gating on the pattern (and
+    # the absence of `readonly`) keeps this generic instead of per-app.
+    writable_value = "value" in patterns and "readonly" not in node.states
+    if writable_value and role in ("input", "text", "pane", "slider", "select"):
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
         cap.via = [PrimitiveStep(primitive="set_text", target="$self", value="$text")]
         caps.setdefault("set_text", cap)
@@ -69,7 +73,14 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     if "toggle" in patterns or role in ("checkbox", "switch"):
         caps.setdefault("toggle", _cap("toggle"))
 
-    if "selectionitem" in patterns or role in ("listitem", "tab", "radio"):
+    # GridItem cells are selectable, like list items (Excel, WPF DataGrid).
+    if "selectionitem" in patterns or "griditem" in patterns or role in (
+        "listitem",
+        "tab",
+        "radio",
+        "row",
+        "treeitem",
+    ):
         caps.setdefault("select", _cap("select"))
 
     if "expandcollapse" in patterns or role in ("treeitem", "select", "group", "pane"):
@@ -96,6 +107,20 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
                         type="enum", enum=("up", "down", "top", "bottom"), required=False
                     )
                 },
+            ),
+        )
+
+    # A ScrollItem (a row in a virtualised list) can be brought into view; this
+    # is how an off-screen item is reached without scrolling blindly (dev doc
+    # section 13). It is a real native capability, not a heuristic.
+    if "scrollitem" in patterns:
+        caps.setdefault(
+            "scroll_into_view",
+            Capability(
+                name="scroll_into_view",
+                level="primitive",
+                via=[PrimitiveStep(primitive="scroll_into_view", target="$self")],
+                risk="safe",
             ),
         )
 

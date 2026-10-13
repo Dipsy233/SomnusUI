@@ -95,6 +95,12 @@ def run_primitive(
             result = send_unicode_text(str(value))
             if not result.ok:
                 return result
+        elif primitive == "scroll_into_view":
+            _pattern(
+                element,
+                UIA.UIA_ScrollItemPatternId,
+                UIA.IUIAutomationScrollItemPattern,
+            ).ScrollIntoView()
         elif primitive == "close":
             _pattern(
                 element, UIA.UIA_WindowPatternId, UIA.IUIAutomationWindowPattern

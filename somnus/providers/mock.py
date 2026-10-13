@@ -215,6 +215,10 @@ class MockProvider:
             for mut in self.scripts.get(key, ()):
                 self._apply(node, mut, value)
                 mutated = True
+        if primitive == "scroll_into_view":
+            # Bring the item into view and clear its offscreen state.
+            node.states = frozenset(s for s in node.states if s != "offscreen")
+            mutated = True
         if primitive in ("set_text", "type_text") and value is not None and not mutated:
             if primitive == "type_text":
                 # The keyboard fallback appends to whatever is already there,

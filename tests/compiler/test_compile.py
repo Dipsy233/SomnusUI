@@ -150,3 +150,64 @@ def test_non_virtualised_collection_count_is_exact():
     result = Compiler().compile(tree)
     line = next(render_node_line(x) for x in result.root.walk() if x.role == "list")
     assert "count=3" in line and ">=" not in line
+
+
+def test_generic_mode_grants_capabilities_from_patterns_only():
+    """Without any pack, capabilities come from native patterns alone.
+
+    This is the compatibility story (dev doc sections 4.5, 11.3): a new app is
+    usable the moment its controls expose standard UIA patterns.
+    """
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+
+    def n(role, name, patterns, class_name="", children=()):
+        return RawNode(
+            native=NativeRef("w1", (abs(hash((role, name))) % 9999,), class_name=class_name),
+            role=role, name=name, patterns=frozenset(patterns), children=list(children),
+        )
+
+    root = n("window", "w", (), children=[
+        n("button", "Save", ("invoke",)),
+        n("button", "Bluetooth", ("toggle", "invoke"), class_name="ToggleSwitch"),
+        n("edit", "Search", ("value", "text")),
+        n("edit", "Read only", ("value", "text")),
+        n("listitem", "Cell", ("selectionitem",)),
+        n("listitem", "Far row", ("scrollitem",)),
+    ])
+    root.children[3].states = frozenset({"readonly"})
+    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1), root=root)
+
+    result = Compiler().compile(tree, pack=None)
+    by_name = {x.name: x for x in result.root.walk() if x.name}
+
+    assert "activate" in by_name["Save"].cap_names()
+    assert "toggle" in by_name["Bluetooth"].cap_names()
+    assert "set_text" in by_name["Search"].cap_names()
+    # A read-only Value pattern must not advertise set_text.
+    assert "set_text" not in by_name["Read only"].cap_names()
+    assert "select" in by_name["Cell"].cap_names()
+    # ScrollItem is a real capability, not a guess.
+    assert "scroll_into_view" in by_name["Far row"].cap_names()
+
+
+def test_scroll_into_view_clears_offscreen_in_mock():
+    from somnus.providers.mock import MockProvider
+    from somnus.runtime.session import Session
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+
+    row = RawNode(
+        native=NativeRef("w1", (1,)),
+        role="listitem", name="Far row",
+        states=frozenset({"offscreen"}),
+        patterns=frozenset({"scrollitem"}),
+    )
+    root = RawNode(
+        native=NativeRef("w1", (0,)),
+        role="window", name="w", patterns=frozenset(),
+        children=[row],
+    )
+    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1), root=root)
+    session = Session(MockProvider(fixtures=[tree]))
+    session.observe()
+    ref = next(n.ref for n in session.result.root.walk() if n.name == "Far row")
+    assert session.dispatch(f"CALL {ref}.scroll_into_view()").startswith("OK")
