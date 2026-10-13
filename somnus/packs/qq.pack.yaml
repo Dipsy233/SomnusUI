@@ -1,0 +1,106 @@
+# QQ (Windows) App Pack — v0.2 format.
+#
+# QQ renders much of its UI as custom HTML-like surfaces (the accessibility
+# classes are `recent-contact-item`, `search-result-list`, ...), so several
+# elements expose no UIA name. Matching is therefore by native class name, and
+# the display text is lifted from a descendant text node.
+#
+# Opening a conversation requires a genuine double-click: QQ does not navigate on
+# a single Invoke. UIA has no DoubleClick pattern, so the `open` capability
+# declares it as an explicit `double_click` via step - the only synthetic input
+# in the pack, and it is never offered to the LLM as a bare capability
+# (dev doc section 12.2).
+app:
+  id: qq
+  version: "0.2.0"
+  match:
+    process: "qq.exe"
+
+projection:
+  # The window-control buttons and the advertising/weather widgets are chrome.
+  - { select: "name=/天气|迷你窗|个性签名/i", rule: "prune" }
+  - { select: "class_name=window-control", rule: "prune" }
+
+named_refs:
+  search:
+    role: input
+    patterns: [value]
+
+entities:
+  # ---- Conversations ---------------------------------------------------
+  # A row in the recent-contacts list. Custom-rendered, so it has no UIA name;
+  # the visible title comes from a descendant text node.
+  conversation:
+    match:
+      role: group
+      class_name: "recent-contact-item"
+      has:
+        - { role: text, has_name: true, as: title }
+    key: "$title.name"
+    attrs:
+      name: "$title.name"
+    caps:
+      open:
+        # QQ opens the chat window on double-click only. `activate` (single
+        # Invoke) selects the row without opening anything.
+        via: ["$self.double_click"]
+        risk: normal
+      select:
+        via: ["$self.activate"]
+        risk: safe
+
+  # A row in the search dropdown (contacts, groups, chat history, files).
+  # These are plain `search-result-list` items and do carry a UIA name.
+  search_result:
+    match:
+      role: listitem
+      class_name: "search-result-list"
+      has_name: true
+    key: "$self.name"
+    attrs:
+      name: "$self.name"
+    caps:
+      open:
+        via: ["$self.double_click"]
+        risk: normal
+
+  # ---- Composing --------------------------------------------------------
+  # The message editor of an open chat. QQ uses ProseMirror (class
+  # `ExEditor-qq-msg-editor`), which exposes a text capability but no Value
+  # pattern, so there is no way to set its contents natively: the declared
+  # keyboard fallback is what types into it (dev doc section 12.2).
+  message_box:
+    match:
+      role: group
+      class_name: "/qq-msg-editor|ProseMirror/i"
+    key: "$self.automation_id"
+    attrs:
+      name: "$self.name"
+    caps:
+      set_text:
+        via:
+          - target: "$self"
+            primitive: set_text
+            value: "$text"
+            when_has: value
+          - target: "$self"
+            primitive: type_text
+            value: "$text"
+            when_missing: value
+        params:
+          text: { type: string, required: true }
+        risk: normal
+
+  # ---- Dangerous --------------------------------------------------------
+  # Sending is irreversible: gate it behind confirmation.
+  send:
+    match:
+      role: button
+      name: "/^(发送|Send)$/"
+    key: "$self.name"
+    attrs:
+      name: "$self.name"
+    caps:
+      send:
+        via: ["$self.activate"]
+        risk: critical

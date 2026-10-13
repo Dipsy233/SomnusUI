@@ -220,6 +220,7 @@ class Compiler:
             ancestors=[(window_node, window_node.ref)],
             depth=0,
             ancestor_path="window",
+            role_index=0,
         )
 
         # 6. Collection annotation: a container whose children are all entities
@@ -296,6 +297,8 @@ class Compiler:
         ancestors: list[tuple[SemanticNode, str]],
         depth: int,
         ancestor_path: str,
+        role_index: int | None = None,
+        position: int | None = None,
     ) -> SemanticNode:
         em = matches.get(id(raw))
         node = SemanticNode(
@@ -345,6 +348,7 @@ class Compiler:
             identity=identity,
             name=node.name,
             ancestor_path=ancestor_path,
+            role_index=role_index,
         )
         result.fingerprints[ref] = node.fingerprint
         result.ref_by_raw[id(raw)] = ref
@@ -362,13 +366,29 @@ class Compiler:
             parent.children.append(node)
         result.raw_by_ref[ref] = raw
 
-        # Recurse.
-        child_path = f"{ancestor_path}/{node.entity or node.role}"
+        # Recurse. The ancestor path carries each node's own role-relative index
+        # so that unnamed siblings at any depth still hash distinctly; without it
+        # every anonymous wrapper under the same role would collide, and the
+        # registry would mark the whole subtree ambiguous.
+        # The path always carries the node's position among its same-role
+        # siblings. Two identically-named buttons under different parents then
+        # differ by their path even when neither needs a local index, while a
+        # node whose identity is stable ignores the path entirely (see
+        # compute_fingerprint).
+        pos = position if position is not None else 0
+        child_path = f"{ancestor_path}/{node.entity or node.role}#{pos}"
         new_ancestors = ancestors + [(node, ref)]
+        # Children that share a (role, name) would otherwise hash identically and
+        # make each other ambiguous; only those get a disambiguating index, so
+        # uniquely-named nodes stay position independent (dev doc section 8).
+        dup_key = _duplicate_keys(raw.children)
+        role_counts: dict[str, int] = {}
         for child in raw.children:
             if depth + 1 > self.max_depth:
                 node.truncated = True
                 break
+            idx = role_counts.get(child.role, 0)
+            role_counts[child.role] = idx + 1
             self._build(
                 child,
                 parent=node,
@@ -377,6 +397,8 @@ class Compiler:
                 ancestors=new_ancestors,
                 depth=depth + 1,
                 ancestor_path=child_path,
+                role_index=idx if (child.role, _name_key(child)) in dup_key else None,
+                position=idx,
             )
 
         # Fill member refs now that children exist.
@@ -442,6 +464,19 @@ class Compiler:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _name_key(node: RawNode) -> str:
+    return (node.name or "").strip().casefold()
+
+
+def _duplicate_keys(children: list[RawNode]) -> set[tuple[str, str]]:
+    """(role, name) pairs that appear more than once among ``children``."""
+    seen: dict[tuple[str, str], int] = {}
+    for child in children:
+        key = (child.role, _name_key(child))
+        seen[key] = seen.get(key, 0) + 1
+    return {key for key, count in seen.items() if count > 1}
 
 
 def _clip(text: str | None, limit: int = 80) -> str | None:

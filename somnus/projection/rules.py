@@ -143,12 +143,16 @@ def apply_projection(
 
 
 def _generic_rule(node: SemanticNode, depth: int, default_prune: bool) -> Rule:
-    # Anonymous structural container with no capability -> flatten.
+    # An anonymous structural container is transparent: promote its children.
+    # `focus`/`read` are present on every node, so they must not count as
+    # "capable" here or nothing would ever flatten (dev doc section 7.1).
+    meaningful_caps = node.cap_names() - {"focus", "read"}
     if (
-        node.role in ("group", "pane")
+        node.role in ("group", "pane", "region")
         and not node.name
         and not node.value
-        and not node.caps
+        and not node.entity
+        and not meaningful_caps
     ):
         return Rule.FLATTEN
     if default_prune and depth > 0 and node.role in ("group", "pane") and not node.name:

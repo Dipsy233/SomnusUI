@@ -511,6 +511,7 @@ class UiaProvider:
             "read",
             "type_text",
             "scroll_into_view",
+            "double_click",
         ):
             return ExecResult(ok=False, error="ACTION_NOT_SUPPORTED")
         return run_primitive(el, primitive, value, self._UIA)

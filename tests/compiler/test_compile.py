@@ -211,3 +211,76 @@ def test_scroll_into_view_clears_offscreen_in_mock():
     session.observe()
     ref = next(n.ref for n in session.result.root.walk() if n.name == "Far row")
     assert session.dispatch(f"CALL {ref}.scroll_into_view()").startswith("OK")
+
+
+def test_duplicate_siblings_get_distinct_fingerprints():
+    """Two identically named siblings must not share a fingerprint.
+
+    QQ has several buttons named "更多"; without disambiguation they collide and
+    the registry reports each as ambiguous, making the app inoperable
+    (dev doc section 8).
+    """
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+
+    def btn(name):
+        return RawNode(
+            native=NativeRef("w1", (abs(hash(name)) % 9999,)),
+            role="button", name=name, patterns=frozenset({"invoke"}),
+        )
+
+    root = RawNode(
+        native=NativeRef("w1", (0,)), role="window", name="w",
+        children=[btn("更多"), btn("保存"), btn("更多")],
+    )
+    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1), root=root)
+    result = Compiler().compile(tree)
+
+    more = [n for n in result.root.walk() if n.name == "更多"]
+    assert len(more) == 2
+    assert more[0].fingerprint != more[1].fingerprint
+    assert more[0].ref != more[1].ref
+
+
+def test_unique_named_siblings_ignore_position():
+    """A uniquely named node keeps a position-independent fingerprint."""
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+
+    def build(order):
+        return RawTree(
+            window=WindowInfo("w1", "w", "app.exe", 1),
+            root=RawNode(
+                native=NativeRef("w1", (0,)), role="window", name="w",
+                children=[
+                    RawNode(native=NativeRef("w1", (i + 1,)), role="button",
+                            name=name, patterns=frozenset({"invoke"}))
+                    for i, name in enumerate(order)
+                ],
+            ),
+        )
+
+    a = Compiler().compile(build(["保存", "取消"]))
+    b = Compiler().compile(build(["取消", "保存"]))
+    fp_a = {n.name: n.fingerprint for n in a.root.walk() if n.name in ("保存", "取消")}
+    fp_b = {n.name: n.fingerprint for n in b.root.walk() if n.name in ("保存", "取消")}
+    assert fp_a == fp_b
+
+
+def test_identical_unnamed_containers_are_distinct():
+    """Anonymous wrappers must not collide; position disambiguates them."""
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+
+    def wrap(idx):
+        return RawNode(
+            native=NativeRef("w1", (idx,)), role="group",
+            children=[RawNode(native=NativeRef("w1", (idx, 0)), role="text",
+                              name=f"row{idx}")],
+        )
+
+    root = RawNode(
+        native=NativeRef("w1", (0,)), role="window", name="w",
+        children=[wrap(1), wrap(2), wrap(3)],
+    )
+    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1), root=root)
+    result = Compiler().compile(tree)
+    groups = [n for n in result.root.walk() if n.role == "group"]
+    assert len({g.fingerprint for g in groups}) == len(groups)

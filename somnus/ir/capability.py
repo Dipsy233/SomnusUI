@@ -33,6 +33,8 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         "decrement",
         "scroll",
         "scroll_into_view",
+        # The one interaction UIA has no pattern for; a pack must declare it.
+        "double_click",
         "open",
         "close",
         # Declarative keyboard fallback (v0.2): focus the target and type the

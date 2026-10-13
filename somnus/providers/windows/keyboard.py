@@ -37,8 +37,34 @@ class _KEYBDINPUT(ctypes.Structure):
     ]
 
 
+class _MOUSEINPUT(ctypes.Structure):
+    # Declared so the union is sized by its largest member; only the keyboard
+    # fields are used here. A short union makes SendInput fail with
+    # ERROR_INVALID_PARAMETER (87).
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
 class _INPUTUNION(ctypes.Union):
-    _fields_ = [("ki", _KEYBDINPUT), ("padding", ctypes.c_byte * 24)]
+    _fields_ = [
+        ("ki", _KEYBDINPUT),
+        ("mi", _MOUSEINPUT),
+        ("hi", _HARDWAREINPUT),
+    ]
 
 
 class _INPUT(ctypes.Structure):

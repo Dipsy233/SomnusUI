@@ -12,6 +12,7 @@ from typing import Any
 
 from somnus.ir.action import ExecResult
 from somnus.providers.windows.keyboard import send_unicode_text
+from somnus.providers.windows.mouse import double_click
 
 #: Pattern id per primitive capability (resolved lazily from the UIA module).
 PATTERN_FOR_PRIMITIVE = {
@@ -101,6 +102,13 @@ def run_primitive(
                 UIA.UIA_ScrollItemPatternId,
                 UIA.IUIAutomationScrollItemPattern,
             ).ScrollIntoView()
+        elif primitive == "double_click":
+            # UIA has no DoubleClick pattern; QQ and a few others only open on a
+            # real double-click. This is the single place synthetic input is
+            # used, and a pack must declare it explicitly (dev doc section 12.2).
+            result = _double_click_element(element, UIA)
+            if not result.ok:
+                return result
         elif primitive == "close":
             _pattern(
                 element, UIA.UIA_WindowPatternId, UIA.IUIAutomationWindowPattern
@@ -115,6 +123,32 @@ def run_primitive(
     except Exception as exc:  # noqa: BLE001 - converted to a code
         return _classify(exc)
     return ExecResult(ok=True)
+
+
+def _double_click_element(element: Any, UIA: Any) -> ExecResult:
+    """Double-click an element at its centre.
+
+    The rectangle is read fresh so the point reflects the element's current
+    position. Only reached through a pack-declared `double_click` step: UIA has
+    no DoubleClick pattern, so a few apps (QQ) cannot be opened any other way.
+    """
+    try:
+        element.SetFocus()
+    except Exception:
+        pass
+    try:
+        rect = element.CurrentBoundingRectangle
+        x = (rect.left + rect.right) // 2
+        y = (rect.top + rect.bottom) // 2
+    except Exception as exc:  # noqa: BLE001 - reported as a code
+        return ExecResult(
+            ok=False, error="ACTION_NOT_SUPPORTED", message=f"no bounds: {exc}"
+        )
+    if x <= 0 and y <= 0:
+        return ExecResult(
+            ok=False, error="ACTION_NOT_SUPPORTED", message="element has no area"
+        )
+    return double_click(x, y)
 
 
 def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
@@ -145,6 +179,12 @@ def _scroll(pat: Any, value: Any, UIA: Any) -> None:
 def _classify(exc: Exception) -> ExecResult:
     text = str(exc)
     name = type(exc).__name__
+    # A NULL COM pointer means the element we held is gone: the UIA element was
+    # released when the UI re-rendered. That is exactly the stale case, and
+    # reporting it as such lets the caller re-find instead of retrying a dead
+    # pointer (dev doc section 10).
+    if "NULL COM pointer" in text:
+        return ExecResult(ok=False, error="STALE_TARGET", message=text)
     if "ELEMENTNOTAVAILABLE" in text or "ElementNotAvailable" in name:
         return ExecResult(ok=False, error="STALE_TARGET", message=text)
     if "UIPI" in text or "AccessDenied" in name or "E_ACCESSDENIED" in text:

@@ -115,3 +115,19 @@ def test_enum_top_level_windows_returns_handles():
         assert isinstance(hwnd, int) and hwnd
         assert isinstance(pid, int)
         assert isinstance(title, str) and title
+
+
+def test_sendinput_structures_match_the_platform():
+    """SendInput fails with ERROR_INVALID_PARAMETER if INPUT is the wrong size.
+
+    INPUT is 40 bytes on x64 (DWORD type + 4 bytes padding + 32-byte union).
+    A short union silently breaks every keyboard and mouse action.
+    """
+    _windows()
+    import ctypes
+
+    from somnus.providers.windows import keyboard, mouse
+
+    expected = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+    assert ctypes.sizeof(keyboard._INPUT) == expected
+    assert ctypes.sizeof(mouse._INPUT) == expected

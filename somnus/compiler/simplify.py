@@ -39,14 +39,50 @@ def _meaningful(node: RawNode) -> bool:
 
 
 def simplify(root: RawNode) -> RawNode:
-    """Return a structurally reduced copy of ``root`` (in place)."""
-    root.children = [_simplify_child(c) for c in root.children]
-    root.children = [c for c in root.children if c is not None]
+    """Return a structurally reduced copy of ``root`` (in place).
+
+    Deliberately conservative: it removes empty leaves and transparent
+    single-child wrappers, but keeps named or otherwise *addressable* structure
+    intact, because pack matching runs right after and needs to see it. The
+    aggressive flattening of anonymous containers is a projection concern
+    (dev doc section 7.1), applied when the tree is rendered.
+    """
+    root.children = _promote_children(root.children, inline_anonymous=False)
     return root
 
 
+def _promote_children(
+    children: list[RawNode], *, inline_anonymous: bool = False
+) -> list[RawNode]:
+    """Simplify each child; optionally inline anonymous containers.
+
+    ``inline_anonymous`` is the aggressive mode used by the projection stage:
+    an unnamed container with no identity of its own is replaced by its children,
+    so many identical unnamed wrappers cannot hash to one fingerprint and make a
+    subtree ambiguous (dev doc sections 7.1, 8).
+    """
+    out: list[RawNode] = []
+    for child in children:
+        simplified = _simplify_child(child)
+        if simplified is None:
+            continue
+        if (
+            inline_anonymous
+            and simplified.role in CONTAINER_ROLES
+            and not simplified.name
+            and not simplified.value
+            and not simplified.native.automation_id
+            and not is_interactive(simplified.role, simplified.patterns)
+            and simplified.children
+        ):
+            out.extend(simplified.children)
+        else:
+            out.append(simplified)
+    return out
+
+
 def _simplify_child(node: RawNode) -> RawNode | None:
-    node.children = [c for c in (_simplify_child(c) for c in node.children) if c]
+    node.children = _promote_children(node.children)
 
     # A node that carries a child text which merely repeats its own name is an
     # accessibility artifact (WPF exposes a button's caption as a child

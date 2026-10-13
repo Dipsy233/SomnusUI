@@ -196,6 +196,7 @@ def compute_fingerprint(
     identity: str | None,
     name: str | None,
     ancestor_path: str = "",
+    role_index: int | None = None,
 ) -> str:
     """Build a stable identity hash for a semantic node.
 
@@ -207,6 +208,11 @@ def compute_fingerprint(
        evidence and it is deliberately excluded, so mutable labels such as a
        cart total never invalidate the ref.
     3. ``ancestor_path`` - semantic ancestor path as a last differentiator.
+    4. ``role_index`` - position among same-role siblings, used only when the
+       evidence above is empty. Without it, unnamed containers (every message
+       list, every wrapper pane) hash identically and the registry reports them
+       as ambiguous, which makes a whole app unoperable. It is role-relative,
+       not absolute, so adding a sibling of another role does not shift it.
 
     The runtime deliberately excludes ``value`` and mutable state: those change
     constantly and would make every ref stale (see dev doc section 8).
@@ -218,6 +224,16 @@ def compute_fingerprint(
         return " ".join(value.split()).casefold()
 
     stable = bool(identity)
+    # A caller-supplied index means "these siblings would otherwise collide", so
+    # it takes part regardless of the name: two buttons both named "更多" are
+    # distinct elements, and without this they would share a fingerprint and make
+    # each other unaddressable.
+    if role_index is not None:
+        index_part = str(role_index)
+    elif stable or norm(name):
+        index_part = ""
+    else:
+        index_part = ""
     payload = "\x1f".join(
         (
             entity or "",
@@ -225,6 +241,7 @@ def compute_fingerprint(
             norm(identity),
             "" if stable else norm(name),
             norm(ancestor_path),
+            index_part,
         )
     )
     return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
