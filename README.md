@@ -52,6 +52,65 @@ somnus record w1 -o fixture.json
 somnus mcp           # MCP server (stdio), 4 tools
 ```
 
+## What the LLM sees
+
+One real window, four tool calls. Nothing else is ever shown to the model.
+
+**① `observe`** - the current screen as capabilities (304 tokens for a
+Windows folder-properties dialog):
+
+```
+@rev 1
+WINDOW w1 "agent 属性" +scroll_into_view
+  SCREEN s1 "网络文件和文件夹共享"
+  TEXT tx3 "网络路径(N):"
+  INPUT q1 "网络路径(N):" readonly          ← a field, and it is read-only
+  BUTTON b1 "共享(S)..."                      ← clickable (activate is implicit)
+  BUTTON b2 "高级共享(D)..."
+  BUTTON b5 "应用(A)" disabled                ← currently unavailable
+  TAB t3 "共享"
+```
+
+**② `find`** - locate by keyword, returning whole entity lines:
+
+```
+FIND "共享"
+→ FOUND 7
+BUTTON b1 "共享(S)..."
+BUTTON b2 "高级共享(D)..."
+LINK lnk1 "网络和共享中心"
+```
+
+**③ `inspect`** - everything about one node (implicit caps and relations
+included):
+
+```
+INSPECT mi2
+→ MENUITEM mi2 "编辑" +activate +collapse +expand +focus +read selected_in=mn1
+```
+
+**④ `call`** - act, and get a delta instead of a fresh observation:
+
+```
+CALL tx1.set_text("Hello SomnusUI")
+→ OK_UNVERIFIED rev=2
+  ~ tx1 value →Hello SomnusUI                  changed
+  + TAB t4 "Hello SomnusUI. 已修改。" +close!   added
+  - t2                                          removed
+```
+
+Failures are one line with a recovery hint, never a stack trace:
+
+```
+ERR TARGET_DISABLED b5 hint=inspect
+ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
+ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
+```
+
+The model never sees a handle, a coordinate, an `AutomationId`, a process id,
+a COM pointer, a raw `control_type`, or the stacks of unnamed `Pane` wrappers a
+UIA dump contains. Full walkthrough: [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md).
+
 ## Providers
 
 The runtime talks to one `AccessibilityProvider`. Three exist, and the compiler,
@@ -146,7 +205,11 @@ somnus/
 ├── protocol/      tools.py mcp_server.py jsonrpc.py
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
-docs/packs.md           how to write an App Pack
+docs/
+  packs.md              how to write an App Pack
+  what-the-llm-sees.md  one window, four tools, with real output
+  comparison-ufo.md     measured against UFO on the same window
+  borrow-from-ufo.md    what was borrowed from UFO and what was rejected
 examples/               agent loop, contract check, task evaluation
 bench/                  metrics harness + LLM control demos
 tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
