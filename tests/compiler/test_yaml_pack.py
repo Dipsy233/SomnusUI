@@ -446,3 +446,97 @@ def test_settings_pack_selects_by_process():
 
     pack = select_pack("SystemSettings.exe")
     assert pack is not None and pack.id == "windows-settings"
+
+
+# ---------------------------------------------------------------------------
+# pack honesty: a capability must correspond to something the app can do
+# ---------------------------------------------------------------------------
+
+
+def test_pack_with_two_capabilities_sharing_one_via_is_rejected():
+    """Two names for the same call mean one of them is fabricated.
+
+    This is exactly how `+customize` appeared on the demo's products: it reused
+    the Add button's invoke, so `CALL p1.customize(...)` reported OK while
+    actually adding a product and dropping the argument.
+    """
+    from somnus.compiler.yaml_pack import validate_pack
+
+    pack = load_pack_dict(
+        {
+            "app": {"id": "x", "match": {"process": "x.exe"}},
+            "entities": {
+                "product": {
+                    "match": {"role": "group"},
+                    "caps": {
+                        "add": {"via": ["$add_btn.activate"]},
+                        "customize": {"via": ["$add_btn.activate"]},
+                    },
+                }
+            },
+        }
+    )
+    problems = validate_pack(pack)
+    assert any("share one via sequence" in p for p in problems)
+
+
+def test_pack_with_a_dropped_parameter_is_rejected():
+    """A parameter no step forwards would be silently discarded."""
+    from somnus.compiler.yaml_pack import validate_pack
+
+    pack = load_pack_dict(
+        {
+            "app": {"id": "x", "match": {"process": "x.exe"}},
+            "entities": {
+                "product": {
+                    "match": {"role": "group"},
+                    "caps": {
+                        "add": {
+                            "via": ["$add_btn.activate"],
+                            "params": {"size": {"type": "enum", "enum": ["small"]}},
+                        }
+                    },
+                }
+            },
+        }
+    )
+    problems = validate_pack(pack)
+    assert any("never forwarded" in p for p in problems)
+
+
+def test_honest_packs_validate_clean():
+    from somnus.compiler.yaml_pack import validate_pack
+
+    for pack_id in ("notepad", "explorer", "windows-settings", "qq"):
+        pack = get_pack(pack_id)
+        assert validate_pack(pack) == [], pack_id
+
+
+def test_set_text_parameters_are_not_flagged():
+    """set_text consumes its argument positionally, so that is not a problem."""
+    from somnus.compiler.yaml_pack import validate_pack
+
+    pack = load_pack_dict(
+        {
+            "app": {"id": "x", "match": {"process": "x.exe"}},
+            "entities": {
+                "field": {
+                    "match": {"role": "input"},
+                    "caps": {
+                        "set_text": {
+                            "via": ["$self.set_text"],
+                            "params": {"text": {"type": "string", "required": True}},
+                        }
+                    },
+                }
+            },
+        }
+    )
+    assert validate_pack(pack) == []
+
+
+def test_demo_products_advertise_only_what_the_ui_has():
+    """The acceptance app has one button per product; `add` is the whole surface."""
+    pack = get_pack("restaurant-demo")
+    product = pack.find_entity_def("product")
+    assert set(product.caps) == {"add"}

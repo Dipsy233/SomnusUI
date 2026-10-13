@@ -98,7 +98,9 @@ def test_call_unknown_ref():
 def test_call_invalid_argument():
     session = _new_session()
     session.observe()
-    out = session.dispatch('CALL p1.customize(size="gigantic")')
+    # `add` takes no parameters, so a named argument is rejected rather than
+    # being silently dropped.
+    out = session.dispatch('CALL p1.add(size="large")')
     assert out.startswith("ERR INVALID_ARGUMENT")
 
 

@@ -51,16 +51,15 @@ PRODUCT = EntityDef(
         "price": {"from": "$price_text.name", "regex": r"(\d+[.,]\d{2})", "cast": "number"},
     },
     caps={
+        # Only capabilities the application actually offers. The demo's product
+        # row has exactly one control -- the Add button -- so `add` is the whole
+        # surface. Declaring anything else (a size picker, say) would advertise
+        # an operation nothing can perform, and a silent `via` reuse would make
+        # the call appear to succeed while doing something else.
         "add": EntityCapDef(
             name="add",
             via=["$add_btn.activate"],
             effects=["cart.count += 1"],
-            risk="normal",
-        ),
-        "customize": EntityCapDef(
-            name="customize",
-            via=["$add_btn.activate"],
-            params={"size": ParamSpec(type="enum", enum=("small", "medium", "large"))},
             risk="normal",
         ),
     },

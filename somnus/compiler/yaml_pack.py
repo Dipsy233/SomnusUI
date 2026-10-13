@@ -109,8 +109,62 @@ def load_pack_dict(data: dict[str, Any]) -> Pack:
     )
 
 
+def validate_pack(pack: Pack) -> list[str]:
+    """Return the problems that make a pack advertise operations it cannot do.
+
+    A pack is a claim about what the application offers, and an untrue claim is
+    worse than a missing one: the LLM acts on it and the call appears to work
+    while doing something else. Two shapes are checked, both of which mean the
+    same thing - a capability with nothing behind it.
+
+    * two capabilities of one entity with an identical ``via`` (they resolve to
+      the very same native call, so only one of them is real);
+    * a declared parameter that no step forwards (the value would be dropped
+      silently, and the call would report success).
+    """
+    problems: list[str] = []
+    for entity in pack.entities:
+        by_via: dict[tuple, list[str]] = {}
+        for cap in entity.caps.values():
+            key = tuple(
+                (str(step.get("primitive", "")), str(step.get("target", "$self")),
+                 str(step.get("value", "")))
+                if isinstance(step, dict)
+                else (str(step), "", "")
+                for step in cap.via
+            )
+            by_via.setdefault(key, []).append(cap.name)
+        for names in by_via.values():
+            if len(names) > 1:
+                problems.append(
+                    f"{pack.id}.{entity.name}: {names} share one via sequence, so they "
+                    f"resolve to the same call - only one is a real capability"
+                )
+        for cap in entity.caps.values():
+            for param in cap.params:
+                if any(
+                    isinstance(step, dict) and step.get("value") == f"${param}"
+                    for step in cap.via
+                ):
+                    continue
+                # `set_text` / `type_text` take their text from the call's one
+                # positional argument when no step forwards it, so a parameter
+                # there is genuinely consumed (see the resolver).
+                primitives = {
+                    step.get("primitive") if isinstance(step, dict) else str(step).rsplit('.', 1)[-1]
+                    for step in cap.via
+                }
+                if primitives & {"set_text", "type_text", "app_api"}:
+                    continue
+                problems.append(
+                    f"{pack.id}.{entity.name}.{cap.name}: parameter '{param}' is "
+                    f"never forwarded by a via step, so its value would be dropped"
+                )
+    return problems
+
+
 def load_pack_file(path: str | Path) -> Pack:
-    """Parse one ``*.pack.yaml`` file and register it."""
+    """Parse one ``*.pack.yaml`` file, check it, and register it."""
     if yaml is None:  # pragma: no cover - optional dependency
         raise PackLoadError("PyYAML is required to load YAML packs")
     path = Path(path)
@@ -118,6 +172,11 @@ def load_pack_file(path: str | Path) -> Pack:
     if not isinstance(data, dict):
         raise PackLoadError(f"{path}: top level must be a mapping")
     pack = load_pack_dict(data)
+    problems = validate_pack(pack)
+    if problems:
+        # Fail loud: a pack that claims capabilities the app cannot perform is
+        # worse than one that claims too few (dev doc section 11.2).
+        raise PackLoadError(f"{path}: " + "; ".join(problems))
     register(pack)
     return pack
 
