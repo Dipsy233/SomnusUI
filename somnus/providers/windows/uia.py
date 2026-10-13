@@ -374,8 +374,16 @@ class UiaProvider:
         if scope is not None:
             root_el = self._find_by_native(el, scope) or el
 
-        self._element_cache.clear()
-        root = self._build_node(root_el, depth=0, max_depth=max_depth, path=())
+        # Nodes built from this snapshot must carry the window they belong to,
+        # otherwise execute() later locates them under the wrong root (histori-
+        # cally everything defaulted to "w1", which made actions on window w3
+        # land on window w1's process - a cross-window safety bug).
+        self._current_window_id = window_id
+        try:
+            self._element_cache.clear()
+            root = self._build_node(root_el, depth=0, max_depth=max_depth, path=())
+        finally:
+            self._current_window_id = None
         return RawTree(window=win_info, root=root, raw_revision=0)
 
     def _build_node(
