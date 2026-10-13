@@ -7,6 +7,8 @@ so the suite stays green on a machine with no browser open.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from somnus.ir.node import NativeRef
@@ -112,6 +114,7 @@ def test_disabled_and_expanded_states():
 # ---------------------------------------------------------------------------
 
 _cdp_targets = discover_targets()
+_FIXTURE_PAGE = Path(__file__).resolve().parents[1] / "fixtures" / "cdp_test_page.html"
 
 
 @pytest.mark.skipif(not _cdp_targets, reason="no browser debug port reachable")
@@ -125,4 +128,33 @@ def test_live_cdp_produces_a_semantic_tree():
     observation = session.observe()
     assert observation.text.startswith("@rev")
     assert "WINDOW" in observation.text
+    provider.close()
+
+
+@pytest.mark.skipif(not _cdp_targets, reason="no browser debug port reachable")
+def test_live_cdp_reads_and_drives_a_form():
+    """A form page reads as INPUT/CHECKBOX/BUTTON and its handlers really run."""
+    import time
+
+    from somnus.providers.cdp import CdpProvider
+    from somnus.runtime.session import Session
+
+    provider = CdpProvider()
+    targets = provider.list_windows()
+    conn = provider._connection(targets[0].window_id)
+    conn.send("Page.enable")
+    conn.send("Page.navigate", {"url": _FIXTURE_PAGE.as_uri()})
+    time.sleep(2.0)
+
+    session = Session(provider)
+    session.observe()
+    roles = {n.role for n in session.result.root.walk()}
+    assert {"input", "checkbox", "button"} <= roles
+
+    field = next(n for n in session.result.root.walk() if n.name == "用户名" and n.role == "input")
+    out = session.dispatch(f'CALL {field.ref}.set_text("alice")')
+    assert out.startswith("OK"), out
+    # The page's own input handler ran, so its status text changed.
+    session.observe()
+    assert any("alice" in (n.name or "") for n in session.result.root.walk())
     provider.close()

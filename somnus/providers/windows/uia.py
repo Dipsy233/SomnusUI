@@ -255,9 +255,8 @@ class UiaProvider:
               Window "Settings" pid=<real> (SystemSettings.exe)  <- different pid
 
         Walking the *immediate children* and taking the first with a different
-        pid yields the real app process (the approach used by the reference
-        Touchpoint backend; a subtree search for a class name is less reliable
-        because UWP content is built lazily).
+        pid yields the real app process. A subtree search for a class name is
+        less reliable because UWP content is built lazily.
         """
         try:
             walker = self._auto.ControlViewWalker

@@ -148,22 +148,6 @@ CALL tx1.set_text("Hello SomnusUI")
 
 ---
 
-## 同一个窗口，UFO 会给什么
-
-对照 `docs/comparison-ufo.md` 的实测：
-
-| | SomnusUI | UFO |
-|---|---|---|
-| 上面那个属性窗口 | 304 tokens | 原始 JSON，含每个节点的 3 组矩形坐标 |
-| QQ 窗口（实测） | 393 tokens / 42 行 | 58,175 字符 / ~14.5k tokens |
-| 坐标 | 0 处 | 每节点 3 处 |
-| 无名空容器 | flatten 掉 | 全部保留（曾见连续 8 层空 Pane） |
-| 能力标注 | 行内 `+activate` / `+disabled` | 无，靠 `control_type` 猜 |
-| 动作 | `CALL b2.activate()` | `click_input(id, name)` 或 `click_on_coordinates(x, y)` |
-| 结果 | delta（`~` / `+` / `-`） | 返回值，需再 `get_ui_tree` 对比 |
-
----
-
 ## 复现
 
 ```bash

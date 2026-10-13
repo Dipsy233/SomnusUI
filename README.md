@@ -208,10 +208,11 @@ apps/restaurant-demo/   WPF (.NET 8) acceptance app
 docs/
   packs.md              how to write an App Pack
   what-the-llm-sees.md  one window, four tools, with real output
-  comparison-ufo.md     measured against UFO on the same window
-  borrow-from-ufo.md    what was borrowed from UFO and what was rejected
 examples/               agent loop, contract check, task evaluation
 bench/                  metrics harness + LLM control demos
+  run.py                the benchmark gates
+  demo_llm.py           end-to-end demo on the mock backend (any platform)
+  demo_notepad.py       the same tools against a live Notepad
 tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
 ```
 
@@ -241,9 +242,7 @@ CALL l1.list_files(path=".")
 This matters because a spreadsheet has a data model: reading its cells is both
 cheaper and more reliable than clicking copy and scraping the clipboard, and
 some operations (rename a sheet, set a document's author, run a CLI) have no
-control at all. Borrowed from UFO's "unified GUI-API action layer" (dev doc
-section 20); see [docs/borrow-from-ufo.md](docs/borrow-from-ufo.md) for what else
-was considered and rejected.
+control at all (dev doc section 20).
 
 ## App Packs
 

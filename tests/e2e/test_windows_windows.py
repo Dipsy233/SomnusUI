@@ -2,7 +2,7 @@
 
 These tests do not need a live desktop: they exercise the pure decision helpers
 and the UWP process-resolution walk with lightweight stands-ins, which is what
-the reference implementations (Touchpoint, UFO) rely on to see UWP apps at all.
+makes UWP apps visible at all.
 """
 
 from __future__ import annotations

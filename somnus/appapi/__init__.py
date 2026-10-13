@@ -1,15 +1,9 @@
 """App API channel: reach an application's own interface, not its pixels.
 
-Dev doc section 20 names UFO's "unified GUI-API action layer" as the thing worth
-borrowing, and it is emphatically *not* a vision feature: UFO drives Word, Excel,
-PowerPoint and the shell through their COM/CLI interfaces, reading and writing
-structured data directly.
-
-This module is that channel for SomnusUI. A capability step can name an
-``app_api`` action instead of a native primitive, and the runtime routes it to a
-registered :class:`AppApiHandler` for the target application. Nothing about the
-LLM surface changes: it still calls ``CALL x.do()``; only the resolution of the
-last step differs.
+A capability step can name an ``app_api`` action instead of a native primitive,
+and the runtime routes it to a registered :class:`AppApiHandler` for the target
+application. Nothing about the LLM surface changes: it still calls
+``CALL x.do()``; only the resolution of the last step differs.
 
 Why this matters even though UIA already works:
 
