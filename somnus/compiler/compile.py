@@ -230,11 +230,26 @@ class Compiler:
 
     def _annotate_collections(self, root: SemanticNode) -> None:
         for node in root.walk():
-            if node.entity or not node.children:
+            if node.entity:
+                continue
+            # A virtualised container may have no realised rows yet; annotate it
+            # so the agent sees an unknown/lower-bound count (dev doc section 13).
+            if not node.children and node.virtual_count != -1:
                 continue
             child_entities = {c.entity for c in node.children if c.entity}
+            if not node.children and node.virtual_count == -1:
+                # Virtualised with nothing realised: total is unknown.
+                node.attrs["count"] = None
+                self._add_find_cap(node)
+                continue
+            if node.virtual_count == -1 and node.children:
+                # Virtualised with some rows realised: count is a lower bound.
+                if len(child_entities) == 1:
+                    node.attrs["entity"] = next(iter(child_entities))
+                node.attrs["count_min"] = len(node.children)
+                self._add_find_cap(node)
+                continue
             if len(child_entities) == 1 and len(node.children) >= 1:
-                entity = next(iter(child_entities))
                 # Only annotate containers, not arbitrary parents.
                 if node.role in (
                     "list",
@@ -245,19 +260,30 @@ class Compiler:
                     "screen",
                     "row",
                 ):
-                    node.attrs["entity"] = entity
+                    node.attrs["entity"] = next(iter(child_entities))
                     node.attrs["count"] = len(node.children)
-                    from somnus.ir.capability import Capability, PrimitiveStep
+                    self._add_find_cap(node)
+                return
+            # A plain collection (no single entity type) still reports its size
+            # when it is a recognised container, so the agent knows how much it
+            # is not seeing. Entity-less groups keep their child lines.
+            if node.role in ("list", "tree", "table") and node.children:
+                node.attrs["count"] = len(node.children)
+                self._add_find_cap(node)
 
-                    if not node.get_cap("find"):
-                        node.caps.append(
-                            Capability(
-                                name="find",
-                                level="semantic",
-                                via=[PrimitiveStep(primitive="read", target="$self")],
-                                risk="safe",
-                            )
-                        )
+    @staticmethod
+    def _add_find_cap(node: SemanticNode) -> None:
+        from somnus.ir.capability import Capability, PrimitiveStep
+
+        if not node.get_cap("find"):
+            node.caps.append(
+                Capability(
+                    name="find",
+                    level="semantic",
+                    via=[PrimitiveStep(primitive="read", target="$self")],
+                    risk="safe",
+                )
+            )
 
     # -- tree building ------------------------------------------------------
 

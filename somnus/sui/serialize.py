@@ -154,6 +154,11 @@ def render_node_line(
 
     # 3. Attributes (entity attrs + generic numeric ones).
     for key, value in _ordered_attrs(node):
+        if key == "count_min":
+            # A virtualised collection only realises part of its rows, so the
+            # count is a lower bound (dev doc section 13): `count>=N`.
+            parts.append(f"count>={value}")
+            continue
         parts.append(f"{key}={_render_value(value, key, options)}")
 
     # 4. Flags (deviations from default only).

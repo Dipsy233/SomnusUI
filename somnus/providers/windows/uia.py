@@ -344,6 +344,12 @@ class UiaProvider:
                             child, depth + 1, max_depth, path + (i,)
                         )
                     )
+                # A virtualising container only realises its visible items, so
+                # the child count is a lower bound, not the true total (dev doc
+                # section 13). Mark it unknown rather than reporting a wrong
+                # number: -1 renders as `count>=N`.
+                if "itemcontainer" in patterns and n > 0:
+                    virtual_count = -1
             except Exception as exc:  # pragma: no cover - platform
                 log.debug("child enumeration failed: %s", exc)
                 truncated = True

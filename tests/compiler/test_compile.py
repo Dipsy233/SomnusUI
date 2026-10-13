@@ -104,3 +104,49 @@ def test_disabled_state_blocks_capability():
     result = Compiler().compile(tree, pack=get_pack("restaurant-demo"))
     checkout = next(n for n in result.root.walk() if n.entity == "checkout")
     assert "disabled" in checkout.states
+
+
+def test_virtualised_collection_count_is_a_lower_bound():
+    """A virtualising list only realises some rows: count is `count>=N`."""
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+    from somnus.sui.serialize import render_node_line
+
+    def n(role, name=None, children=(), patterns=(), vc=None):
+        x = RawNode(
+            native=NativeRef("w1", (abs(hash((role, name))) % 9999,), class_name="x"),
+            role=role, name=name, patterns=frozenset(patterns), children=list(children),
+        )
+        x.virtual_count = vc
+        return x
+
+    rows = [n("listitem", name=f"row{i}") for i in range(3)]
+    virt = n("list", name="Items", children=rows,
+             patterns=("selection", "itemcontainer"), vc=-1)
+    empty = n("list", name="Empty", children=[],
+              patterns=("selection", "itemcontainer"), vc=-1)
+    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1),
+                   root=n("window", children=[virt, empty]))
+    result = Compiler().compile(tree)
+
+    lines = {x.name: render_node_line(x) for x in result.root.walk() if x.role == "list"}
+    assert "count>=3" in lines["Items"]
+    assert "count=?" in lines["Empty"]
+
+
+def test_non_virtualised_collection_count_is_exact():
+    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+    from somnus.sui.serialize import render_node_line
+
+    def n(role, name=None, children=(), patterns=()):
+        return RawNode(
+            native=NativeRef("w1", (abs(hash((role, name))) % 9999,), class_name="x"),
+            role=role, name=name, patterns=frozenset(patterns), children=list(children),
+        )
+
+    rows = [n("listitem", name=f"row{i}") for i in range(3)]
+    plain = n("list", name="Items", children=rows, patterns=("selection",))
+    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1),
+                   root=n("window", children=[plain]))
+    result = Compiler().compile(tree)
+    line = next(render_node_line(x) for x in result.root.walk() if x.role == "list")
+    assert "count=3" in line and ">=" not in line
