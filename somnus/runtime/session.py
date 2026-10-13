@@ -389,8 +389,12 @@ class Session:
                 verifier.capture(entity_node.ref)
 
         # Execute steps in order, with a per-step timeout.
+        app_api_values: list[Any] = []
         for step in resolution.steps:
-            exec_result = self.provider.execute(step.native, step.primitive, step.value)
+            if step.primitive == "app_api":
+                exec_result = self._invoke_app_api(step)
+            else:
+                exec_result = self.provider.execute(step.native, step.primitive, step.value)
             self._audit_action(action, step, exec_result)
             if not exec_result.ok and not exec_result.undetermined:
                 code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
@@ -399,6 +403,10 @@ class Session:
             if exec_result.undetermined:
                 # A modal dialog may be opening; settle will capture it.
                 break
+            if step.primitive == "app_api" and exec_result.value is not None:
+                # Keep the structured result so it can be reported back instead
+                # of being scraped out of the UI (dev doc section 20).
+                app_api_values.append(exec_result.value)
 
         # Settle, recompile, compute delta, verify.
         tree, settle_result = self.settler.wait(
@@ -424,6 +432,16 @@ class Session:
         text = f"{verify.status} rev={self.rev}"
         if not settle_result.settled:
             text += " settled=false"
+        # An app-API step can return structured data; report it directly rather
+        # than making the caller scrape it back out of the UI.
+        if app_api_values:
+            import json as _json
+
+            for value in app_api_values:
+                rendered = _json.dumps(value, ensure_ascii=False)
+                if len(rendered) > 2000:
+                    rendered = rendered[:2000] + "…"
+                text += f"\n= {rendered}"
         body = self.delta_text(delta)
         if body:
             text += "\n" + body
@@ -457,6 +475,25 @@ class Session:
                         f"try one of: {', '.join(holders)}"
                     )
             raise
+
+    def _invoke_app_api(self, step) -> "Any":
+        """Route an ``app_api`` step to the target application's own interface.
+
+        Resolution is by the session's process, so the same capability works
+        whether the app is driven through its UI or its API; the LLM never sees
+        which path was taken (dev doc section 20).
+        """
+        from somnus.appapi import REGISTRY
+        from somnus.ir.action import ExecResult
+
+        handler = REGISTRY.for_process(self._target_process())
+        if handler is None:
+            return ExecResult(
+                ok=False,
+                error="ACTION_NOT_SUPPORTED",
+                message=f"no app api for {self._target_process() or 'unknown'}",
+            )
+        return handler.invoke(step.app_action or "", dict(step.app_params))
 
     def _capability_holders(self, capability: str, *, limit: int = 3) -> list[str]:
         """Refs (with names) of nodes that expose ``capability``."""

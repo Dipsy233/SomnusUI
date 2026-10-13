@@ -156,6 +156,32 @@ Dependency direction (enforced in CI): `providers → compiler → projection �
 serialization → protocol`; `runtime` depends on all of them; nothing imports an
 LLM.
 
+## App API channel
+
+A capability's `via` step can name an `app_api` action instead of a native
+primitive, and the runtime routes it to the application's own interface (COM,
+CLI, script) rather than driving its controls. The LLM surface is unchanged: it
+still calls `CALL x.do()`, and does not know which channel was used.
+
+```yaml
+caps:
+  list_files:
+    via: [{ primitive: app_api, target: list, value: { path: "$path" } }]
+```
+
+```
+CALL l1.list_files(path=".")
+→ OK_UNVERIFIED rev=2
+  = [".git", "apps", "bench", "docs", "somnus", "tests"]   ← the app's data
+```
+
+This matters because a spreadsheet has a data model: reading its cells is both
+cheaper and more reliable than clicking copy and scraping the clipboard, and
+some operations (rename a sheet, set a document's author, run a CLI) have no
+control at all. Borrowed from UFO's "unified GUI-API action layer" (dev doc
+section 20); see [docs/borrow-from-ufo.md](docs/borrow-from-ufo.md) for what else
+was considered and rejected.
+
 ## App Packs
 
 A pack gives an application a domain vocabulary, turning the control tree into
