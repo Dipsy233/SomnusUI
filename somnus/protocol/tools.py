@@ -67,8 +67,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "call",
         "description": (
-            "Invoke a capability: CALL <ref>.<cap>(args). Returns OK/ERR plus a "
-            "delta of what changed. Critical capabilities require confirmation."
+            "Invoke a capability: CALL <ref>.<cap>(args). A capability belongs to "
+            "the node it is printed on - to add a product call CALL p1.add(), "
+            "not CALL c1.add(). Returns OK/ERR plus a delta of what changed. "
+            "Critical capabilities require confirmation."
         ),
         "inputSchema": {
             "type": "object",

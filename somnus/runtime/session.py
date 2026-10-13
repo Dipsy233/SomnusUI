@@ -54,6 +54,14 @@ class CallOutcome:
     settled: bool = True
 
 
+@dataclass(slots=True)
+class _FindHit:
+    """A find match; ``is_entity`` marks domain entities (rendered first)."""
+
+    node: SemanticNode
+    is_entity: bool = False
+
+
 class Session:
     def __init__(
         self,
@@ -182,13 +190,19 @@ class Session:
     # ------------------------------------------------------------------ observe
 
     def observe(self, window: str | None = None, *, level: int = 0) -> Observation:
+        # Observation is read-only and side-effect free, so an unknown window ref
+        # must not dead-end the agent: fall back to the default window and let
+        # the resulting overview show the real refs (dev doc section 6.4).
         if window:
             win = self._window_by_ref(window)
-            if win is None:
-                raise target_not_found(window)
-            self.target_window = win.window_id
+            if win is not None:
+                self.target_window = win.window_id
         if not self.windows:
             self.refresh_windows()
+        if self.target_window is None and self.windows:
+            self.target_window = next(
+                (w.window_id for w in self.windows if w.active), self.windows[0].window_id
+            )
 
         result = self._recompile()
         budget = self.budget.for_level(level) if level else self.budget
@@ -259,26 +273,36 @@ class Session:
                 raise target_not_found(scope)
             scope_ids = {n.ref for n in scope_node.walk()}
 
-        matches: list[SemanticNode] = []
+        matches: list[_FindHit] = []
         query = action.query
+        # Refs of nodes already covered by a matched entity.
+        covered: set[str] = set()
         for node in nodes:
             if scope_ids is not None and node.ref not in scope_ids:
                 continue
             if entity_filter and (node.entity or node.role) != entity_filter:
                 continue
-            if entity_filter is None and not (node.entity or node.role in ("button", "input")):
-                # FIND without type searches entities first, then named controls.
-                pass
             if not _node_matches(node, query):
                 continue
-            matches.append(node)
+            # Without an explicit type, a matched entity hides its own text
+            # children so the agent sees one line per entity, not the label
+            # inside it (dev doc section 6.4).
+            if node.entity is None and entity_filter is None:
+                if node.role not in ("button", "input", "link", "menuitem") and not (
+                    node.layer in ("screen", "dialog")
+                ):
+                    continue
+            matches.append(_FindHit(node, is_entity=node.entity is not None))
+            if node.entity is not None:
+                covered.update(c.ref for c in node.children)
+        matches = [m for m in matches if m.node.ref not in covered]
 
         if not matches:
             return "FOUND 0"
         out = [f"FOUND {len(matches)}"]
         opts = RenderOptions(include_default_caps=False)
-        for node in matches[:limit]:
-            out.append(render_node_line(node, opts))
+        for hit in matches[:limit]:
+            out.append(render_node_line(hit.node, opts))
         if len(matches) > limit:
             out.append(f"… +{len(matches) - limit} more")
         return "\n".join(out)
@@ -345,7 +369,7 @@ class Session:
         resolver = Resolver(self.result)
         before_index = index_by_fingerprint(self.result.root)
 
-        resolution = resolver.resolve(action)
+        resolution = self._resolve_with_hint(resolver, action)
         self.policy.check_process(self._target_process())
         self.policy.check_action(resolution, confirmed=confirmed)
 
@@ -415,6 +439,37 @@ class Session:
         return delta.render()
 
     # ------------------------------------------------------------------ helpers
+
+    def _resolve_with_hint(self, resolver: "Resolver", action: Action):
+        """Resolve an action, turning a missing capability into a hint that names
+        the nodes which do expose it (e.g. `add` lives on the product, not the
+        cart), so the agent can retarget instead of looping."""
+        from somnus.errors import ErrorCode as _E
+
+        try:
+            return resolver.resolve(action)
+        except SomnusError as err:
+            if err.code == _E.CAPABILITY_NOT_FOUND and action.capability:
+                holders = self._capability_holders(action.capability)
+                if holders:
+                    err.message = (
+                        f"{action.ref} has no {action.capability}; "
+                        f"try one of: {', '.join(holders)}"
+                    )
+            raise
+
+    def _capability_holders(self, capability: str, *, limit: int = 3) -> list[str]:
+        """Refs (with names) of nodes that expose ``capability``."""
+        if self.result is None:
+            return []
+        out: list[str] = []
+        for node in self.result.root.walk():
+            if capability in node.cap_names():
+                label = node.ref + (f" ({node.name})" if node.name else "")
+                out.append(label)
+            if len(out) >= limit:
+                break
+        return out
 
     def _target_process(self) -> str:
         win = self._window_by_ref(self.target_window or "")

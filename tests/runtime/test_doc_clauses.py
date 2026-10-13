@@ -8,6 +8,7 @@ TARGET_AMBIGUOUS (section 10) and the plain-text protocol (section 6.4).
 from __future__ import annotations
 
 from somnus.compiler.compile import Compiler
+from somnus.ir.action import Action
 from somnus.ir.node import NativeRef, RawNode, RawTree, SemanticNode, WindowInfo
 from somnus.packs import get_pack
 from somnus.providers.mock import MockProvider
@@ -211,3 +212,57 @@ def test_dispatch_lines_plain_text_protocol():
     assert "OK rev=" in out
     assert "~ c1 count 0→1" in out
     assert "~ c1 count 1→2" in out
+
+
+# --------------------------------------------------------- middleware contract
+
+
+def test_find_without_type_hides_entity_children():
+    """`find "Big Mac"` returns the entity, not its inner label text too."""
+    session = Session(
+        MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    )
+    session.observe()
+    out = session.find(Action(kind="find", query="Big Mac"))
+    assert out.startswith("FOUND 1")
+    assert out.count("PRODUCT") == 1
+    assert "TEXT" not in out
+
+
+def test_observe_unknown_window_falls_back():
+    """An unknown window ref must not dead-end a read-only observation."""
+    session = Session(
+        MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    )
+    text = session.observe(window="w999").text
+    assert "Restaurant Demo" in text
+
+
+def test_call_prefix_tolerated_at_tool_boundary():
+    from somnus.sui.parse import parse_action
+
+    bare = parse_action("p1.add()")
+    assert bare.kind == "call" and bare.ref == "p1" and bare.capability == "add"
+
+
+def test_capability_error_names_the_owner():
+    """A missing capability must hint where it lives, for recovery."""
+    session = Session(
+        MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    )
+    session.observe()
+    out = session.dispatch("CALL c1.add(p1)")
+    assert out.startswith("ERR CAPABILITY_NOT_FOUND")
+    assert "p1" in out  # points at the product that owns `add`
+
+
+def test_open_produces_a_visible_screen_delta():
+    """`open` shows up as an added screen, and is idempotent on repeat."""
+    session = Session(
+        MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    )
+    session.observe()
+    first = session.dispatch("CALL c1.open()")
+    assert '+ SCREEN' in first and '"cart"' in first
+    second = session.dispatch("CALL c1.open()")
+    assert "-" not in second and "~" not in second and "+ SCREEN" not in second

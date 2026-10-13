@@ -71,7 +71,11 @@ class SomnusError(Exception):
 
 
 def parse_error(msg: str | None = None) -> SomnusError:
-    return SomnusError(ErrorCode.PARSE_ERROR, message=msg)
+    """A syntax error; the message names the expected form so the model can fix it."""
+    detail = msg or "bad syntax"
+    return SomnusError(
+        ErrorCode.PARSE_ERROR, message=f"{detail}; use CALL ref.cap(args)"
+    )
 
 
 def target_not_found(ref: str) -> SomnusError:

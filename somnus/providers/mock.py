@@ -291,6 +291,12 @@ class MockProvider:
                     self._trees[node.native.window_id].root, node
                 )
             _cart_add(self._trees[node.native.window_id].root, float(price or 0.0))
+        elif op == "open_screen":
+            _open_screen(
+                self._trees[node.native.window_id].root,
+                mut.get("name", "cart"),
+                mut.get("count_text", ""),
+            )
 
 
 def _as_number(text: str | None) -> float | None:
@@ -306,12 +312,44 @@ def _cart_add(root: RawNode, price: float) -> None:
     """Simulate adding an item: bump the cart's count/total text node."""
     for node in root.walk():
         if node.native.automation_id == "cart_count" and node.name:
-            m = count_re.search(node.name)
-            t = total_re.search(node.name)
+            m = _COUNT_RE.search(node.name)
+            t = _TOTAL_RE.search(node.name)
             count = int(m.group(1)) + 1 if m else 1
             total = (float(t.group(1)) if t else 0.0) + price
             node.name = f"{count} items ${total:.2f}"
             return
+
+
+def _open_screen(root: RawNode, name: str, count_text: str) -> None:
+    """Add (or refresh) a named child screen, so an `open` shows up in the
+    delta as ``+ SCREEN s? "<name>"`` (dev doc section 19.1).
+
+    Idempotent: opening twice does not add the screen again.
+    """
+    for node in root.children:
+        if node.name == name and node.role in ("group", "pane", "list"):
+            return
+    idx = len(root.children)
+    screen = RawNode(
+        native=NativeRef(root.native.window_id, (5000 + idx,), class_name="Demo"),
+        role="group",
+        name=name,
+        children=[
+            RawNode(
+                native=NativeRef(root.native.window_id, (5100 + idx,), class_name="Demo"),
+                role="text",
+                name=count_text or "",
+                patterns=frozenset({"text"}),
+            ),
+            RawNode(
+                native=NativeRef(root.native.window_id, (5200 + idx,), class_name="Demo"),
+                role="button",
+                name="Close",
+                patterns=frozenset({"invoke"}),
+            ),
+        ],
+    )
+    root.children.append(screen)
 
 
 import re as _re

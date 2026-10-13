@@ -31,6 +31,12 @@ _CALL_RE = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
+#: ``ref.cap(args)`` with the CALL keyword omitted (tool-boundary tolerance).
+_BARE_CALL_RE = re.compile(
+    r"^[a-z]{1,3}[0-9]+\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\(.*\)\s*$",
+    re.IGNORECASE,
+)
+
 _FIND_RE = re.compile(
     r"""^FIND\s+
         (?:(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+)?
@@ -85,6 +91,12 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     if m:
         return _parse_call(m, rev, raw)
 
+    # Tolerance at the tool boundary: models frequently drop the leading CALL.
+    # ``b1.activate()`` is unambiguous, so accept it while the *specified*
+    # syntax (and everything the runtime emits) stays ``CALL b1.activate()``.
+    if _BARE_CALL_RE.match(raw):
+        return parse_action("CALL " + raw, rev)
+
     m = _FIND_RE.match(raw)
     if m:
         return _parse_find(m, raw)
@@ -107,7 +119,6 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     if head in FORBIDDEN_VERBS:
         raise parse_error(f"primitive verb '{head}' is not allowed")
     raise parse_error(f"unrecognized action: {raw[:60]}")
-
 
 def parse_find(text: str) -> Action:
     raw = text.strip()

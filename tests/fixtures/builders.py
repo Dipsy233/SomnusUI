@@ -116,12 +116,13 @@ def restaurant_demo_tree(
     return RawTree(window=window, root=screen, raw_revision=1)
 
 
-#: Mock action scripts for the restaurant demo (activate an Add button).
-#: Keyed by ``<button name>:activate`` so only the Add buttons mutate the cart.
+#: Mock action scripts for the restaurant demo (activate an Add / Open button).
+#: Keyed by ``<button name>:activate`` so only the matching button mutates state.
 DEMO_SCRIPTS = {
     "Add:activate": [{"op": "cart_add"}],
     "\u52a0\u5165:activate": [{"op": "cart_add"}],
     "\u6dfb\u52a0:activate": [{"op": "cart_add"}],
+    "Open Cart:activate": [{"op": "open_screen", "name": "cart"}],
 }
 
 
