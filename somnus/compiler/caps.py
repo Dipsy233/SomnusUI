@@ -69,6 +69,17 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
         cap.via = [PrimitiveStep(primitive="set_text", target="$self", value="$text")]
         caps.setdefault("set_text", cap)
+    elif role == "input" and "value" not in patterns:
+        # Rich-text editors (QQ's ProseMirror box, CodeMirror panes) expose no
+        # Value pattern but accept keyboard input. Route set_text through
+        # focus + unicode typing so generic mode can still write to them
+        # (found live: QQ's message box was unfillable without this).
+        cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
+        cap.via = [
+            PrimitiveStep(primitive="focus", target="$self"),
+            PrimitiveStep(primitive="type_text", target="$self", value="$text"),
+        ]
+        caps.setdefault("set_text", cap)
 
     if "toggle" in patterns or role in ("checkbox", "switch"):
         caps.setdefault("toggle", _cap("toggle"))

@@ -7,6 +7,8 @@ the values listed here, regardless of provider quirks.
 
 from __future__ import annotations
 
+import re
+
 from somnus.ir.node import RawNode
 
 #: Portable primitive roles (dev doc section 4.3).
@@ -36,6 +38,7 @@ ROLES: frozenset[str] = frozenset(
         "pane",
         "window",
         "dialog",
+        "document",
         "toolbar",
         "statusbar",
         "progressbar",
@@ -64,7 +67,10 @@ ROLE_ALIASES: dict[str, str] = {
     "menubar": "menu",
     "menuitem": "menuitem",
     "tooltip": "text",
-    "document": "text",
+    # An editable document (Notepad's RichEditD2DPT editor, Word docs in
+    # UIA) exposes a Value pattern and takes text: it is an input, not a
+    # text label. Disambiguated in normalize_role below.
+    "document": "document",
     "header": "row",
     "headeritem": "row",
     "appbar": "toolbar",
@@ -149,6 +155,10 @@ def normalize_role(raw_role: str, has_name: bool, patterns: frozenset[str]) -> s
         if "selectionitem" in patterns:
             return "listitem"
         return "group" if has_name else "unknown"
+    if role == "document":
+        # Read-only documents (PDF views, help pages) are text; editable ones
+        # (Notepad's RichEdit editor, word processors) are inputs.
+        return "input" if "value" in patterns else "text"
     if role not in ROLES:
         return "group" if has_name else "unknown"
     return role
@@ -185,8 +195,25 @@ def is_interactive(role: str, patterns: frozenset[str]) -> bool:
 
 def normalize(node: RawNode) -> RawNode:
     """Normalize one raw node in place and recurse."""
-    node.role = normalize_role(node.role, bool(node.name), node.patterns)
+    role = normalize_role(node.role, bool(node.name), node.patterns)
+    # Rich-text editors render as named groups (QQ's ProseMirror message box,
+    # CodeMirror, generic "...editor" class names). They take text input and
+    # are the primary target of set_text, so expose them as inputs - the class
+    # name never leaves the runtime, so this cannot leak to the LLM.
+    if role == "group" and _looks_like_editor(node):
+        role = "input"
+    node.role = role
     node.states = normalize_states(node.states)
     for child in node.children:
         normalize(child)
     return node
+
+
+_EDITOR_CLASS_RE = re.compile(
+    r"prosemirror|codemirror|monaco|textarea|text-editor|editor\b", re.IGNORECASE
+)
+
+
+def _looks_like_editor(node: RawNode) -> bool:
+    cls = node.native.class_name or ""
+    return bool(_EDITOR_CLASS_RE.search(cls))

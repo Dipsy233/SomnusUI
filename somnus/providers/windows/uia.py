@@ -422,7 +422,15 @@ class UiaProvider:
         path: tuple[int, ...],
     ) -> RawNode:
         UIA = self._UIA
-        cached = el.BuildUpdatedCache(self._cache)
+        try:
+            cached = el.BuildUpdatedCache(self._cache)
+        except Exception:
+            # The element died mid-build (window closing while the agent acts).
+            # Re-raise as KeyError so the session maps it to STALE_TARGET
+            # instead of leaking COMError (-2147220991) - found live closing
+            # Notepad: the save dialog replaced the main window between the
+            # action and the settle snapshot.
+            raise KeyError("element vanished during snapshot") from None
         role = UIA_CONTROL_TYPES.get(cached.CachedControlType, "custom")
         patterns = self._available_patterns(cached, UIA)
 

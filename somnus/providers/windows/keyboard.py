@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 from ctypes import wintypes
 
 from somnus.ir.action import ExecResult
@@ -98,15 +99,23 @@ def send_unicode_text(text: str) -> ExecResult:
     if not inputs:
         return ExecResult(ok=True)
 
-    array = (_INPUT * len(inputs))(*inputs)
-    sent = user32.SendInput(
-        len(inputs), ctypes.byref(array), ctypes.sizeof(_INPUT)
-    )
-    if sent != len(inputs):
-        err = ctypes.get_last_error()
-        return ExecResult(
-            ok=False,
-            error="NATIVE_EXECUTION_FAILED",
-            message=f"SendInput sent {sent}/{len(inputs)} (err {err})",
-        )
+    # Deliver in small chunks with a tiny pause: a single SendInput of dozens
+    # of unicode events gets dropped by slower message pumps (live: Notepad
+    # received only the first two characters of a 17-char string), and games/
+    # editors with per-frame input loops lose whole bursts.
+    chunk_size = 8
+    total_sent = 0
+    for i in range(0, len(inputs), chunk_size):
+        chunk = inputs[i : i + chunk_size]
+        array = (_INPUT * len(chunk))(*chunk)
+        sent = user32.SendInput(len(chunk), ctypes.byref(array), ctypes.sizeof(_INPUT))
+        total_sent += sent
+        if sent != len(chunk):
+            err = ctypes.get_last_error()
+            return ExecResult(
+                ok=False,
+                error="NATIVE_EXECUTION_FAILED",
+                message=f"SendInput sent {total_sent}/{len(inputs)} (err {err})",
+            )
+        time.sleep(0.01)
     return ExecResult(ok=True)

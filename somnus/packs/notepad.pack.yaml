@@ -17,15 +17,16 @@ projection:
 
 named_refs:
   editor:
-    role: text
+    role: input
     patterns: [value, text]
 
 entities:
-  # The document being edited: a text role that exposes a writable value.
-  # Matched by pattern (not name) because the editor is localised.
+  # The document being edited: an editable document role that exposes a
+  # writable value. Matched by pattern (not name) because the editor is
+  # localised.
   document:
     match:
-      role: text
+      role: input
       patterns: [value, text]
     key: "$self.automation_id"
     attrs:

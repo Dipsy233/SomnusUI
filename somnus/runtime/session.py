@@ -565,13 +565,29 @@ class Session:
                 app_api_values.append(exec_result.value)
 
         # Settle, recompile, compute delta, verify. Refresh the window list
-        # first: an action may have opened a dialog or window (dev doc section
-        # 9), and the delta must reflect the desktop as it is now.
+        # first: an action may have opened a dialog or replaced the target
+        # window entirely (closing a document raises a save dialog), and the
+        # delta must reflect the desktop as it is now.
         self.refresh_windows()
-        tree, settle_result = self.settler.wait(
-            lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
-            event_source=lambda: self._event_count,
-        )
+        try:
+            tree, settle_result = self.settler.wait(
+                lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
+                event_source=lambda: self._event_count,
+            )
+        except KeyError:
+            # The target window vanished mid-action (e.g. the save dialog
+            # replaced it). The action itself succeeded; report unverified
+            # with a window delta instead of failing the whole call.
+            self.refresh_windows()
+            text = f"OK_UNVERIFIED rev={self.rev}\n{self._window_delta()}".strip()
+            text += f"\n~ target replaced (window {self.target_window} closed)" if self._window_by_ref(self.target_window) is None else ""
+            return CallOutcome(
+                status="OK_UNVERIFIED",
+                rev=self.rev,
+                delta=Delta(),
+                text=text,
+                settled=False,
+            )
         result = self.compiler.compile(tree, pack=self._current_pack())
         self.registry.reconcile(result)
         self.result = result
