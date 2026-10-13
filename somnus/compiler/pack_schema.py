@@ -144,7 +144,9 @@ class EntityCapDef:
     """Declaration of a semantic capability on an entity."""
 
     name: str
-    via: list[str] = field(default_factory=list)  # e.g. ["$add_btn.activate"]
+    #: Ordered steps. Each is either a string (``"$add_btn.activate"``) or a
+    #: mapping for conditional steps (``{target, primitive, value, when_missing}``).
+    via: list[Any] = field(default_factory=list)
     effects: list[str] = field(default_factory=list)  # "cart.count += 1"
     params: dict[str, ParamSpec] = field(default_factory=dict)
     risk: Risk = "normal"

@@ -32,7 +32,19 @@ entities:
       name: "$self.name"
     caps:
       set_text:
-        via: ["$self.set_text"]
+        # Prefer the native Value pattern; fall back to focus + keyboard typing
+        # when the editor exposes no Value pattern (dev doc section 12.2).
+        # The compiler keeps exactly one of these steps, so the resolver never
+        # sees a step the target cannot run, and the LLM never sees `type_text`.
+        via:
+          - target: "$self"
+            primitive: set_text
+            value: "$text"
+            when_has: value
+          - target: "$self"
+            primitive: type_text
+            value: "$text"
+            when_missing: value
         params:
           text: { type: string, required: true }
         risk: normal

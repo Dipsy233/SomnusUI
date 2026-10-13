@@ -254,3 +254,88 @@ def test_explorer_dir_change_keeps_window_ref():
     session.provider.set_tree(tree2)
     session._recompile()
     assert session.result.root.ref == window_ref
+
+
+# ---------------------------------------------------------------------------
+# keyboard fallback (dev doc section 12.2)
+# ---------------------------------------------------------------------------
+
+_KEYBOARD_PACK = {
+    "app": {"id": "kb", "match": {"process": "kb.exe"}},
+    "entities": {
+        "editor": {
+            "match": {"role": "text"},
+            "key": "$self.automation_id",
+            "caps": {
+                "set_text": {
+                    "params": {"text": {"type": "string", "required": True}},
+                    "via": [
+                        {
+                            "target": "$self",
+                            "primitive": "set_text",
+                            "value": "$text",
+                            "when_has": "value",
+                        },
+                        {
+                            "target": "$self",
+                            "primitive": "type_text",
+                            "value": "$text",
+                            "when_missing": "value",
+                        },
+                    ],
+                }
+            },
+        }
+    },
+}
+
+
+def _editor_tree(*, has_value: bool) -> RawTree:
+    patterns = ("value", "text") if has_value else ("text",)
+    editor = _node("text", name="editor", patterns=patterns)
+    root = _node("window", name="w", children=[editor])
+    return RawTree(window=WindowInfo("w1", "w", "kb.exe", 1), root=root)
+
+
+def test_keyboard_fallback_selected_only_without_value_pattern():
+    pack = load_pack_dict(_KEYBOARD_PACK)
+
+    native = Compiler().compile(_editor_tree(has_value=True), pack=pack)
+    cap = next(n for n in native.root.walk() if n.entity == "editor").get_cap("set_text")
+    assert [s.primitive for s in cap.via] == ["set_text"]
+
+    fallback = Compiler().compile(_editor_tree(has_value=False), pack=pack)
+    cap = next(
+        n for n in fallback.root.walk() if n.entity == "editor"
+    ).get_cap("set_text")
+    assert [s.primitive for s in cap.via] == ["type_text"]
+
+
+def test_keyboard_fallback_executes_through_the_resolver():
+    """A capability whose only step is type_text still runs end to end."""
+    from somnus.providers.mock import MockProvider
+    from somnus.runtime.resolver import Resolver
+    from somnus.runtime.session import Session
+    from somnus.sui.parse import parse_action
+
+    pack = load_pack_dict(_KEYBOARD_PACK)
+    tree = _editor_tree(has_value=False)
+    session = Session(MockProvider(fixtures=[tree]), pack=pack)
+    session.observe()
+
+    editor = next(n for n in session.result.root.walk() if n.entity == "editor")
+    out = session.dispatch(f'CALL {editor.ref}.set_text("hello")')
+    assert out.startswith("OK"), out
+
+    # The mock appends for type_text, proving the fallback step ran.
+    session.observe()
+    editor = next(n for n in session.result.root.walk() if n.entity == "editor")
+    assert editor.value and "hello" in editor.value
+
+
+def test_type_text_primitive_is_not_a_default_capability():
+    """The LLM must never see type_text as a callable capability."""
+    pack = load_pack_dict(_KEYBOARD_PACK)
+    result = Compiler().compile(_editor_tree(has_value=False), pack=pack)
+    for node in result.root.walk():
+        assert "type_text" not in node.cap_names()

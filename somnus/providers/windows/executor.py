@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from somnus.ir.action import ExecResult
+from somnus.providers.windows.keyboard import send_unicode_text
 
 #: Pattern id per primitive capability (resolved lazily from the UIA module).
 PATTERN_FOR_PRIMITIVE = {
@@ -86,6 +87,14 @@ def run_primitive(
                 value,
                 UIA,
             )
+        elif primitive == "type_text":
+            # Declarative keyboard fallback: focus the target, then type. Only
+            # reached because a pack declared it as a conditional `via` step
+            # (dev doc section 12.2); the LLM never sees this primitive.
+            element.SetFocus()
+            result = send_unicode_text(str(value))
+            if not result.ok:
+                return result
         elif primitive == "close":
             _pattern(
                 element, UIA.UIA_WindowPatternId, UIA.IUIAutomationWindowPattern

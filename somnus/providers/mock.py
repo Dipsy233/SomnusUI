@@ -215,8 +215,13 @@ class MockProvider:
             for mut in self.scripts.get(key, ()):
                 self._apply(node, mut, value)
                 mutated = True
-        if primitive == "set_text" and value is not None and not mutated:
-            node.value = str(value)
+        if primitive in ("set_text", "type_text") and value is not None and not mutated:
+            if primitive == "type_text":
+                # The keyboard fallback appends to whatever is already there,
+                # unlike set_text which replaces the value.
+                node.value = (node.value or "") + str(value)
+            else:
+                node.value = str(value)
             mutated = True
         if primitive in ("toggle",) and not mutated:
             if "checked" in node.states:

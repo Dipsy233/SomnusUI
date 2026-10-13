@@ -191,14 +191,14 @@ def _cap_def(name: str, body: dict[str, Any]) -> EntityCapDef:
         for pname, pbody in (body.get("params") or {}).items()
     }
     via = body.get("via") or []
-    if isinstance(via, str):
+    if isinstance(via, (str, dict)):
         via = [via]
     effects = body.get("effects") or []
     if isinstance(effects, str):
         effects = [effects]
     return EntityCapDef(
         name=name,
-        via=[str(v) for v in via],
+        via=list(via),
         effects=[str(e) for e in effects],
         params=params,
         risk=str(body.get("risk", "normal")),  # type: ignore[arg-type]

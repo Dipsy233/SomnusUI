@@ -232,12 +232,22 @@ def _default_identity(node: RawNode, members: dict[str, RawNode]) -> str | None:
 
 
 def entity_capabilities(em: EntityMatch) -> list[Capability]:
-    """Translate pack ``EntityCapDef`` declarations into runtime capabilities."""
+    """Translate pack ``EntityCapDef`` declarations into runtime capabilities.
+
+    Steps whose pattern condition is not met by the matched node are dropped
+    here, at compile time - the resolver never sees a step it cannot run. This
+    is what makes the keyboard fallback deterministic: a ``type_text`` step is
+    only present when the target really lacks a Value pattern (dev doc §12.2).
+    """
     caps: list[Capability] = []
     for name, cdef in em.def_.caps.items():
         steps: list[PrimitiveStep] = []
         for ref_expr in cdef.via:
-            steps.append(_compile_step(ref_expr, em))
+            step = _compile_step(ref_expr, em)
+            if _step_applies(step, em):
+                steps.append(step)
+        if not steps:
+            continue
         effects = [_parse_effect(e) for e in cdef.effects]
         cap = Capability(
             name=name,
@@ -252,26 +262,67 @@ def entity_capabilities(em: EntityMatch) -> list[Capability]:
     return caps
 
 
-def _compile_step(expr: str, em: EntityMatch) -> PrimitiveStep:
-    """Compile ``"$add_btn.activate"`` / ``"$self.activate"`` into a step.
+def _step_applies(step: PrimitiveStep, em: EntityMatch) -> bool:
+    """Evaluate a step's pattern condition against the matched node."""
+    if not step.condition:
+        return True
+    kind, _, pattern = step.condition.partition(":")
+    target_node = em.members.get("self")
+    if step.target.startswith("member:"):
+        target_node = em.members.get(step.target.split(":", 1)[1]) or target_node
+    patterns = target_node.patterns if target_node is not None else frozenset()
+    if kind == "has":
+        return pattern in patterns
+    if kind == "missing":
+        return pattern not in patterns
+    return True
 
-    Target is stored as the *native ref key* of the member node so the resolver
-    can locate it without re-running the match.
+
+def _compile_step(expr: str | dict[str, Any], em: EntityMatch) -> PrimitiveStep:
+    """Compile one ``via`` step into a :class:`PrimitiveStep`.
+
+    Accepts either the string form ``"$add_btn.activate"`` or the object form
+    used for conditional steps::
+
+        { via: { target: "$self", primitive: "type_text",
+                 value: "$text", when_missing: value } }
+
+    Target is stored as the member key so the resolver can locate the native
+    element without re-running the match.
     """
+    if isinstance(expr, dict):
+        return _compile_step_dict(expr, em)
+
     m = re.fullmatch(r"\$(\w+)\.(\w+)(?:\((.*)\))?", expr.strip())
     if not m:
         return PrimitiveStep(primitive=expr, target="$self", label=expr)
     member, primitive, arg = m.groups()
-    node = em.members.get(member)
-    target = f"member:{member}"
-    if node is not None:
-        target = f"member:{member}"
     value: Any = None
     if arg:
         value = arg.strip().strip('"')
         if value.startswith("$"):
             value = value  # forwarded parameter
-    return PrimitiveStep(primitive=primitive, target=target, value=value, label=expr)
+    return PrimitiveStep(
+        primitive=primitive, target=f"member:{member}", value=value, label=expr
+    )
+
+
+def _compile_step_dict(spec: dict[str, Any], em: EntityMatch) -> PrimitiveStep:
+    target = str(spec.get("target", "$self"))
+    if target.startswith("$") and target != "$self":
+        target = "member:" + target[1:]
+    condition = None
+    if spec.get("when_has"):
+        condition = f"has:{spec['when_has']}"
+    elif spec.get("when_missing"):
+        condition = f"missing:{spec['when_missing']}"
+    return PrimitiveStep(
+        primitive=str(spec.get("primitive", "")),
+        target=target,
+        value=spec.get("value"),
+        label=str(spec.get("label", spec.get("primitive", ""))),
+        condition=condition,
+    )
 
 
 def _parse_effect(raw: str) -> Effect | None:

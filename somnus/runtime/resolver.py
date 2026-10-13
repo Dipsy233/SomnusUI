@@ -140,7 +140,7 @@ class Resolver:
             value = step.value
             if isinstance(value, str) and value.startswith("$"):
                 value = args.get(value[1:].strip())
-            if value is None and step.primitive == "set_text":
+            if value is None and step.primitive in ("set_text", "type_text"):
                 value = _text_argument(args)
             steps.append(
                 ResolvedStep(

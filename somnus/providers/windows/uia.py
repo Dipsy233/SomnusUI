@@ -407,6 +407,7 @@ class UiaProvider:
         if primitive not in PATTERN_FOR_PRIMITIVE and primitive not in (
             "focus",
             "read",
+            "type_text",
         ):
             return ExecResult(ok=False, error="ACTION_NOT_SUPPORTED")
         return run_primitive(el, primitive, value, self._UIA)

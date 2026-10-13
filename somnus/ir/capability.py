@@ -34,6 +34,10 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         "scroll",
         "open",
         "close",
+        # Declarative keyboard fallback (v0.2): focus the target and type the
+        # value. Never offered to the LLM as a capability of its own - it only
+        # appears as a `via` step inside a pack capability (dev doc section 12.2).
+        "type_text",
     }
 )
 
@@ -108,6 +112,12 @@ class PrimitiveStep:
     target: str = "$self"
     value: Any = None
     label: str = ""  # human readable, used in the audit log only
+    #: Native pattern gate, evaluated when the capability is compiled. Forms:
+    #: ``"has:<pattern>"`` (run only if the target exposes it) and
+    #: ``"missing:<pattern>"`` (run only if it does not). This is how a pack
+    #: declares a declarative keyboard fallback, e.g.
+    #: ``set_text`` via ValuePattern, else focus + ``type_text`` (dev doc §12.2).
+    condition: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

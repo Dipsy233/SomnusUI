@@ -110,7 +110,8 @@ caps:
 * **`via`** names a member and a primitive: `$self.activate`,
   `$add_btn.activate`, `$self.set_text`. The primitive vocabulary is fixed
   (`activate, focus, read, set_text, toggle, select, expand, collapse,
-  increment, decrement, scroll, open, close`).
+  increment, decrement, scroll, open, close`). `type_text` exists only as a
+  conditional fallback step - see below.
 * **`effects`** is how the verifier knows an action worked. Supported forms:
   `ref.field += N`, `-=`, `=`, `!=`, `contains`, `startswith`. Effects on
   fields the runtime cannot observe are treated as *unverifiable*, and the
@@ -121,6 +122,30 @@ caps:
 The `key` field is the fingerprint primary key: prefer `$self.automation_id`
 or a pack member's automation id. When `key` resolves, volatile names are
 excluded from the fingerprint, so a changing label never invalidates a ref.
+
+### Conditional steps and the keyboard fallback
+
+A `via` entry may be a mapping instead of a string, gating the step on the
+native patterns the target exposes. The condition is evaluated at **compile
+time**, so the resolver only ever receives steps the target can actually run,
+and the LLM never sees the fallback primitive.
+
+```yaml
+caps:
+  set_text:
+    params: { text: { type: string, required: true } }
+    via:
+      # Prefer the native Value pattern ...
+      - { target: "$self", primitive: set_text, value: "$text", when_has: value }
+      # ... otherwise focus the control and type (declarative keyboard fallback,
+      # dev doc section 12.2). `type_text` is not a capability the LLM can call.
+      - { target: "$self", primitive: type_text, value: "$text", when_missing: value }
+```
+
+`when_has` / `when_missing` name a native pattern (`value`, `invoke`,
+`text`, ...). Only one of the two steps survives compilation for any given
+target, which is how the same pack works on both a native edit control and a
+custom-drawn one that only accepts keystrokes.
 
 ## Writing a pack for a new app
 
