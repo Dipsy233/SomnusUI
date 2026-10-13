@@ -89,6 +89,9 @@ class Session:
         self.target_window: str | None = None
         self.result: CompileResult | None = None
         self._prev_index: dict[str, SemanticNode] = {}
+        #: Window id -> title, as last reported, so opening/closing a window can
+        #: be surfaced as a delta line instead of being silently absorbed.
+        self._prev_windows: dict[str, str] = {}
         self._event_count = 0
         self._audit: list[dict] = []
         #: refs whose fingerprint is ambiguous in the current compilation.
@@ -104,10 +107,23 @@ class Session:
     def refresh_windows(self) -> list[WindowInfo]:
         self.windows = self.provider.list_windows()
         if self.target_window is None and self.windows:
-            self.target_window = next(
-                (w.window_id for w in self.windows if w.active), self.windows[0].window_id
-            )
+            self.target_window = self._default_window()
         return self.windows
+
+    def _default_window(self) -> str:
+        """Pick the window to start from.
+
+        Priority: the window with keyboard focus, else the first one that has a
+        title. Windows with an empty title are usually invisible helpers, and
+        starting on one of those would show the agent an empty tree.
+        """
+        for w in self.windows:
+            if w.active:
+                return w.window_id
+        for w in self.windows:
+            if w.title.strip():
+                return w.window_id
+        return self.windows[0].window_id
 
     def focus_window(self, ref: str) -> CallOutcome:
         """``CALL w2.focus()`` - switch the observation target."""
@@ -118,8 +134,16 @@ class Session:
         self.policy.check_process(window.process)
         if hasattr(self.provider, "focus_window"):
             self.provider.focus_window(window.window_id)  # type: ignore[attr-defined]
+        # Pin the ref the agent just used to this window: later header renders
+        # must keep using it, otherwise "switch back" refs drift (w1 -> w7 ...).
+        self._window_refs[ref] = window.window_id
+        self._window_refs_by_id[window.window_id] = ref
         self._recompile()
-        return CallOutcome(status="OK", rev=self.rev, delta=Delta(), text=self.delta_text(Delta()))
+        flags = " active" if window.active else ""
+        # Never return an empty body: the agent must be able to confirm the
+        # switch happened, and it needs the ref to switch back later.
+        text = f"OK rev={self.rev}\nWINDOW {ref} {_q(window.title)}{flags}"
+        return CallOutcome(status="OK", rev=self.rev, delta=Delta(), text=text)
 
     def _window_by_ref(self, ref: str) -> WindowInfo | None:
         # A session window ref maps to the native window id.
@@ -167,9 +191,16 @@ class Session:
             self._bump_rev()
         return result
 
-    @staticmethod
-    def _projection_signature(result: CompileResult) -> tuple:
-        """A stable digest of the projected structure + watched attribute values."""
+    def _projection_signature(self, result: CompileResult) -> tuple:
+        """A stable digest of the projected structure + the window set.
+
+        The window list is part of it on purpose: when an application opens or
+        closes a window (QQ opening a chat, a modal appearing), the target
+        window's own tree may be unchanged, yet the screen the agent is looking
+        at has changed and it must be told. Leaving the window set out of the
+        signature means such a change never bumps ``rev`` and never shows up in
+        a delta (dev doc sections 5, 9.1).
+        """
         parts: list[tuple] = []
         for node in result.root.walk():
             attrs = tuple(sorted((k, str(v)) for k, v in node.attrs.items()))
@@ -182,37 +213,127 @@ class Session:
                     tuple(sorted(node.states)),
                 )
             )
-        return tuple(parts)
+        windows = tuple(
+            sorted((w.window_id, w.title, w.process, w.active) for w in self.windows)
+        )
+        return (windows, tuple(parts))
 
     def _bump_rev(self) -> None:
         self.rev += 1
 
     # ------------------------------------------------------------------ observe
 
-    def observe(self, window: str | None = None, *, level: int = 0) -> Observation:
-        # Observation is read-only and side-effect free, so an unknown window ref
-        # must not dead-end the agent: fall back to the default window and let
-        # the resulting overview show the real refs (dev doc section 6.4).
+    def observe(
+        self,
+        window: str | None = None,
+        *,
+        level: int = 0,
+        windows_only: bool = False,
+    ) -> Observation:
+        """Observe the current screen, or just the window list.
+
+        Observation is read-only and side-effect free, so an unknown window ref
+        must not dead-end the agent: fall back to the default window and let the
+        resulting overview show the real refs (dev doc section 6.4).
+
+        ``windows_only`` answers "what is on my desktop right now" without
+        dumping any tree, which is what a cross-window workflow needs before it
+        decides where to go (dev doc section 5).
+        """
+        self.refresh_windows()
         if window:
             win = self._window_by_ref(window)
             if win is not None:
                 self.target_window = win.window_id
-        if not self.windows:
-            self.refresh_windows()
         if self.target_window is None and self.windows:
             self.target_window = next(
                 (w.window_id for w in self.windows if w.active), self.windows[0].window_id
             )
 
+        if windows_only:
+            # Keep the delta baseline fresh even when only listing windows.
+            self._window_delta()
+            text = self._render_window_list()
+            return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
+
         result = self._recompile()
+        # Surface windows that appeared/vanished/renamed since the last look so
+        # a cross-window workflow notices without a separate observation. The
+        # first observation only establishes the baseline.
+        had_baseline = bool(self._prev_windows)
+        window_delta = self._window_delta()
+        if not had_baseline:
+            window_delta = ""
+        header = self._window_header(result)
+        if window_delta:
+            header.append(window_delta)
         budget = self.budget.for_level(level) if level else self.budget
         engine = ProjectionEngine(budget)
         projection = apply_projection(result.root, self._pack_projection())
         plan = engine.plan(result.root, projection)
 
-        header = self._window_header(result)
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
         return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
+
+    def _render_window_list(self) -> str:
+        """The desktop as a flat list: every window, its ref and what it is.
+
+        The refs are the same ones ``CALL wN.focus()`` accepts, so an agent can
+        list, then switch, then observe - the way a person alt-tabs.
+        """
+        lines = [f"@rev {self.rev}", f"WINDOWS count={len(self.windows)}"]
+        for w in self.windows:
+            ref = self._header_window_ref(w.window_id)
+            flags = []
+            if w.window_id == self.target_window:
+                flags.append("obs")
+            if w.active:
+                flags.append("active")
+            suffix = (" " + " ".join(flags)) if flags else ""
+            lines.append(f"  WINDOW {ref} {_q(w.title)}{suffix}")
+        return "\n".join(lines)
+
+    def _window_delta(self) -> str:
+        """Delta lines for windows that appeared or disappeared.
+
+        An application opening a window (QQ opening a chat, a modal appearing)
+        changes what the agent can act on even when the target window's own tree
+        is untouched. Reporting it as ``+ WINDOW w5 "Cart"`` / ``- WINDOW w3``
+        is what lets a cross-window workflow continue without an explicit
+        re-observation (dev doc section 5: L0 always lists windows).
+        """
+        current = {w.window_id: w.title for w in self.windows}
+        previous = self._prev_windows
+        if not previous:
+            # First call only establishes the baseline. Allocating refs here
+            # would hand the compiler's window ref (w1) to the wrong window and
+            # break ``CALL w2.focus()`` resolution.
+            self._prev_windows = current
+            return ""
+        # The target window is rendered under the tree's own window ref, not a
+        # header-allocated one; use the same ref here so delta lines stay
+        # consistent with the overview.
+        target_ref = self.result.root.ref if self.result else None
+        lines: list[str] = []
+        for window_id, title in current.items():
+            if window_id not in previous:
+                if window_id == self.target_window and target_ref:
+                    ref = target_ref
+                else:
+                    ref = self._header_window_ref(window_id)
+                lines.append(f"+ WINDOW {ref} {_q(title)}")
+        for window_id, title in previous.items():
+            if window_id not in current:
+                lines.append(f"- WINDOW {_q(title)}")
+        for window_id, title in current.items():
+            if window_id in previous and previous[window_id] != title:
+                if window_id == self.target_window and target_ref:
+                    ref = target_ref
+                else:
+                    ref = self._header_window_ref(window_id)
+                lines.append(f"~ WINDOW {ref} {_q(previous[window_id])}→{_q(title)}")
+        self._prev_windows = current
+        return "\n".join(lines)
 
     def _window_header(self, result: CompileResult) -> list[str]:
         """Header lines for *other* windows (the target is rendered as the root).
@@ -226,8 +347,18 @@ class Session:
         for i, w in enumerate(self.windows):
             if w.window_id == self.target_window:
                 # Register the target under the tree's window ref so CALL w?.focus
-                # resolves to it.
+                # resolves to it. The compiler may have allocated a ref (its own
+                # window node, e.g. `w2`) that the header already gave to another
+                # window; rehome that window first, refs must stay unique.
                 if target_ref:
+                    owner = self._window_refs.get(target_ref)
+                    if owner is not None and owner != w.window_id:
+                        while True:
+                            spare = self.registry.allocator.next("w")
+                            if spare not in self._window_refs:
+                                break
+                        self._window_refs_by_id[owner] = spare
+                        self._window_refs[spare] = owner
                     self._window_refs[target_ref] = w.window_id
                 continue
             window_ref = self._header_window_ref(w.window_id)
@@ -408,7 +539,10 @@ class Session:
                 # of being scraped out of the UI (dev doc section 20).
                 app_api_values.append(exec_result.value)
 
-        # Settle, recompile, compute delta, verify.
+        # Settle, recompile, compute delta, verify. Refresh the window list
+        # first: an action may have opened a dialog or window (dev doc section
+        # 9), and the delta must reflect the desktop as it is now.
+        self.refresh_windows()
         tree, settle_result = self.settler.wait(
             lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
             event_source=lambda: self._event_count,
@@ -442,7 +576,10 @@ class Session:
                 if len(rendered) > 2000:
                     rendered = rendered[:2000] + "…"
                 text += f"\n= {rendered}"
-        body = self.delta_text(delta)
+        body = self._window_delta()
+        tree_body = self.delta_text(delta)
+        if tree_body:
+            body = f"{body}\n{tree_body}" if body else tree_body
         if body:
             text += "\n" + body
         return CallOutcome(
@@ -560,7 +697,9 @@ class Session:
     def run(self, action: Action, *, confirmed: bool | None = None) -> str:
         try:
             if action.kind == "observe":
-                return self.observe(action.window).text
+                return self.observe(
+                    action.window, windows_only=(action.query == "windows")
+                ).text
             if action.kind == "find":
                 return self.find(action)
             if action.kind == "inspect":

@@ -216,9 +216,16 @@ class UiaProvider:
                     hwnd = int(child.CurrentNativeWindowHandle or 0)
                     if hwnd:
                         seen_hwnds.add(hwnd)
-                    # Panes are always kept (taskbar, Electron/UWP shells);
-                    # Windows must pass the taskbar-visibility test.
-                    if hwnd and (ct == _CT_PANE or _is_app_window(hwnd)):
+                    # Panes are kept when they are real visible top-level
+                    # windows (taskbar, Electron/UWP shells) or recognised shell
+                    # surfaces; Windows must pass the taskbar-visibility test.
+                    # Without this, Chromium's offscreen helper windows
+                    # ("Input Occlusion Window", "Backstop Window") show up as
+                    # if they were applications.
+                    if hwnd and (
+                        _is_app_window(hwnd)
+                        or (ct == _CT_PANE and _is_shell_surface(hwnd))
+                    ):
                         self._add_window(child, out, hwnd=hwnd)
             except Exception:
                 pass
@@ -582,6 +589,29 @@ class UiaProvider:
 _CT_WINDOW = 50032
 _CT_PANE = 50033
 _TOPLEVEL_CONTROL_TYPES = (_CT_WINDOW, _CT_PANE)
+
+
+#: Shell surfaces that are Pane-typed but genuinely user-facing.
+_SHELL_CLASSES = frozenset(
+    {"shell_traywnd", "shell_secondarytraywnd", "progman", "workerw"}
+)
+
+
+def _is_shell_surface(hwnd: int) -> bool:
+    """True for the taskbar / desktop surfaces.
+
+    These are not "app windows" by the taskbar test (no WS_EX_APPWINDOW, and
+    owned by the shell) but they are still things an agent can act on, so a
+    Pane-typed element is kept when it is one of them.
+    """
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    if not user32.IsWindowVisible(hwnd):
+        return False
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value.lower() in _SHELL_CLASSES
 
 
 def _is_app_window(hwnd: int) -> bool:

@@ -56,7 +56,10 @@ _INSPECT_RE = re.compile(
 
 _UNKNOWN_RE = re.compile(r'^UNKNOWN\s+(?P<reason>".*"|\S+)\s*$', re.IGNORECASE)
 
-_OBSERVE_RE = re.compile(r"^OBSERVE(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?\s*$", re.IGNORECASE)
+_OBSERVE_RE = re.compile(
+    r"^OBSERVE(?P<rest>\s+(?:windows|all))?(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?\s*$",
+    re.IGNORECASE,
+)
 
 #: Primitive verbs that must never appear in an action.
 FORBIDDEN_VERBS = frozenset(
@@ -112,7 +115,13 @@ def parse_action(text: str, rev: int | None = None) -> Action:
 
     m = _OBSERVE_RE.match(raw)
     if m:
-        return Action(kind="observe", window=m.group("window"), raw=raw)
+        rest = (m.group("rest") or "").strip().lower()
+        return Action(
+            kind="observe",
+            window=m.group("window"),
+            query=rest or None,  # "windows" = list windows only
+            raw=raw,
+        )
 
     # Give a precise error for forbidden primitive verbs.
     head = raw.split("(", 1)[0].split(".")[-1].strip().lower()

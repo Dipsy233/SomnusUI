@@ -24,12 +24,21 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Return the current semantic overview (L0) of the target window as "
             "SUI-Text. Contains windows, screens, entities and their "
-            "capabilities. No pixels, coordinates or native ids."
+            "capabilities. No pixels, coordinates or native ids.\n"
+            "Pass windows_only=true to get just the desktop window list, which "
+            "is how you switch to another window (CALL wN.focus())."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "window": {"type": "string", "description": "optional window ref"},
+                "window": {
+                    "type": "string",
+                    "description": "optional window ref to focus and observe",
+                },
+                "windows_only": {
+                    "type": "boolean",
+                    "description": "list windows only, without any control tree",
+                },
             },
         },
     },
@@ -90,7 +99,9 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
     args = arguments or {}
     try:
         if name == "observe":
-            return session.observe(args.get("window")).text
+            return session.observe(
+                args.get("window"), windows_only=bool(args.get("windows_only"))
+            ).text
         if name == "find":
             # The `query` argument accepts the FIND syntax verbatim
             # (``FIND product "Big Mac"``) or a bare query string.
