@@ -30,7 +30,8 @@ def test_normalize_states_drops_defaults():
 def test_select_pack_by_process():
     pack = select_pack("RestaurantDemo.exe")
     assert pack is not None and pack.id == "restaurant-demo"
-    assert select_pack("notepad.exe") is None
+    assert select_pack("notepad.exe").id == "notepad"
+    assert select_pack("some-unknown-app.exe") is None
 
 
 def test_compile_demo_entities():

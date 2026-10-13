@@ -47,6 +47,8 @@ class MatchRule:
     value: str | None = None  # regex
     has_name: bool | None = None
     min_children: int | None = None
+    #: Pattern names that must all be present (e.g. ``("value", "text")``).
+    has_patterns: tuple[str, ...] = ()
     #: Required descendant matches; ``as`` binds the matched node as a member.
     has: list["MatchRule"] = field(default_factory=list)
     #: Extra predicate over the node (must be pure).
@@ -65,6 +67,9 @@ class MatchRule:
             return False
         if self.min_children is not None and len(node.children) < self.min_children:
             return False
+        for pattern in self.has_patterns:
+            if pattern not in node.patterns:
+                return False
         if self.where and not self.where(node):
             return False
         for sub in self.has:
@@ -96,13 +101,37 @@ def _descendants(node: RawNode) -> Iterable[RawNode]:
         yield from _descendants(child)
 
 
-def _re_search(pattern: str, text: str | None) -> bool:
+def regex_search(pattern: str, text: str | None) -> bool:
+    """Match ``text`` against ``pattern``.
+
+    Accepts a bare regex, or the documented ``/regex/flags`` form
+    (dev doc section 15: ``name: "/^(add|\\u52a0\\u5165)$/i"``).
+    """
     if text is None:
         return False
+    # A bare regex is case-insensitive (historical behaviour, and the right
+    # default for UI labels); the ``/regex/flags`` form is explicit.
+    flags = re.IGNORECASE
+    if len(pattern) >= 2 and pattern.startswith("/"):
+        end = pattern.rfind("/")
+        if end > 0:
+            body = pattern[1:end]
+            flags = 0
+            for f in pattern[end + 1 :]:
+                if f == "i":
+                    flags |= re.IGNORECASE
+                elif f == "s":
+                    flags |= re.DOTALL
+                elif f == "m":
+                    flags |= re.MULTILINE
+            pattern = body
     try:
-        return re.search(pattern, text, re.IGNORECASE) is not None
+        return re.search(pattern, text, flags) is not None
     except re.error:
         return pattern.lower() in text.lower()
+
+
+_re_search = regex_search
 
 
 # ---------------------------------------------------------------------------
@@ -159,11 +188,11 @@ class Pack:
     def matches_window(self, process: str, window_class: str = "") -> bool:
         if self.match_process:
             proc = process.lower()
-            if not any(p.lower() in proc for p in self.match_process):
+            if not any(p == "*" or p.lower() in proc for p in self.match_process):
                 return False
         if self.match_window_class:
             wc = window_class.lower()
-            if not any(c.lower() in wc for c in self.match_window_class):
+            if not any(c == "*" or c.lower() in wc for c in self.match_window_class):
                 return False
         return bool(self.match_process or self.match_window_class)
 
@@ -195,16 +224,37 @@ def all_packs() -> list[Pack]:
 
 
 def select_pack(process: str, window_class: str = "", forced: str | None = None) -> Pack | None:
+    """Pick the most specific pack for a window.
+
+    Exact (non-wildcard) process matches win over the catch-all generic pack, so
+    a dedicated app pack is never shadowed by it (dev doc sections 11.3, 15).
+    """
     if forced:
         return get_pack(forced)
-    for pack in _REGISTRY.values():
-        if pack.matches_window(process, window_class):
-            return pack
-    return None
+    candidates = [
+        p
+        for p in _REGISTRY.values()
+        if "*" not in p.match_process and p.matches_window(process, window_class)
+    ]
+    if not candidates:
+        return None
+    return candidates[0]
 
 
 def _load_builtin() -> None:
+    # v0.1 Python packs (kept for the acceptance demo) ...
     from somnus.packs import generic, restaurant_demo  # noqa: F401
+
+    # ... plus v0.2 YAML packs (dev doc section 15). Loading is best-effort:
+    # a missing PyYAML simply leaves the Python packs in place.
+    try:
+        from somnus.compiler.yaml_pack import load_builtin_packs
+
+        load_builtin_packs()
+    except Exception:  # pragma: no cover - optional dependency
+        import logging
+
+        logging.getLogger("somnus.packs").debug("YAML packs unavailable", exc_info=True)
 
 
 _load_builtin()

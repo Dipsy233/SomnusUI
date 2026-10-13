@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "SomnusUI" }]
 dependencies = [
     "msgspec>=0.18",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

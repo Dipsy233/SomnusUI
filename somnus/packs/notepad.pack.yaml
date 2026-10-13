@@ -1,0 +1,52 @@
+# Notepad (Windows 11) App Pack — dev doc section 15, v0.2 format.
+#
+# Matched by process name, never by window title (titles are localised and
+# change with the open file).
+app:
+  id: notepad
+  version: "0.2.0"
+  match:
+    process: "notepad.exe"
+
+projection:
+  # The status bar and title bar chrome are noise for an agent; collapse them
+  # to a single line instead of dropping them (their text is still readable).
+  - { select: "role=statusbar", rule: "collapse" }
+  - { select: "role=toolbar", rule: "collapse" }
+  - { select: "name=系统", rule: "prune" }
+
+named_refs:
+  editor:
+    role: text
+    patterns: [value, text]
+
+entities:
+  # The document being edited: a text role that exposes a writable value.
+  # Matched by pattern (not name) because the editor is localised.
+  document:
+    match:
+      role: text
+      patterns: [value, text]
+    key: "$self.automation_id"
+    attrs:
+      name: "$self.name"
+    caps:
+      set_text:
+        via: ["$self.set_text"]
+        params:
+          text: { type: string, required: true }
+        risk: normal
+
+  # One editor tab. Closing a tab with unsaved changes is critical, so `close`
+  # is marked critical and gated behind confirmation.
+  tab:
+    match:
+      role: tab
+      has_name: true
+    key: "$self.automation_id"
+    attrs:
+      name: "$self.name"
+    caps:
+      close:
+        via: ["$self.close"]
+        risk: critical

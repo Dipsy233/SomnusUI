@@ -205,7 +205,7 @@ class Compiler:
             states=frozenset({"active"}) if tree.window.active else frozenset(),
         )
         window_node.fingerprint = compute_fingerprint(
-            entity=None, role="window", identity=None, name=tree.window.title
+            entity=None, role="window", identity=tree.window.process, name=tree.window.title
         )
         result.root = window_node
         result.sources[window_node.ref] = SourceRef(native=raw_root.native)
@@ -306,7 +306,13 @@ class Compiler:
         node.caps = _dedupe_caps(caps)
 
         # Fingerprint.
-        identity = em.identity if em else raw.native.automation_id
+        # A window's identity is its process, never its title: the title changes
+        # with the open document ("*file - Notepad") and must not invalidate all
+        # refs on every edit (dev doc section 8, rule 4).
+        if node.role == "window":
+            identity = result.process
+        else:
+            identity = em.identity if em else raw.native.automation_id
         node.fingerprint = compute_fingerprint(
             entity=node.entity,
             role=node.role,

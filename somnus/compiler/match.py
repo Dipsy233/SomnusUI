@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
-from somnus.compiler.pack_schema import EntityDef, Pack
+from somnus.compiler.pack_schema import EntityDef, Pack, regex_search
 from somnus.ir.capability import Capability, Effect, PrimitiveStep
 from somnus.ir.node import RawNode
 
@@ -85,17 +85,76 @@ def _build_match(edef: EntityDef, node: RawNode) -> EntityMatch:
 
 
 def _eval_key(expr: str | None, members: dict[str, RawNode]) -> str | None:
+    """Resolve an attribute/key expression to a string.
+
+    Supported forms (all deterministic):
+
+    * ``$member.attr`` - an attribute of a captured ``as`` member (or ``$self``).
+    * ``descendant(role=text)`` / ``descendant(role=text, name=/re/)`` - the
+      first descendant matching an inline predicate (dev doc section 15).
+    """
     if not expr:
         return None
-    # Only "$member.attr" expressions are supported (deterministic).
-    m = re.fullmatch(r"\$(\w+)\.(\w+)", expr.strip())
-    if not m:
+    expr = expr.strip()
+
+    m = re.fullmatch(r"\$(\w+)\.(\w+)", expr)
+    if m:
+        member, attr = m.groups()
+        node = members.get(member)
+        if node is None:
+            return None
+        return _node_attr(node, attr)
+
+    if expr.startswith("descendant("):
+        node = _descendant_match(expr, members)
+        return node.name if node is not None else None
+
+    return None
+
+
+def _descendants(node: RawNode) -> Iterable[RawNode]:
+    yield node
+    for child in node.children:
+        yield from _descendants(child)
+
+
+def _re_search(pattern: str, text: str | None) -> bool:
+    return regex_search(pattern, text)
+
+
+def _descendant_match(expr: str, members: dict[str, RawNode]) -> RawNode | None:
+    """Evaluate ``descendant(role=text, name=/re/, has_name=true)``."""
+    inner = expr[len("descendant(") :].rstrip(")")
+    root = members.get("self")
+    if root is None:
         return None
-    member, attr = m.groups()
-    node = members.get(member)
-    if node is None:
-        return None
-    return _node_attr(node, attr)
+    role = None
+    name = None
+    has_name = None
+    for clause in inner.split(","):
+        clause = clause.strip()
+        if not clause or "=" not in clause:
+            continue
+        key, _, value = clause.partition("=")
+        key = key.strip().lower()
+        value = value.strip().strip('"')
+        if key == "role":
+            role = value
+        elif key == "name":
+            name = value
+        elif key == "has_name":
+            has_name = value.lower() in ("true", "1", "yes")
+    for cand in _descendants(root):
+        if cand is root:
+            continue
+        if role and cand.role != role:
+            continue
+        if name and not _re_search(name, cand.name):
+            continue
+        if has_name is not None and bool(cand.name) != has_name:
+            continue
+        return cand
+    return None
 
 
 def _node_attr(node: RawNode, attr: str) -> str | None:

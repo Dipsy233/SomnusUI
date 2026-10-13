@@ -101,10 +101,23 @@ class Resolver:
     def _validate_args(
         self, node: SemanticNode, cap: Capability, args: dict[str, Any]
     ) -> None:
+        positional = sorted(k for k in args if k.startswith("_"))
+        # A positional argument may satisfy the single required parameter, so the
+        # documented ``CALL q1.set_text("Big Mac")`` form works even when the
+        # pack names the parameter (dev doc section 6.2).
+        required = [n for n, s in cap.params.items() if s.required]
+        implicit = (
+            positional[0] if len(positional) == 1 and len(required) == 1 else None
+        )
         for name, spec in cap.params.items():
-            if spec.required and name not in args:
+            present = name in args or (implicit is not None and name == required[0])
+            if spec.required and not present:
                 raise invalid_argument(node.ref, f"missing {name}")
             if name in args and not spec.accepts(args[name]):
+                raise invalid_argument(node.ref, f"bad {name}")
+            if implicit is not None and name == required[0] and not spec.accepts(
+                args[implicit]
+            ):
                 raise invalid_argument(node.ref, f"bad {name}")
         # Reject unknown named args (positional `_N` are tolerated).
         for key in args:
@@ -128,7 +141,7 @@ class Resolver:
             if isinstance(value, str) and value.startswith("$"):
                 value = args.get(value[1:].strip())
             if value is None and step.primitive == "set_text":
-                value = _first_positional(args)
+                value = _text_argument(args)
             steps.append(
                 ResolvedStep(
                     native=native,
@@ -169,3 +182,11 @@ def _first_positional(args: dict[str, Any]) -> Any:
     if not keys:
         return None
     return args[keys[0]]
+
+
+def _text_argument(args: dict[str, Any]) -> Any:
+    """The text to write for a ``set_text`` step: positional, ``text``, or ``value``."""
+    for key in ("text", "value"):
+        if key in args:
+            return args[key]
+    return _first_positional(args)

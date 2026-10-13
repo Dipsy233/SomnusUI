@@ -96,20 +96,47 @@ somnus/
 ├── ir/            node / capability / action value objects (platform free)
 ├── providers/     base.py  mock.py  windows/{uia,cache,executor,events}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
+│                  yaml_pack.py (v0.2 YAML pack loader)
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
-├── packs/         generic.py restaurant_demo.py
+├── packs/         generic.py restaurant_demo.py (v0.1)
+│                  notepad.pack.yaml explorer.pack.yaml (v0.2)
 ├── protocol/      tools.py mcp_server.py jsonrpc.py
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
+docs/packs.md           how to write an App Pack
+bench/                  metrics harness + LLM control demos
 tests/{fixtures,golden,compiler,projection,runtime,e2e}/
-bench/                  metrics harness
 ```
 
 Dependency direction (enforced in CI): `providers → compiler → projection →
 serialization → protocol`; `runtime` depends on all of them; nothing imports an
 LLM.
+
+## App Packs
+
+A pack gives an application a domain vocabulary, turning the control tree into
+entities with capabilities. v0.2 uses a single YAML file per app, loaded from
+`somnus/packs/*.pack.yaml`:
+
+```yaml
+app:
+  id: notepad
+  match: { process: "notepad.exe" }     # by process, never by title
+entities:
+  document:
+    match: { role: text, patterns: [value, text] }
+    key: "$self.automation_id"
+    caps:
+      set_text:
+        via: ["$self.set_text"]
+        params: { text: { type: string, required: true } }
+```
+
+Shipped packs: `notepad` and `explorer` (both verified against the live Windows
+11 apps), plus the v0.1 `restaurant-demo` Python pack. Full authoring guide:
+[`docs/packs.md`](docs/packs.md).
 
 ## Testing
 

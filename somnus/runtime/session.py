@@ -131,10 +131,7 @@ class Session:
         win = self._window_by_ref(self.target_window or "")
         if win is None:
             return None
-        pack = select_pack(win.process, forced=self.pack_id)
-        if pack is not None and pack.id == "generic":
-            return None  # generic pack only contributes projection defaults
-        return pack
+        return select_pack(win.process, forced=self.pack_id)
 
     def _snapshot(self) -> RawTree:
         if self.target_window is None:
@@ -232,8 +229,18 @@ class Session:
         return ref
 
     def _pack_projection(self):
+        """Projection rules for the current window: the generic defaults plus
+        the selected pack's rules (pack rules win, they come later)."""
+        from somnus.compiler.pack_schema import get_pack
+
+        rules = []
+        generic = get_pack("generic")
+        if generic is not None:
+            rules.extend(generic.projection)
         pack = self._current_pack()
-        return pack.projection if pack else []
+        if pack is not None and pack.id != "generic":
+            rules.extend(pack.projection)
+        return rules
 
     # ------------------------------------------------------------------ find
 
