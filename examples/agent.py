@@ -29,8 +29,8 @@ sys.path.insert(0, str(ROOT))
 
 from somnus.protocol.tools import TOOL_SPECS, call_tool  # noqa: E402
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1"
-DEFAULT_MODEL = "qwen3-4b"
+DEFAULT_BASE_URL = "http://127.0.0.1:8787/v1"
+DEFAULT_MODEL = "hy3"
 SYSTEM_PROMPT = (ROOT / "somnus" / "protocol" / "system_prompt.md").read_text(
     encoding="utf-8"
 )
@@ -61,10 +61,23 @@ def openai_tools() -> list[dict[str, Any]]:
 
 
 class LlmClient:
-    def __init__(self, base_url: str, model: str, timeout: float = 300.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float = 300.0,
+        api_key: str | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.api_key = api_key or _env_api_key()
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         body = {
@@ -78,10 +91,21 @@ class LlmClient:
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers(),
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return json.load(resp)
+
+
+def _env_api_key() -> str | None:
+    """API key from the environment (never hard-coded)."""
+    import os
+
+    for name in ("SOMNUS_LLM_API_KEY", "OPENAI_API_KEY"):
+        key = os.environ.get(name)
+        if key:
+            return key
+    return None
 
 
 def run_agent(
@@ -179,10 +203,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirmed", action="store_true")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (or set SOMNUS_LLM_API_KEY); omit for local no-auth servers",
+    )
     parser.add_argument("--max-steps", type=int, default=12)
     args = parser.parse_args(argv)
 
-    client = LlmClient(args.base_url, args.model)
+    client = LlmClient(args.base_url, args.model, api_key=args.api_key)
     session = build_session(args)
 
     print(f"👤 任务: {args.task}")

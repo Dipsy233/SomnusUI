@@ -58,13 +58,14 @@ def run_once(client: LlmClient, task: str, max_steps: int) -> tuple[bool, int, s
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
-    parser.add_argument("--model", default="qwen3-4b")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8787/v1")
+    parser.add_argument("--model", default="hy3")
+    parser.add_argument("--api-key", default=None)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--max-steps", type=int, default=8)
     args = parser.parse_args(argv)
 
-    client = LlmClient(args.base_url, args.model)
+    client = LlmClient(args.base_url, args.model, api_key=args.api_key)
     results: list[dict] = []
 
     for name, task, want_count, want_total in TASKS:

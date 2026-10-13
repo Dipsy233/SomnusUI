@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -58,12 +59,14 @@ def _chat(client: LlmClient, messages: list[dict]) -> str:
         "model": client.model,
         "messages": messages,
         "temperature": 0,
-        "max_tokens": 256,
+        # hy3 is a reasoning model: give it enough room to think *and* answer,
+        # otherwise a reasoning-heavy turn can return an empty content field.
+        "max_tokens": 2048,
     }
     req = urllib.request.Request(
         f"{client.base_url}/chat/completions",
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=client._headers(),
     )
     with urllib.request.urlopen(req, timeout=client.timeout) as resp:
         return json.load(resp)["choices"][0]["message"]["content"] or ""
@@ -71,8 +74,9 @@ def _chat(client: LlmClient, messages: list[dict]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
-    parser.add_argument("--model", default="qwen3-4b")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8787/v1")
+    parser.add_argument("--model", default="hy3")
+    parser.add_argument("--api-key", default=None)
     parser.add_argument("--runs", type=int, default=3)
     args = parser.parse_args(argv)
 
@@ -80,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     from somnus.runtime.session import Session
     from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
 
-    client = LlmClient(args.base_url, args.model)
+    client = LlmClient(args.base_url, args.model, api_key=args.api_key)
     results: list[dict] = []
 
     for label, _, instruction, expected_cap in PROBES:
@@ -101,6 +105,20 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 ],
             )
+            if not content.strip():
+                # A reasoning model can intermittently return empty content; one
+                # retry keeps the probe measurement about the contract, not about
+                # a transient server hiccup.
+                content = _chat(
+                    client,
+                    [
+                        {"role": "system", "content": PROBE_SYSTEM},
+                        {
+                            "role": "user",
+                            "content": f"界面：\n{observation}\n\n任务：{instruction}",
+                        },
+                    ],
+                )
             verdict = _judge(session, content, expected_cap)
             passed += int(verdict == "ok")
             detail.append(verdict)
@@ -147,14 +165,21 @@ def _extract_action(content: str) -> str:
     if content.startswith("```"):
         content = content.strip("`")
         content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+    # Prefer the action field directly; reasoning models may emit prose around
+    # the JSON, and other braces in that prose would break a first-brace scan.
+    m = re.search(r'"action"\s*:\s*"([^"]+)"', content)
+    if m:
+        return m.group(1)
     start = content.find("{")
     end = content.rfind("}")
-    if start == -1 or end == -1:
-        # The model may have emitted the raw CALL directly.
-        if "CALL" in content:
-            return content[content.index("CALL") :].strip().rstrip("`. ")
-        raise ValueError("no json")
-    return json.loads(content[start : end + 1])["action"]
+    if start != -1 and end != -1:
+        try:
+            return json.loads(content[start : end + 1])["action"]
+        except (json.JSONDecodeError, KeyError):
+            pass
+    if "CALL" in content:
+        return content[content.index("CALL") :].strip().rstrip("`. ")
+    raise ValueError("no json")
 
 
 if __name__ == "__main__":

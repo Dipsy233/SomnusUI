@@ -164,6 +164,38 @@ are all exercised without a desktop.
 
 Reproduce with `somnus --demo bench --runs 100`.
 
+## Driving the runtime with a real model
+
+The four tools are exercised by a local OpenAI-compatible model. Three example
+hosts live under `examples/` (the agent loop is host code, not core - dev doc
+section 17):
+
+| Script | What it measures |
+| --- | --- |
+| `examples/agent.py` | native function-calling loop over the four tools |
+| `examples/check_contract.py` | tool-contract correctness: does the model emit valid SUI-Text for one aimed call |
+| `examples/eval_agent.py` | task success, judged from runtime state (not the model's claim) |
+
+```bash
+export SOMNUS_LLM_API_KEY=...            # if the endpoint needs one
+python examples/agent.py --provider uia --allow restaurantdemo.exe \
+    --pack restaurant-demo --task "帮我点一个巨无霸和一份薯条，然后打开购物车"
+python examples/check_contract.py --runs 5
+python examples/eval_agent.py --runs 3
+```
+
+Measured against `hy3` (reasoning model, native tool calls):
+
+| Check | Result |
+| --- | --- |
+| Tool contract (`add_product`, `open_cart`) | 10/10 |
+| Task success (`one_big_mac`, `big_mac_and_fries`, `three_colas`) | 9/9 |
+| Live WPF app, full acceptance transcript | completed in 3 tool calls |
+
+On the live WPF app the model ran `observe` → `p1.add()` → `p2.add()` →
+`c1.open()`, each producing the expected delta (`~ c1 count 0→1 total 0→5.99`,
+then `1→2`, then a real `+ WINDOW "Cart"`), and reported completion on its own.
+
 ## License
 
 MIT. Design borrows from `desktop-cli` (GPL-3.0 – **design only, no code**),
