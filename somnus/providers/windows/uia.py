@@ -182,49 +182,140 @@ class UiaProvider:
         return self._run(self._list_windows_sync)
 
     def _list_windows_sync(self) -> list[WindowInfo]:
-        UIA = self._UIA
-        cond = self._auto.CreatePropertyCondition(
-            UIA.UIA_ControlTypePropertyId, UIA.UIA_WindowControlTypeId
-        )
-        found = self._auto.GetRootElement().FindAll(UIA.TreeScope_Children, cond)
+        """Enumerate top-level application windows.
+
+        The desktop is walked with ``ControlViewWalker`` rather than
+        ``FindAll``: the walker view is what actually surfaces UWP/WinUI
+        windows hosted by ``ApplicationFrameWindow`` (such as Settings), which a
+        ControlType filter on the root's children misses. Candidate elements are
+        then validated with the same Win32 style rules Windows uses to decide
+        which windows belong on the taskbar, which drops the phantom nodes
+        (notification icons, service hosts) UIA also exposes at the root.
+
+        Missing UWP windows would make whole applications invisible to the agent
+        (dev doc section 5: L0 always lists windows).
+        """
         out: list[WindowInfo] = []
-        root = self._auto.GetRootElement()
-        for i in range(found.Length):
-            el = found.GetElement(i)
+        seen_hwnds: set[int] = set()
+        walker = self._auto.ControlViewWalker
+        child = walker.GetFirstChildElement(self._auto.GetRootElement())
+        while child is not None:
+            nxt = None
             try:
-                if el.CurrentIsOffscreen:
-                    continue
-                name = el.CurrentName or ""
-                if not name:
-                    continue
-                pid = el.CurrentProcessId
-                proc = _process_name(pid)
-                if self.allow_list and proc.lower() not in self.allow_list:
-                    continue
-                wid = f"w{len(out) + 1}"
-                with self._lock:
-                    self._windows[wid] = el
-                out.append(
-                    WindowInfo(
-                        window_id=wid,
-                        title=name,
-                        process=proc,
-                        pid=pid,
-                        active=bool(el.CurrentHasKeyboardFocus),
-                    )
-                )
-            except Exception:  # element vanished mid-enumeration
+                nxt = walker.GetNextSiblingElement(child)
+            except Exception:
+                pass
+            try:
+                ct = int(child.CurrentControlType)
+                if ct in _TOPLEVEL_CONTROL_TYPES:
+                    hwnd = int(child.CurrentNativeWindowHandle or 0)
+                    if hwnd:
+                        seen_hwnds.add(hwnd)
+                    # Panes are always kept (taskbar, Electron/UWP shells);
+                    # Windows must pass the taskbar-visibility test.
+                    if hwnd and (ct == _CT_PANE or _is_app_window(hwnd)):
+                        self._add_window(child, out, hwnd=hwnd)
+            except Exception:
+                pass
+            child = nxt
+
+        # The walker can stop early on a dead element; Win32 enumeration fills
+        # in anything it missed (and is how UWP frames are reached reliably).
+        for hwnd, pid, title in _enum_top_level_windows():
+            if hwnd in seen_hwnds:
                 continue
+            try:
+                el = self._auto.ElementFromHandle(hwnd)
+            except Exception:
+                continue
+            self._add_window(el, out, hwnd=hwnd)
+
         # Mark the foreground window active.
         try:
-            fg = self._auto.GetFocusedElement()
-            fg_pid = fg.CurrentProcessId
+            fg_pid = self._auto.GetFocusedElement().CurrentProcessId
             for w in out:
                 if w.pid == fg_pid:
                     w.active = True
         except Exception:
             pass
         return out
+
+    def _uwp_content_pid(self, frame_el: Any) -> int | None:
+        """The real process behind a UWP ``ApplicationFrameWindow``.
+
+        UWP apps run inside ``ApplicationFrameHost.exe``; the tree looks like::
+
+            Window "Settings" pid=<host>   (ApplicationFrameHost.exe)
+              Window "Settings" pid=<host>
+              Window "Settings" pid=<real> (SystemSettings.exe)  <- different pid
+
+        Walking the *immediate children* and taking the first with a different
+        pid yields the real app process (the approach used by the reference
+        Touchpoint backend; a subtree search for a class name is less reliable
+        because UWP content is built lazily).
+        """
+        try:
+            walker = self._auto.ControlViewWalker
+            host_pid = int(frame_el.CurrentProcessId)
+            child = walker.GetFirstChildElement(frame_el)
+            while child is not None:
+                try:
+                    cpid = int(child.CurrentProcessId)
+                    if cpid and cpid != host_pid:
+                        return cpid
+                except Exception:
+                    pass
+                try:
+                    child = walker.GetNextSiblingElement(child)
+                except Exception:
+                    break
+        except Exception:
+            pass
+        return None
+
+    def _add_window(
+        self,
+        el: Any,
+        out: list[WindowInfo],
+        *,
+        hwnd: int = 0,
+    ) -> None:
+        """Validate and append one window element."""
+        if el.CurrentIsOffscreen:
+            return
+        name = el.CurrentName or ""
+        if not name:
+            return
+        if _is_shell_chrome(el):
+            return
+        pid = int(el.CurrentProcessId)
+        proc = _process_name(pid)
+        # A UWP app is hosted by ApplicationFrameHost.exe; the real application
+        # (e.g. SystemSettings.exe) owns the content inside the frame. Report the
+        # real process so packs match the app, not the host.
+        if proc.lower() == "applicationframehost.exe":
+            real_pid = self._uwp_content_pid(el)
+            if real_pid:
+                pid = real_pid
+                proc = _process_name(pid)
+        if self.allow_list and proc.lower() not in self.allow_list:
+            return
+        # The same native window must not be listed twice.
+        for existing in out:
+            if existing.pid == pid and existing.title == name:
+                return
+        wid = f"w{len(out) + 1}"
+        with self._lock:
+            self._windows[wid] = el
+        out.append(
+            WindowInfo(
+                window_id=wid,
+                title=name,
+                process=proc,
+                pid=pid,
+                active=bool(el.CurrentHasKeyboardFocus),
+            )
+        )
 
     def focus_window(self, window_id: str) -> ExecResult:
         el = self._windows.get(window_id)
@@ -480,6 +571,98 @@ class UiaProvider:
 # ---------------------------------------------------------------------------
 # Win32 helpers
 # ---------------------------------------------------------------------------
+
+#: UIA control types that can be a top-level application window.
+_CT_WINDOW = 50032
+_CT_PANE = 50033
+_TOPLEVEL_CONTROL_TYPES = (_CT_WINDOW, _CT_PANE)
+
+
+def _is_app_window(hwnd: int) -> bool:
+    """True when *hwnd* looks like a real application window.
+
+    Mirrors the rules Windows uses to decide which windows get a taskbar
+    button: visible, and either WS_EX_APPWINDOW or unowned and not a
+    tool/no-activate window. This filters the phantom UIA root nodes
+    (notification icons, service hosts, hidden message windows).
+    """
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    if not user32.IsWindowVisible(hwnd):
+        return False
+    GWL_EXSTYLE = -20
+    GW_OWNER = 4
+    WS_EX_APPWINDOW = 0x00040000
+    WS_EX_TOOLWINDOW = 0x00000080
+    WS_EX_NOACTIVATE = 0x08000000
+    ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if ex_style & WS_EX_APPWINDOW:
+        return True
+    if ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE):
+        return False
+    # Owned windows are child dialogs, not top-level apps.
+    if user32.GetWindow(hwnd, GW_OWNER):
+        return False
+    return True
+
+
+def _enum_top_level_windows() -> list[tuple[int, int, str]]:
+    """Visible, titled, top-level Win32 windows as ``(hwnd, pid, title)``.
+
+    Used to reach windows the UIA walker omits or that appear after it stops:
+    UWP/WinUI apps hosted by ``ApplicationFrameWindow``, and windows that are
+    still being created while the walk runs.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    out: list[tuple[int, int, str]] = []
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            GWL_STYLE = -16
+            WS_CHILD = 0x40000000
+            if user32.GetWindowLongW(hwnd, GWL_STYLE) & WS_CHILD:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            out.append((int(hwnd), int(pid.value), buf.value))
+        except Exception:
+            pass
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    return out
+
+
+def _is_shell_chrome(el: Any) -> bool:
+    """True for UWP *content* windows, which duplicate the frame window.
+
+    A UWP app appears twice: an ``ApplicationFrameWindow`` (the window the user
+    sees) and its ``Windows.UI.Core.CoreWindow`` child. Listing both would show
+    the same app twice, so the frame is kept and the content window dropped.
+    """
+    """True for UWP *content* windows, which duplicate the frame window.
+
+    A UWP app appears twice: an ``ApplicationFrameWindow`` (the window the user
+    sees) and its ``Windows.UI.Core.CoreWindow`` child. Listing both would show
+    the same app twice, so the frame is kept and the content window dropped.
+    """
+    try:
+        return (el.CurrentClassName or "") == "Windows.UI.Core.CoreWindow"
+    except Exception:
+        return False
 
 
 def _process_name(pid: int) -> str:

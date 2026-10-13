@@ -184,7 +184,31 @@ custom-drawn one that only accepts keystrokes.
 | `explorer` | YAML | live Windows 11 File Explorer |
 | `generic` | YAML-less defaults | projection rules for every app |
 
-Windows Settings is not yet packed: its accessibility tree could not be
-recorded in the development environment, and writing a pack from memory would
-violate the "never guess" rule. The steps above apply unchanged once a real
-tree is captured.
+### Windows Settings (UWP)
+
+Settings is a UWP app: `SystemSettings.exe` is a small launcher and the real UI
+lives in a window hosted by `ApplicationFrameHost.exe`. The provider handles
+this - see "UWP windows" below - so a Settings pack can match on
+`systemsettings.exe` exactly like any other app.
+
+The pack itself is **not written yet**. The UIA tree could not be captured in
+the development environment because UWP activation is unavailable there
+(`ms-settings:` and Calculator both fail to launch), and writing a pack from
+memory would violate the "never guess" rule. The steps above apply unchanged
+once a real tree is captured with `somnus --provider uia record wN -o settings.json`.
+
+## UWP windows (ApplicationFrameHost)
+
+A UWP app appears in the tree as an `ApplicationFrameWindow` whose process is
+`ApplicationFrameHost.exe`, not the app. Two things make it usable:
+
+1. **Discovery.** The desktop root is walked with `ControlViewWalker`, which
+   surfaces UWP frames; a ControlType filter on the root's children does not.
+   Win32 `EnumWindows` fills in anything the walker stops short of.
+2. **Identity.** When a window's process is `ApplicationFrameHost.exe`, the
+   provider walks the frame's immediate children for one with a different pid -
+   that child belongs to the real app. The window's `process` is then reported
+   as e.g. `SystemSettings.exe`, so `match: { process: systemsettings.exe }`
+   works.
+
+Both behaviours are covered by `tests/e2e/test_windows_windows.py`.
