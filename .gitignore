@@ -51,3 +51,6 @@ recordings/
 # Local scratch
 *.log
 /tmp/
+
+# playwright-cli scratch
+.playwright-cli/

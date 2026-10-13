@@ -149,7 +149,12 @@ def cmd_rpc(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="somnus", description="SomnusUI")
-    parser.add_argument("--provider", default="auto", choices=["auto", "uia", "mock"])
+    parser.add_argument(
+        "--provider",
+        default="auto",
+        choices=["auto", "uia", "cdp", "mock"],
+        help="accessibility source: uia (Windows), cdp (browser), mock (fixtures)",
+    )
     parser.add_argument("--fixture", action="append", default=None)
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--pack", default=None)

@@ -60,11 +60,18 @@ class NullSubscription:
 def get_provider(name: str = "auto", **kwargs: Any) -> AccessibilityProvider:
     """Factory resolving a provider by name.
 
-    ``auto`` picks the Windows UIA provider when available, otherwise the mock
-    provider (useful for CLI smoke tests on other platforms).
+    ``auto`` picks the Windows UIA provider when available, else CDP when a
+    browser debug port is reachable, else the mock provider (useful for CLI
+    smoke tests). ``cdp`` forces the browser provider.
     """
 
     name = (name or "auto").lower()
+
+    if name in ("cdp", "browser", "chrome", "edge"):
+        from somnus.providers.cdp import CdpProvider
+
+        return CdpProvider(**kwargs)
+
     if name in ("auto", "uia", "windows"):
         try:
             from somnus.providers.windows.uia import UiaProvider
@@ -73,6 +80,18 @@ def get_provider(name: str = "auto", **kwargs: Any) -> AccessibilityProvider:
         except Exception:
             if name != "auto":
                 raise
+        # On a non-Windows host, or when UIA is unavailable, a browser may still
+        # be reachable; prefer it over the mock so `somnus observe` does the
+        # useful thing without extra flags.
+        if name == "auto":
+            try:
+                from somnus.providers.cdp import CdpProvider, discover_targets
+
+                if discover_targets():
+                    return CdpProvider(**kwargs)
+            except Exception:
+                pass
+
     from somnus.providers.mock import MockProvider
 
     return MockProvider(**kwargs)

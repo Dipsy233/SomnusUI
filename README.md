@@ -52,6 +52,46 @@ somnus record w1 -o fixture.json
 somnus mcp           # MCP server (stdio), 4 tools
 ```
 
+## Providers
+
+The runtime talks to one `AccessibilityProvider`. Three exist, and the compiler,
+projection and runtime are identical for all of them.
+
+| Provider | Source | Status |
+| --- | --- | --- |
+| `uia` | Windows UI Automation (Win32 / WPF / UWP) | v0.1 |
+| `cdp` | Chrome DevTools Protocol accessibility tree (Edge / Chrome) | v0.3 |
+| `mock` | recorded `RawTree` fixtures (any platform) | v0.1 |
+
+```bash
+somnus --provider uia windows          # native windows
+somnus --provider cdp windows          # browser tabs
+somnus --provider cdp observe          # a page, as SUI-Text
+```
+
+### Browsers (CDP)
+
+The browser provider reads the page's own accessibility tree
+(`Accessibility.getFullAXTree`) - never a screenshot, never DOM scraping - and
+drives it through the DOM node the tree names (`Runtime.callFunctionOn`), so the
+page's real event handlers run instead of synthetic input at coordinates. It
+attaches to any page reachable on the loopback debug endpoint, including
+browsers launched with `--remote-debugging-port=0` (found via their
+`DevToolsActivePort` file). Requires the `[cdp]` extra.
+
+A web form, read with no pack at all:
+
+```
+WINDOW w1 "SomnusUI CDP 测试页" active
+  GROUP g1 +scroll(...)
+    TEXT tx2 "用户名"
+    INPUT q1 "用户名"
+    TEXT tx4 "密码"
+    INPUT q2 "密码"
+    CHECKBOX cb1 " 记住我" unchecked
+    BUTTON b1 "登录"
+```
+
 ## The four tools
 
 | Tool | Purpose | Returns |
@@ -94,20 +134,22 @@ Full grammar: [`somnus/sui/grammar.md`](somnus/sui/grammar.md).
 ```
 somnus/
 ├── ir/            node / capability / action value objects (platform free)
-├── providers/     base.py  mock.py  windows/{uia,cache,executor,events}.py
+├── providers/     base.py  mock.py  cdp.py
+│                  windows/{uia,cache,executor,events,keyboard}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 │                  yaml_pack.py (v0.2 YAML pack loader)
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── packs/         generic.py restaurant_demo.py (v0.1)
-│                  notepad.pack.yaml explorer.pack.yaml (v0.2)
+│                  notepad / explorer / windows_settings .pack.yaml (v0.2)
 ├── protocol/      tools.py mcp_server.py jsonrpc.py
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 docs/packs.md           how to write an App Pack
+examples/               agent loop, contract check, task evaluation
 bench/                  metrics harness + LLM control demos
-tests/{fixtures,golden,compiler,projection,runtime,e2e}/
+tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
 ```
 
 Dependency direction (enforced in CI): `providers → compiler → projection →

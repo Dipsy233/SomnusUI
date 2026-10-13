@@ -19,8 +19,10 @@ from __future__ import annotations
 from somnus.compiler.normalize import is_interactive
 from somnus.ir.node import RawNode
 
-#: Roles considered structural containers.
-CONTAINER_ROLES = frozenset({"group", "pane", "unknown"})
+#: Roles considered structural containers. An unnamed, valueless node of one
+#: of these roles carries no semantics and is folded into its child, which both
+#: UIA and CDP produce in quantity (wrapper panes, ``paragraph > StaticText``).
+CONTAINER_ROLES = frozenset({"group", "pane", "unknown", "text"})
 
 #: Minimum number of same-role siblings that triggers automatic collapse.
 AUTO_COLLAPSE_THRESHOLD = 20
@@ -46,9 +48,10 @@ def simplify(root: RawNode) -> RawNode:
 def _simplify_child(node: RawNode) -> RawNode | None:
     node.children = [c for c in (_simplify_child(c) for c in node.children) if c]
 
-    # A button/link/text pair where the child text merely repeats the parent
-    # name is a UIA artifact (WPF exposes the button's caption as a child
-    # TextBlock). Drop it so the entity tree stays clean.
+    # A node that carries a child text which merely repeats its own name is an
+    # accessibility artifact (WPF exposes a button's caption as a child
+    # TextBlock; CDP wraps a heading's text in a StaticText). Drop it so the
+    # tree has one line per concept.
     if node.children and node.name and node.role in (
         "button",
         "link",
@@ -56,6 +59,11 @@ def _simplify_child(node: RawNode) -> RawNode | None:
         "tab",
         "listitem",
         "group",
+        "text",
+        "heading",
+        "checkbox",
+        "radio",
+        "treeitem",
     ):
         node.children = [
             c
