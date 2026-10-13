@@ -171,6 +171,30 @@ def test_ambiguous_fingerprint_reports_error():
 # --------------------------------------------------------------- plain text (§6.4)
 
 
+def test_find_tool_accepts_find_syntax():
+    """Regression: call_tool('find') must parse the FIND syntax argument."""
+    from somnus.protocol.tools import call_tool
+
+    session = Session(
+        MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    )
+    session.observe()
+    out = call_tool(session, "find", {"query": 'FIND product "Big Mac"'})
+    assert out.startswith("FOUND 1")
+    assert 'PRODUCT p1 "Big Mac"' in out
+
+
+def test_find_tool_accepts_bare_query():
+    from somnus.protocol.tools import call_tool
+
+    session = Session(
+        MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    )
+    session.observe()
+    out = call_tool(session, "find", {"query": "Big Mac"})
+    assert "Big Mac" in out
+
+
 def test_dispatch_lines_plain_text_protocol():
     session = Session(
         MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())

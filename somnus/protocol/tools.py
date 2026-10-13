@@ -90,7 +90,15 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
         if name == "observe":
             return session.observe(args.get("window")).text
         if name == "find":
-            action = Action(kind="find", query=args.get("query", ""))
+            # The `query` argument accepts the FIND syntax verbatim
+            # (``FIND product "Big Mac"``) or a bare query string.
+            raw = (args.get("query") or "").strip()
+            from somnus.sui.parse import parse_action
+
+            if raw.upper().startswith("FIND"):
+                action = parse_action(raw)
+            else:
+                action = Action(kind="find", query=raw)
             return session.find(action)
         if name == "inspect":
             rng = None
