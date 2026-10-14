@@ -16,6 +16,8 @@ Rules:
 
 from __future__ import annotations
 
+import re
+
 from somnus.compiler.normalize import is_interactive
 from somnus.ir.node import RawNode
 
@@ -26,6 +28,19 @@ CONTAINER_ROLES = frozenset({"group", "pane", "unknown", "text"})
 
 #: Minimum number of same-role siblings that triggers automatic collapse.
 AUTO_COLLAPSE_THRESHOLD = 20
+
+#: A class name that marks an element as a *row* in a list the user interacts
+#: with. Such an element is addressable structure and must survive
+#: simplification even when it wraps a single child.
+_ROW_CLASS_RE = re.compile(
+    r"(^|[-_\s])(item|row|entry|cell|card|result|option|node)([-_\s]|$)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_row(node: RawNode) -> bool:
+    cls = node.native.class_name or ""
+    return bool(cls and _ROW_CLASS_RE.search(cls))
 
 
 def _meaningful(node: RawNode) -> bool:
@@ -112,13 +127,18 @@ def _simplify_child(node: RawNode) -> RawNode | None:
             )
         ]
 
-    # Transparent single-child wrapper.
+    # Transparent single-child wrapper. An element that carries a class name
+    # which marks it as a list row (`recent-contact-item`, `...-item`, `row`) is
+    # kept even with one child: it IS the row the user sees and clicks, and
+    # flattening it would hide the row from entity detection (live: QQ's pinned
+    # conversations vanished because their one child got promoted).
     if (
         node.role in CONTAINER_ROLES
         and not node.name
         and not node.value
         and len(node.children) == 1
         and not is_interactive(node.role, node.patterns)
+        and not _looks_like_row(node)
     ):
         return node.children[0]
 

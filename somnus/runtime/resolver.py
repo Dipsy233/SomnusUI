@@ -155,6 +155,14 @@ class Resolver:
                 )
                 continue
             native = self._resolve_target(node, step, members)
+            # Runtime pattern gate. A cap may carry several alternative `via`
+            # paths (e.g. set_text by Value pattern *or* by keyboard) and the
+            # choice depends on the live element, which pack-time matching
+            # cannot always know. Steps whose condition is not met by the
+            # matched node are dropped here, so the executor only ever runs a
+            # path the element really supports.
+            if not self._condition_holds(step, node):
+                continue
             value = step.value
             if isinstance(value, str) and value.startswith("$"):
                 value = args.get(value[1:].strip())
@@ -169,6 +177,23 @@ class Resolver:
                 )
             )
         return steps
+
+    def _condition_holds(self, step: PrimitiveStep, node: SemanticNode) -> bool:
+        """Evaluate a step's ``has:``/``missing:`` pattern gate against ``node``.
+
+        The node carries its own native pattern names, so the gate is exact and
+        does not depend on a raw-tree lookup. A missing condition means "always
+        run".
+        """
+        if not step.condition:
+            return True
+        kind, _, pattern = step.condition.partition(":")
+        patterns = node.patterns
+        if kind == "has":
+            return pattern in patterns
+        if kind == "missing":
+            return pattern not in patterns
+        return True
 
     def _resolve_target(
         self, node: SemanticNode, step: PrimitiveStep, members: dict[str, str]

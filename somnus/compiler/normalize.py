@@ -210,10 +210,39 @@ def normalize(node: RawNode) -> RawNode:
 
 
 _EDITOR_CLASS_RE = re.compile(
-    r"prosemirror|codemirror|monaco|textarea|text-editor|editor\b", re.IGNORECASE
+    r"prosemirror|codemirror|monaco|textarea|text-editor|editor\b|"
+    r"contenteditable|rich-?text|ace_editor|xterm|terminal",
+    re.IGNORECASE,
+)
+
+#: Roles that become ``input`` when they are really a typing surface.
+_EDITOR_CANDIDATE_ROLES: frozenset[str] = frozenset(
+    {"group", "pane", "document", "unknown"}
 )
 
 
 def _looks_like_editor(node: RawNode) -> bool:
+    """Whether a non-``input`` node is actually a text editor.
+
+    A self-drawn editor (Chromium/Electron rich text, CodeMirror, Monaco, a
+    terminal) is exposed by the platform as a plain ``group``/``pane`` with a
+    text interface but no Value pattern, so role alone cannot identify it. Two
+    signals are combined, class name first (cheap and exact for the well-known
+    editors), then structure: a text interface on a leaf-ish focusable node that
+    is not a labelled container.
+    """
     cls = node.native.class_name or ""
-    return bool(_EDITOR_CLASS_RE.search(cls))
+    if cls and _EDITOR_CLASS_RE.search(cls):
+        return True
+    if node.role not in _EDITOR_CANDIDATE_ROLES:
+        return False
+    if "text" not in node.patterns or "value" in node.patterns:
+        return False
+    # A container with named interactive children is a toolbar/panel, not an
+    # editor; an editor presents itself as a single typing surface.
+    if any(
+        c.role in ("button", "input", "menuitem", "tab", "link")
+        for c in node.children
+    ):
+        return False
+    return True

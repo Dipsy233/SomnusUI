@@ -163,19 +163,22 @@ def test_notepad_pack_matches_document():
 
 
 def test_notepad_set_text_positional_argument():
-    """``CALL tx1.set_text("…")`` binds the positional arg to the named param."""
-    from somnus.providers.mock import MockProvider
-    from somnus.runtime.session import Session
-    from somnus.sui.parse import parse_action
+    """``CALL tx1.set_text("…")`` binds the positional arg to the named param.
+
+    The Windows 11 editor discards its Value pattern, so the route is focus +
+    keyboard typing; the arg must still land on the writing step.
+    """
     from somnus.runtime.resolver import Resolver
+    from somnus.sui.parse import parse_action
 
     tree = _notepad_tree()
     result = Compiler().compile(tree, pack=get_pack("notepad"))
     resolver = Resolver(result)
     doc_ref = next(n.ref for n in result.root.walk() if n.entity == "document")
     resolution = resolver.resolve(parse_action(f'CALL {doc_ref}.set_text("hi")'))
-    assert resolution.steps[0].primitive == "set_text"
-    assert resolution.steps[0].value == "hi"
+    writer = [s for s in resolution.steps if s.primitive in ("set_text", "type_text")]
+    assert writer, "no writing step resolved"
+    assert writer[0].value == "hi"
 
 
 def test_notepad_named_argument_also_works():
@@ -188,7 +191,8 @@ def test_notepad_named_argument_also_works():
     resolution = resolver.resolve(
         parse_action(f'CALL {doc_ref}.set_text(text="named")')
     )
-    assert resolution.steps[0].value == "named"
+    writer = [s for s in resolution.steps if s.primitive in ("set_text", "type_text")]
+    assert writer and writer[0].value == "named"
 
 
 # ---------------------------------------------------------------------------

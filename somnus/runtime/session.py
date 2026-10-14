@@ -126,7 +126,16 @@ class Session:
         return self.windows[0].window_id
 
     def focus_window(self, ref: str) -> CallOutcome:
-        """``CALL w2.focus()`` - switch the observation target."""
+        """``CALL w2.focus()`` - switch the observation target.
+
+        The window list is refreshed first: a window id is only meaningful for
+        the enumeration that produced it, and apps open and close windows
+        between the observe and the call. Focusing against a stale list can
+        resolve the id to a *different* window and then allow-list-check the
+        wrong process (found live: focusing Notepad was denied against
+        `explorer.exe`).
+        """
+        self.refresh_windows()
         window = self._window_by_ref(ref)
         if window is None:
             raise target_not_found(ref)
@@ -687,6 +696,17 @@ class Session:
         return out
 
     def _target_process(self) -> str:
+        """The process the *current compilation* belongs to.
+
+        This must come from the compiled result, not from a fresh window lookup:
+        a window id is only meaningful for the enumeration that produced it, and
+        apps come and go between the observe and the call. Re-resolving the id
+        could return a completely different window and make the policy check
+        approve or deny the wrong process (found live: a Notepad call failed
+        PERMISSION_DENIED against `explorer.exe` because the id had moved).
+        """
+        if self.result is not None and self.result.process:
+            return self.result.process
         win = self._window_by_ref(self.target_window or "")
         return win.process if win else ""
 

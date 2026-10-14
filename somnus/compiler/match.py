@@ -23,7 +23,7 @@ from somnus.ir.capability import Capability, Effect, PrimitiveStep
 from somnus.ir.node import RawNode
 
 #: Minimum heuristic confidence required to promote a node to an entity.
-HEURISTIC_THRESHOLD = 0.9
+HEURISTIC_THRESHOLD = 0.75
 
 
 @dataclass(slots=True)
@@ -244,8 +244,13 @@ def entity_capabilities(em: EntityMatch) -> list[Capability]:
         steps: list[PrimitiveStep] = []
         for ref_expr in cdef.via:
             step = _compile_step(ref_expr, em)
-            if _step_applies(step, em):
-                steps.append(step)
+            # A step whose guard is *definitely* unsatisfiable for this node is
+            # dropped at compile time. Guards whose truth depends on a live
+            # pattern are kept and re-checked by the resolver, so a pack and a
+            # generic capability follow exactly the same path.
+            if _step_definitely_false(step, em):
+                continue
+            steps.append(step)
         if not steps:
             continue
         effects = [_parse_effect(e) for e in cdef.effects]
@@ -262,20 +267,25 @@ def entity_capabilities(em: EntityMatch) -> list[Capability]:
     return caps
 
 
-def _step_applies(step: PrimitiveStep, em: EntityMatch) -> bool:
-    """Evaluate a step's pattern condition against the matched node."""
+def _step_definitely_false(step: PrimitiveStep, em: EntityMatch) -> bool:
+    """Whether a step's guard can never hold, so the step can be dropped now.
+
+    Only a *conjunctive contradiction* is provable here: ``missing:x`` when the
+    node has ``x``, or ``has:x`` when it does not. Everything else is left for
+    the resolver, which sees the live element.
+    """
     if not step.condition:
-        return True
+        return False
     kind, _, pattern = step.condition.partition(":")
     target_node = em.members.get("self")
     if step.target.startswith("member:"):
         target_node = em.members.get(step.target.split(":", 1)[1]) or target_node
     patterns = target_node.patterns if target_node is not None else frozenset()
     if kind == "has":
-        return pattern in patterns
-    if kind == "missing":
         return pattern not in patterns
-    return True
+    if kind == "missing":
+        return pattern in patterns
+    return False
 
 
 def _compile_step(expr: str | dict[str, Any], em: EntityMatch) -> PrimitiveStep:
@@ -348,35 +358,97 @@ def _parse_effect(raw: str) -> Effect | None:
 # ---------------------------------------------------------------------------
 
 _VERB_BUTTONS = re.compile(
-    r"^(add|buy|remove|delete|select|choose|apply|subscribe|加入|购买|删除|选择|应用)$",
+    r"^(add|buy|remove|delete|select|choose|apply|subscribe|install|open|edit|"
+    r"save|copy|move|rename|send|share|download|upload|"
+    r"加入|购买|删除|选择|应用|安装|打开|编辑|保存|复制|移动|重命名|发送|分享|下载|上传)$",
     re.IGNORECASE,
 )
 _PRICE = re.compile(r"[$¥€]\s?\d+[.,]\d{2}|\d+[.,]\d{2}\s?(元|USD|CNY)")
+#: Text that reads like a value/timestamp rather than a title.
+_TIME_LIKE = re.compile(
+    r"^\s*(\d{1,2}:\d{2}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}"
+    r"|昨天|今天|星期[日一二三四五六])$"
+)
+
+#: Confidence contributed by each structural signal (summed, capped at 1.0).
+_SCORE_TITLE = 0.40
+_SCORE_ACTION = 0.35
+_SCORE_PRICE = 0.15
+_SCORE_STABLE_ID = 0.10
+#: Repetition among same-shaped titled siblings is itself strong evidence of a
+#: list; combined with a title it is enough on its own to clear the threshold.
+_SCORE_ROW_SHAPE = 0.35
+_SCORE_SUBTITLE = 0.10
+
+#: A row-shaped entity has at most this many children; beyond it the node is a
+#: container, not a row.
+_ROW_MAX_CHILDREN = 12
+
+
+def _descendant_count(node: RawNode) -> int:
+    """Number of descendants (excluding the node itself)."""
+    return sum(1 for _ in _descendants(node)) - 1
+
+
+def _title_texts(node: RawNode) -> list[RawNode]:
+    """Text descendants that read like a title (not a timestamp/value).
+
+    Looks through unnamed wrapper layers, because a self-drawn toolkit (QQ's
+    `recent-contact-item`, a Chromium list row) nests its real text a level or
+    two below the row element. Only text nodes with a name count, and a
+    time/date-shaped label is never treated as the title.
+    """
+    out: list[RawNode] = []
+    for child in _descendants(node):
+        if child is node:
+            continue
+        if child.role == "text" and child.name and not _TIME_LIKE.match(child.name):
+            out.append(child)
+    return out
 
 
 def heuristic_entities(root: RawNode) -> dict[int, EntityMatch]:
-    """Detect entity-like groups without a pack.
+    """Detect entity-like rows without a pack.
 
-    A group qualifies as a generic "item" when it contains exactly one named
-    text and one verb button. Score is computed from the signals and compared to
-    :data:`HEURISTIC_THRESHOLD`; below it, the group is left primitive.
+    This is what lets SomnusUI operate an *unfamiliar* application: the LLM
+    should not need a hand-written pack per program. Two shapes are recognised,
+    both purely structural:
+
+    * **action row** - a small container with a title-like text plus a verb
+      button ("Big Mac" + "Add"); the row gains ``+<verb>``.
+    * **list row** - a small container that repeats among same-shaped siblings
+      and carries a title-like text (a chat list, a mail list, a file list); it
+      becomes a ``listitem`` entity.
+
+    Confidence is a sum of signals compared against :data:`HEURISTIC_THRESHOLD`.
+    A node below it stays a primitive - never guessed into an entity (dev doc
+    section 11.2). Both detectors inspect only structure, names and patterns, so
+    no app-specific knowledge is involved.
     """
     out: dict[int, EntityMatch] = {}
     for node in root.walk():
         if node.role not in ("group", "listitem", "row"):
             continue
-        texts = [c for c in node.children if c.role == "text" and c.name]
-        buttons = [c for c in node.children if c.role == "button" and c.name]
-        verb_buttons = [b for b in buttons if _VERB_BUTTONS.match(b.name or "")]
+        if _descendant_count(node) > _ROW_MAX_CHILDREN:
+            continue
+        texts = _title_texts(node)
+        buttons = [
+            d
+            for d in _descendants(node)
+            if d is not node and d.role == "button" and d.name
+        ]
+        verb_buttons = [
+            b for b in buttons if _VERB_BUTTONS.match((b.name or "").strip())
+        ]
         score = 0.0
         if texts:
-            score += 0.4
+            score += _SCORE_TITLE
         if verb_buttons:
-            score += 0.4
+            score += _SCORE_ACTION
         if any(_PRICE.search(c.name or "") for c in texts):
-            score += 0.15
-        if "automation_id" in (node.native.automation_id or "") or node.native.automation_id:
-            score += 0.05
+            score += _SCORE_PRICE
+        if node.native.automation_id:
+            score += _SCORE_STABLE_ID
         if score < HEURISTIC_THRESHOLD or not texts or not verb_buttons:
             continue
         members = {
@@ -390,7 +462,64 @@ def heuristic_entities(root: RawNode) -> dict[int, EntityMatch]:
             def_=None,
             members=members,
             attrs={"name": texts[0].name},
-            confidence=round(score, 3),
+            confidence=round(min(score, 1.0), 3),
             identity=node.native.automation_id or texts[0].name,
         )
+
+    _detect_list_rows(root, out)
     return out
+
+
+def _detect_list_rows(root: RawNode, out: dict[int, EntityMatch]) -> None:
+    """Titled rows that repeat under one container become entities.
+
+    Repetition under a shared parent is the key signal: one titled child means
+    nothing, but three titled siblings is a list (contacts, messages, files,
+    results). Rows are *not* required to be structurally identical - a pinned or
+    highlighted row legitimately differs from the rest (QQ's "我的手机" pinned
+    conversation has one child while its neighbours have four), and excluding it
+    would drop a real row. Only the *parent* and the presence of a title matter.
+    """
+    for parent in root.walk():
+        candidates = [
+            c
+            for c in parent.children
+            if c.role in ("group", "listitem", "row")
+            and 0 < _descendant_count(c) <= _ROW_MAX_CHILDREN
+        ]
+        if len(candidates) < 3:
+            continue
+        titled = [r for r in candidates if _title_texts(r)]
+        # A majority of the container must look like titled rows, so a toolbar
+        # of three random groups is not mistaken for a list.
+        if len(titled) < 3 or len(titled) < len(candidates) * 0.5:
+            continue
+        for row in titled:
+            if id(row) in out:
+                continue
+            texts = _title_texts(row)
+            interactive = [
+                d
+                for d in _descendants(row)
+                if d is not row
+                and d.role in ("button", "link", "menuitem")
+                and d.name
+            ]
+            score = _SCORE_TITLE + _SCORE_ROW_SHAPE
+            if interactive:
+                score += _SCORE_ACTION
+            if len(texts) > 1:
+                score += _SCORE_SUBTITLE
+            if row.native.automation_id:
+                score += _SCORE_STABLE_ID
+            if score < HEURISTIC_THRESHOLD:
+                continue
+            out[id(row)] = EntityMatch(
+                    entity="listitem",
+                    node=row,
+                    def_=None,
+                    members={"self": row, "title": texts[0]},
+                    attrs={"name": texts[0].name},
+                    confidence=round(min(score, 1.0), 3),
+                    identity=row.native.automation_id or texts[0].name,
+                )

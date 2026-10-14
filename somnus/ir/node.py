@@ -144,6 +144,10 @@ class SemanticNode:
     name: str | None = None
     value: Any | None = None
     states: frozenset[str] = frozenset()
+    #: Native pattern names the source element exposed, carried through so the
+    #: resolver can gate alternative `via` steps (Value pattern vs keyboard)
+    #: without re-reading the raw tree. Hidden from the LLM.
+    patterns: frozenset[str] = frozenset()
     attrs: dict[str, Any] = field(default_factory=dict)
     caps: list["Any"] = field(default_factory=list)  # list[Capability] (avoid cycle)
     relations: list[Relation] = field(default_factory=list)

@@ -33,19 +33,19 @@ entities:
       name: "$self.name"
     caps:
       set_text:
-        # Prefer the native Value pattern; fall back to focus + keyboard typing
-        # when the editor exposes no Value pattern (dev doc section 12.2).
-        # The compiler keeps exactly one of these steps, so the resolver never
-        # sees a step the target cannot run, and the LLM never sees `type_text`.
+        # The Windows 11 editor is a RichEdit surface that *advertises* a Value
+        # pattern while silently discarding `SetValue` (verified live: the tab
+        # never turned to "已修改" and the text never appeared). For this editor
+        # the keyboard is the only route that actually writes, so the pack
+        # declares it directly instead of trusting the Value pattern. The text
+        # is forwarded from the call's argument, so the LLM still just calls
+        # `set_text(text)` and never sees `type_text`.
         via:
           - target: "$self"
-            primitive: set_text
-            value: "$text"
-            when_has: value
+            primitive: focus
           - target: "$self"
             primitive: type_text
             value: "$text"
-            when_missing: value
         params:
           text: { type: string, required: true }
         risk: normal
