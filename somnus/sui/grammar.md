@@ -1,4 +1,4 @@
-# SUI-Text grammar (v0.2)
+# SUI-Text grammar
 
 The single LLM-facing format. Internal formats are JSON; SUI-Text is the wire
 format. All rules below are enforced by `somnus/sui/serialize.py` and

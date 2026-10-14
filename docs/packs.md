@@ -1,4 +1,4 @@
-# App Packs (v0.2)
+# App Packs
 
 A **pack** teaches SomnusUI a domain vocabulary for one application: it turns
 the generic control tree (`group` / `text` / `button`) into named entities with
@@ -43,7 +43,7 @@ entities:
 ## Matching
 
 Match by **process**, never by window title: titles are localised and change
-with the open document, which would invalidate every ref (dev doc section 8).
+with the open document, which would invalidate every ref.
 
 `MatchRule` fields:
 
@@ -88,7 +88,7 @@ with `from` / `regex` / `cast` / `default`:
 | `role` | portable role |
 
 `from` also accepts `descendant(role=text, name=/re/)` to pull a value from the
-first matching descendant (dev doc section 15).
+first matching descendant.
 
 ```yaml
 attrs:
@@ -143,7 +143,7 @@ caps:
       # Prefer the native Value pattern ...
       - { target: "$self", primitive: set_text, value: "$text", when_has: value }
       # ... otherwise focus the control and type (declarative keyboard fallback,
-      # dev doc section 12.2). `type_text` is not a capability the LLM can call.
+      # declarative keyboard fallback). `type_text` is not a capability the LLM can call.
       - { target: "$self", primitive: type_text, value: "$text", when_missing: value }
 ```
 
@@ -157,8 +157,7 @@ custom-drawn one that only accepts keystrokes.
 **A pack is optional.** Without one, the compiler runs in *Generic Mode*: it
 still normalises roles, derives capabilities from the native patterns, builds
 relations and projects the tree. Any app whose controls expose standard UIA
-patterns is usable the moment it opens - the same principle as dev doc section
-4.5 and 11.3.
+patterns is usable the moment it opens.
 
 What a pack adds is *certainty*, not reachability:
 
@@ -170,7 +169,7 @@ What a pack adds is *certainty*, not reachability:
 | Domain actions | the primitive vocabulary | semantic caps (`add`, `submit`, ...) |
 
 Generic capabilities are derived only from patterns, so they never guess
-(dev doc section 11.2); a control that exposes no pattern gets no capability
+(generic capabilities never guess); a control that exposes no pattern gets no capability
 rather than a wrong one.
 
 ### Write a pack when

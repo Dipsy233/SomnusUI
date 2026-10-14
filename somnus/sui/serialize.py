@@ -1,4 +1,4 @@
-"""SUI-Text serialization (dev doc section 6.1).
+"""SUI-Text serialization.
 
 Grammar::
 
@@ -13,7 +13,7 @@ Grammar::
     unknown := "?" REF ROLE "reason=" REASON
     more    := "…" "+" INT "more" [hint]
 
-Key savings vs v0.1:
+Key savings:
 
 * capabilities live on the same line as the node;
 * default capabilities are omitted (the system prompt carries the table);
