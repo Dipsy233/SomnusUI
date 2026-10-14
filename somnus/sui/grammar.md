@@ -26,10 +26,34 @@ INDENT  := 2 spaces per level
 ### Rules
 
 1. **Capabilities live on the node line.**
-2. **Implicit capabilities are omitted** - `focus`/`read` everywhere; `activate`
-   on `BUTTON`, `set_text` on `INPUT`, `toggle` on `CHECKBOX`, `select` on
-   `LISTITEM`, `scroll` on containers. The system prompt carries this table.
-   They are always available to the resolver regardless of printing.
+2. **Implicit capabilities are omitted** - `focus`/`read` everywhere;
+   `double_click` on any control; `activate` on `BUTTON`, `set_text` on `INPUT`,
+   `toggle` on `CHECKBOX`, `select` on `LISTITEM`, `scroll` on containers. The
+   system prompt carries this table. They are always available to the resolver
+   regardless of printing.
+
+### Gesture semantics (`select` vs `activate` vs `double_click`)
+
+These three are distinct, and conflating them is a real bug class:
+
+| Capability | Native pattern | Meaning |
+| --- | --- | --- |
+| `select` | SelectionItem | highlight/select - what a **single** click does |
+| `activate` | Invoke | the element's **default action** - what a **double** click does |
+| `double_click` | synthetic mouse | a literal double click at the element |
+
+`activate` is **not** a click. Invoke means "perform the single unambiguous
+action this control represents": press for a button, but **open** for a file or
+list row. Measured in File Explorer, on the same file:
+
+```
+CALL li11.select()    → highlights the file (selection only)
+CALL li11.activate()  → opens the file in its associated application
+```
+
+So a row that should only be *picked* must be driven with `select`; `activate`
+opens it. Applications differ - some answer Invoke by only highlighting - which
+is why the delta, not the status word, is the source of truth.
 3. **`enabled` is the default state** and never printed; only deviations appear.
 4. **Strings are double-quoted**, escape `\"` and `\n`, clip at 80 chars with `…`.
 5. **Numeric values drop the currency symbol** into an attribute (`price=5.99`,

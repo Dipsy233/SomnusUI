@@ -19,6 +19,17 @@ CapLevel = Literal["primitive", "semantic"]
 Risk = Literal["safe", "normal", "critical"]
 
 #: The complete primitive capability vocabulary (dev doc section 4.5).
+#:
+#: Two of these are easy to confuse, and the difference matters:
+#:
+#: * ``select`` highlights/selects an item (SelectionItemPattern) - what a
+#:   single click does.
+#: * ``activate`` runs the element's *default action* (InvokePattern), which is
+#:   a press for a button but an **open** for a file or list row - what a
+#:   double click does. It is not a click.
+#:
+#: Measured in File Explorer: ``CALL li.select()`` highlights the file, while
+#: ``CALL li.activate()`` launches it in the associated application.
 PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
     {
         "activate",

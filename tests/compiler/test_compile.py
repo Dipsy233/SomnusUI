@@ -4,8 +4,70 @@ from __future__ import annotations
 
 from somnus.compiler.compile import Compiler
 from somnus.compiler.normalize import normalize_role, normalize_states
+from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
 from somnus.packs import get_pack, select_pack
 from tests.fixtures.builders import notepad_tree, restaurant_demo_tree
+
+
+# ---------------------------------------------------------------------------
+# gesture semantics: select (click) vs activate (default action)
+# ---------------------------------------------------------------------------
+
+
+def _listitem_tree(patterns: frozenset[str]) -> RawTree:
+    root = RawNode(
+        native=NativeRef(window_id="w1", runtime_id=(1,)),
+        role="list",
+        name="Files",
+        children=[
+            RawNode(
+                native=NativeRef(window_id="w1", runtime_id=(2,)),
+                role="listitem",
+                name="WhaleBun.png",
+                patterns=patterns,
+            )
+        ],
+    )
+    return RawTree(
+        window=WindowInfo(window_id="w1", title="Files", process="explorer.exe", pid=1),
+        root=root,
+    )
+
+
+def test_select_and_activate_are_separate_capabilities():
+    """They mean different things and both must survive compilation.
+
+    `select` is SelectionItem (a single click - highlight). `activate` is
+    Invoke (the element's *default action* - for a file, "open"). Collapsing
+    them would make "pick this file" indistinguishable from "launch this
+    file", which is exactly how a stray file gets opened by accident.
+    """
+    tree = _listitem_tree(frozenset({"invoke", "selectionitem"}))
+    result = Compiler().compile(tree, pack=None)
+    node = result.find("li1")
+    assert node is not None
+    caps = node.cap_names()
+    assert "select" in caps
+    assert "activate" in caps
+
+
+def test_select_step_targets_selectionitem_not_invoke():
+    """Each capability resolves to its own native primitive"""
+    tree = _listitem_tree(frozenset({"invoke", "selectionitem"}))
+    result = Compiler().compile(tree, pack=None)
+    node = result.find("li1")
+    assert node is not None
+    assert [s.primitive for s in node.get_cap("select").via] == ["select"]
+    assert [s.primitive for s in node.get_cap("activate").via] == ["activate"]
+
+
+def test_a_control_offers_both_gestures():
+    """The caller decides which gesture to use, so both are reachable."""
+    tree = _listitem_tree(frozenset({"invoke", "selectionitem"}))
+    result = Compiler().compile(tree, pack=None)
+    node = result.find("li1")
+    assert node is not None
+    assert "double_click" in node.cap_names()
 
 
 def test_normalize_role_aliases():

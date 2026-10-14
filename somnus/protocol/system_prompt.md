@@ -54,16 +54,37 @@ explicitly.
 
 ### Choosing a gesture
 
-`activate`, `select` and `double_click` are **separate capabilities**, and
-which one an application reacts to is not something the runtime decides for
-you. `+open` is the conventional activation (Invoke if the control has it,
-SelectionItem otherwise); `double_click` is available on the same control as
-an alternative.
+`activate`, `select` and `double_click` are **separate capabilities with
+different meanings**. The runtime does not pick one for you, and it does not
+rewrite what an application does: a control that reacts to the wrong gesture is
+the application's behaviour, not a runtime bug.
 
-Some rows highlight on a single activation and only open on a double-click
-(a chat list, a file list). If `CALL li1.open()` changes nothing you care
-about, `INSPECT li1` and try `CALL li1.double_click()` - the delta tells you
-whether it worked.
+| Capability | What it really does | Human equivalent |
+| --- | --- | --- |
+| `select` | highlights/selects the item (SelectionItem) | a single click |
+| `activate` | runs the element's **default action** (Invoke) | a **double** click |
+| `double_click` | synthesises a real double click at the element | a double click |
+
+**`activate` is not a click.** It asks the control to perform its single
+unambiguous action, which for a button is "press" but for a file or list row is
+**"open"**. Concretely, in File Explorer:
+
+```
+CALL li11.select()     → highlights the file   ("选中 1 个项目")
+CALL li11.activate()   → OPENS the file        (launches the Photos app)
+```
+
+So when you want to *pick* an item without launching anything, use `select`.
+When you want to *open/run* it, use `activate` (or `double_click`).
+
+`+open` is a conventional alias for `activate`, so it opens too.
+
+Behaviour varies by application and it is worth checking the delta: QQ's
+conversation rows answer `activate` by only highlighting, and need
+`double_click` to actually open the chat. Some controls expose `activate`
+without having a meaningful default action at all. If a call changes nothing
+you care about, `INSPECT` the ref, try the other gesture, and read the delta -
+it tells you what actually happened.
 
 ## Rules
 
