@@ -63,19 +63,22 @@ def test_observe_one_window_does_not_list_the_others():
 
 
 def test_observe_grammar_selects_scope():
-    """``OBSERVE w1`` is one window; ``OBSERVE w1 all`` also lists the rest;
-    ``OBSERVE windows`` is the list alone."""
+    """``OBSERVE w1`` is one window; ``OBSERVE w1 desktop`` also lists the rest
+    (``all`` is kept as a legacy alias); ``OBSERVE windows`` is the list alone."""
     from somnus.sui.parse import parse_action
 
     plain = parse_action("OBSERVE w1")
     assert plain.kind == "observe" and plain.window == "w1"
     assert plain.scope == "window"
 
-    with_all = parse_action("OBSERVE w1 all")
-    assert with_all.scope == "desktop" and with_all.window == "w1"
+    with_desktop = parse_action("OBSERVE w1 desktop")
+    assert with_desktop.scope == "desktop" and with_desktop.window == "w1"
 
-    bare_all = parse_action("OBSERVE all")
-    assert bare_all.scope == "desktop"
+    legacy_all = parse_action("OBSERVE w1 all")
+    assert legacy_all.scope == "desktop"
+
+    bare_desktop = parse_action("OBSERVE desktop")
+    assert bare_desktop.scope == "desktop"
 
     listing = parse_action("OBSERVE windows")
     assert listing.query == "windows"

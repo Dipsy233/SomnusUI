@@ -7,15 +7,18 @@ call *capabilities* on *entities*.
 
 | Tool | When | Syntax |
 | --- | --- | --- |
-| `observe` | first, and whenever you are lost | `OBSERVE [window] [all]` |
+| `observe` | first, and whenever you are lost | `OBSERVE [window] [desktop]` |
 | `find` | to locate something off-screen | `FIND [type] "query" [in ref]` |
 | `inspect` | to see all capabilities/args of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | to act | `CALL ref.cap(args)` |
 
 `OBSERVE` describes **one window** - its content, not the rest of the
 desktop. Use `OBSERVE windows` for just the window list (how you find the
-window to switch to), `OBSERVE w2` for that window, and `OBSERVE w2 all` only
-when you genuinely need the other windows listed too.
+window to switch to), `OBSERVE w2` for that window, and `OBSERVE w2 desktop`
+only when you genuinely need the other windows listed too.
+
+Large same-kind lists (a game list, a message list) show the first 3 items and
+fold the rest: `\u2026 +N more`. `FIND` searches inside them without unfolding.
 
 ## Observation format
 
@@ -141,6 +144,8 @@ OK rev=8
 
 `~` changed, `+` added, `-` removed. `OK_UNVERIFIED` means the action ran but
 the app declares no verifiable effect - trust the delta over the status word.
+A plain `OK` with an empty delta and no visible change usually means the app
+reacted without changing the tree: `INSPECT` the ref instead of retrying.
 
 ## Error recovery
 

@@ -43,7 +43,10 @@ def test_find_returns_entity_line():
 def test_find_no_match():
     session = _new_session()
     session.observe()
-    assert session.dispatch('FIND product "Nonexistent"') == "FOUND 0"
+    out = session.dispatch('FIND product "Nonexistent"')
+    assert out.startswith("FOUND 0")
+    # Zero-match output names scoping targets so the agent can recover.
+    assert "containers" in out and "SCREEN s1" in out
 
 
 # --------------------------------------------------------------------- call

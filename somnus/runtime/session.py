@@ -712,7 +712,21 @@ class Session:
         matches = [m for m in matches if m.fingerprint not in parent_fps]
 
         if not matches:
-            return "FOUND 0"
+            # A bare `FOUND 0` dead-ends the agent. Name the top-level
+            # containers of the current window so the next query can be
+            # scoped (e.g. `FIND "..." in l2`) or an observe can re-orient.
+            containers = [
+                f"{n.display_type} {n.ref}"
+                + (f" {_q(n.name)}" if n.name else "")
+                for n in self.result.root.walk()
+                if n.children and (n.name or n.role in ("list", "tree", "table", "pane", "screen"))
+            ][:5]
+            hint = "\n".join(f"  {c}" for c in containers)
+            return "FOUND 0\n" + (
+                "containers you can scope into (FIND \"\u2026\" in REF) or INSPECT:\n" + hint
+                if hint
+                else "window appears empty; OBSERVE to re-orient"
+            )
         out = [f"FOUND {len(matches)}"]
         # Full capability line: with default caps omitted (the grammars' implicit
         # table), a bare `+context_menu`-only line made the agent believe
@@ -774,6 +788,19 @@ class Session:
             self._recompile()
             assert self.result is not None
             if self.result.find(action.ref or "") is None:
+                # Tell the agent what the ref *was*, so it can decide whether
+                # the element moved (find again) or is gone (give up).
+                record = self.registry.records.get(action.ref or "")
+                if record is not None:
+                    raise SomnusError(
+                        ErrorCode.STALE_TARGET,
+                        ref=action.ref,
+                        message=(
+                            f"was {record.role} "
+                            + (f"{record.name!r} " if record.name else "")
+                            + "; refind by name (FIND) or observe"
+                        ),
+                    )
                 raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
 
         # Ambiguity check: the ref's fingerprint matched more than one element.
@@ -919,7 +946,16 @@ class Session:
                 message="; ".join(verify.failed),
             )
 
-        text = f"{verify.status} rev={self.rev}"
+        # Status honesty: `OK_UNVERIFIED` means "ran, could not confirm". When
+        # the UI settled *and* the tree did not change at all, the action ran
+        # against a UI that did not react - report plain OK with the (empty)
+        # delta rather than an alarming UNVERIFIED, which makes agents retry
+        # actions that already succeeded.
+        status = verify.status
+        if status == "OK_UNVERIFIED" and settle_result.settled and delta.empty:
+            status = "OK"
+
+        text = f"{status} rev={self.rev}"
         if not settle_result.settled:
             text += " settled=false"
         body = self._window_delta()
@@ -948,7 +984,7 @@ class Session:
         if body:
             text += "\n" + body
         return CallOutcome(
-            status=verify.status,
+            status=status,
             rev=self.rev,
             delta=delta,
             text=text,
@@ -1133,7 +1169,18 @@ def _render_subtree(node: SemanticNode, lines: list[str], opts: RenderOptions, d
         if node.children:
             lines.append("  " * indent + f"… +{len(node.children)} more")
         return
-    for child in node.children:
+    # Same-kind preview (as in the observe projection): a long homogeneous run
+    # shows its first children and folds the rest, so a 300-row list costs a
+    # handful of lines even at L2.
+    children = node.children
+    preview_limit = len(children)
+    if len(children) > 8 and len({c.role for c in children}) <= 2:
+        preview_limit = 3
+    for i, child in enumerate(children):
+        if i == preview_limit:
+            hidden = len(children) - preview_limit
+            lines.append("  " * indent + f"… +{hidden} more")
+            return
         lines.append("  " * indent + render_node_line(child, opts))
         _render_subtree(child, lines, opts, depth - 1, indent + 1)
 

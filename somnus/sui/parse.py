@@ -59,7 +59,7 @@ _UNKNOWN_RE = re.compile(r'^UNKNOWN\s+(?P<reason>".*"|\S+)\s*$', re.IGNORECASE)
 
 _OBSERVE_RE = re.compile(
     r"^OBSERVE(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?"
-    r"(?:\s+(?P<rest>windows|all|desktop|full))?"
+    r"(?:\s+(?P<rest>windows|desktop|full|all))?"
     r"(?:\s+expand\s+(?P<expand>[a-z]{1,3}[0-9]+))?\s*$",
     re.IGNORECASE,
 )
@@ -119,11 +119,13 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     m = _OBSERVE_RE.match(raw)
     if m:
         rest = (m.group("rest") or "").strip().lower()
-        # ``OBSERVE all`` / ``OBSERVE w3 all`` also lists the other windows; a
-        # bare OBSERVE (with or without a window) is that window alone.
-        desktop = rest in ("all", "desktop")
+        # ``OBSERVE desktop`` lists the other windows; a bare OBSERVE (with or
+        # without a window) is that window alone. The old ``all`` spelling is
+        # accepted and treated as ``desktop`` - it carried the same meaning and
+        # older prompts may still use it, but it is no longer documented.
+        desktop = rest in ("desktop", "all")
         # ``OBSERVE w5 full`` (or OBSERVE full) renders the window's ENTIRE
-        # tree: no folding, no budget. ``all`` means "this window plus the
+        # tree: no folding, no budget. ``desktop`` means "this window plus the
         # desktop list"; ``full`` is the escape hatch for a projection that
         # hid something the agent needs.
         full = rest == "full"

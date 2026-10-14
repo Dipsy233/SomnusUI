@@ -41,6 +41,11 @@ class RenderPlan:
 
 
 class ProjectionEngine:
+    #: Homogeneous collections render this many children as a preview; the rest
+    #: is folded into a single marker. Showing 2-3 examples is enough for the
+    #: agent to tell what the collection holds without spending a line each.
+    preview_children = 3
+
     def __init__(
         self,
         budget: ObservationBudget | None = None,
@@ -149,7 +154,33 @@ class ProjectionEngine:
 
         if collapsed:
             return
-        for child in node.children:
+        # Homogeneous preview: render the first `preview_children` children of
+        # a large same-role collection, fold the rest into one marker. Every
+        # example matters (they say what the collection contains) without one
+        # line per row (a 300-game Steam list would eat the whole budget).
+        children = node.children
+        preview_limit = len(children)
+        if (
+            not full
+            and id(node) not in expanded
+            and rule is not Rule.COLLAPSE
+            and len(children) > self.auto_collapse_threshold
+            and len({c.role for c in children}) <= 2
+        ):
+            preview_limit = self.preview_children
+        for i, child in enumerate(children):
+            if i == preview_limit:
+                hidden = len(children) - preview_limit
+                plan.lines.append(
+                    Line(
+                        node=child,
+                        depth=depth + 1,
+                        marker=True,
+                        marker_text=f"\u2026 +{hidden} more",
+                    )
+                )
+                counter["tokens"] += count_tokens(f"  \u2026 +{hidden} more")
+                return
             self._walk(
                 child, depth + 1, max_depth, projection, plan, counter,
                 full=full, expanded=expanded,

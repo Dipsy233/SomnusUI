@@ -98,7 +98,7 @@ args    := VALUE | KEY "=" VALUE ("," KEY "=" VALUE)*
 query   := "FIND" [REF] [TYPE] STRING ["in" REF]
 inspect := "INSPECT" REF ["depth=" INT] ["range=" INT ":" INT]
 abort   := "UNKNOWN" STRING
-observe := "OBSERVE" [REF] ["windows" | "all" | "full"] ["expand" REF]
+observe := "OBSERVE" [REF] ["windows" | "desktop" | "full"] ["expand" REF]
 ```
 
 ```
@@ -111,7 +111,15 @@ INSPECT l1 depth=1
 INSPECT t1 range=0:2000
 OBSERVE w5 full           # the whole window tree, no folding, no budget
 OBSERVE w5 expand g3      # unfold one collapsed node, keep the rest folded
+OBSERVE windows           # just the window list (how you switch windows)
+OBSERVE w5 desktop        # w5 plus the list of the other windows
 ```
+
+Large homogeneous collections (a game list, a message list) render the first
+three children as a preview and fold the rest into `\u2026 +N more`, so the agent
+can tell what the collection holds without paying one line per row. Use
+`OBSERVE w5 expand REF` to unfold a specific node, or `FIND` to search inside
+it.
 
 FIND is a full-text search over every *named* node in the window (all roles),
 deduplicated to one hit per element with the parent row preferred. Results are
