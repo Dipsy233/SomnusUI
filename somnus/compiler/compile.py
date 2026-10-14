@@ -520,41 +520,16 @@ def _heuristic_caps(em: EntityMatch) -> list[Capability]:
                 risk="normal",
             )
         )
-    # A detected row is something the user "opens". The route depends on what
-    # the row really is:
-    #
-    # * a *self-drawn* row (a class name that marks it as a row - which is what
-    #   Chromium/Electron lists are, and what most modern chat/mail/file lists
-    #   use) opens on a real double-click. Such a row often still *advertises*
-    #   an Invoke pattern that does nothing (live: QQ's `recent-contact-item`
-    #   rows report invoke, but a single activate only highlights the row and
-    #   never opens the conversation), so the class name is the stronger signal.
-    # * otherwise a row with its own Invoke pattern activates;
-    # * a row with a SelectionItem pattern selects.
-    #
-    # UIA has no DoubleClick pattern, so this is the one place a synthetic click
-    # is used, and only for the self-drawn shape where there is no native
-    # alternative at all.
+    # A detected row is something the user opens, and `open` is exactly the
+    # *conventional* activation: Invoke when the control has it, SelectionItem
+    # otherwise. The runtime does not guess which gesture an application really
+    # wants - a control that advertises Invoke gets `activate`, and if a single
+    # activation turns out not to open the thing (a self-drawn row that reports
+    # an Invoke it does not honour), the agent tries the other gesture itself.
+    # Deciding that up front would be the runtime overruling the caller, and it
+    # would silently do something other than what was asked.
     node = em.node
-    if _looks_like_row_class(node) or (
-        "invoke" not in node.patterns
-        and "selectionitem" not in node.patterns
-        and node.role != "button"
-    ):
-        child = next(
-            (
-                d
-                for d in node.children
-                if d.role in ("button", "link", "menuitem") and d.name
-            ),
-            None,
-        )
-        if child is not None:
-            em.members.setdefault("open_target", child)
-            step = PrimitiveStep(primitive="double_click", target="member:open_target")
-        else:
-            step = PrimitiveStep(primitive="double_click", target="$self")
-    elif "invoke" in node.patterns or node.role == "button":
+    if "invoke" in node.patterns or node.role == "button":
         step = PrimitiveStep(primitive="activate", target="$self")
     else:
         step = PrimitiveStep(primitive="select", target="$self")
@@ -567,19 +542,6 @@ def _heuristic_caps(em: EntityMatch) -> list[Capability]:
         )
     )
     return caps
-
-
-def _looks_like_row_class(node: RawNode) -> bool:
-    """Whether the node's class name marks it as a list row.
-
-    A self-drawn toolkit names its rows (`recent-contact-item`, `mail-row`, a
-    `--top`/`--pinned` variant); those names are the only stable signal that the
-    row is custom-rendered rather than a native control.
-    """
-    cls = node.native.class_name or ""
-    if not cls:
-        return False
-    return bool(re.search(r"(item|row|entry|cell|card|result|option)", cls, re.I))
 
 
 def _collect_collapses(root: RawNode) -> dict[int, int]:

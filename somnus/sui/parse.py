@@ -57,7 +57,9 @@ _INSPECT_RE = re.compile(
 _UNKNOWN_RE = re.compile(r'^UNKNOWN\s+(?P<reason>".*"|\S+)\s*$', re.IGNORECASE)
 
 _OBSERVE_RE = re.compile(
-    r"^OBSERVE(?P<rest>\s+(?:windows|all))?(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?\s*$",
+    r"^OBSERVE(?P<rest>\s+(?:windows|all|desktop))?"
+    r"(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?"
+    r"(?:\s+(?P<also>all|desktop))?\s*$",
     re.IGNORECASE,
 )
 
@@ -116,10 +118,15 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     m = _OBSERVE_RE.match(raw)
     if m:
         rest = (m.group("rest") or "").strip().lower()
+        also = (m.group("also") or "").strip().lower()
+        # ``OBSERVE all`` / ``OBSERVE w3 all`` also lists the other windows; a
+        # bare OBSERVE (with or without a window) is that window alone.
+        desktop = rest in ("all", "desktop") or also in ("all", "desktop")
         return Action(
             kind="observe",
             window=m.group("window"),
             query=rest or None,  # "windows" = list windows only
+            scope="desktop" if desktop else "window",
             raw=raw,
         )
 

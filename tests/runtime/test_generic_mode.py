@@ -199,6 +199,76 @@ def test_heuristic_threshold_is_not_bypassed():
 
 
 # --------------------------------------------------------------------------
+# gesture choice belongs to the caller, not the runtime
+# --------------------------------------------------------------------------
+
+
+def test_open_uses_activate_when_the_control_reports_invoke():
+    """`open` is the conventional activation, not a guess about which gesture
+    the application *really* wants. A row that advertises Invoke gets activate
+    even when it is self-drawn (live: QQ's conversation rows report an Invoke
+    that only highlights the row; deciding up front to double-click instead
+    would be the runtime overruling the caller)."""
+    row = _n(
+        "group",
+        patterns=frozenset({"invoke", "selectionitem"}),
+        cls="recent-contact-item recent-contact-item--top",
+        children=[_n("text", "我的手机", patterns=_TEXT, runtime_id=2)],
+    )
+    tree = _packless_tree([
+        _n("list", "Chats", patterns=frozenset({"scroll"}), runtime_id=0, children=[
+            row,
+            _n("group", patterns=frozenset({"invoke", "selectionitem"}),
+               children=[_n("text", "B", patterns=_TEXT, runtime_id=3)], runtime_id=9),
+            _n("group", patterns=frozenset({"invoke", "selectionitem"}),
+               children=[_n("text", "C", patterns=_TEXT, runtime_id=4)], runtime_id=10),
+        ])
+    ])
+    res = _compile_packless(tree)
+    item = next(n for n in res.root.walk() if n.entity == "listitem" and n.name == "我的手机")
+    cap = item.get_cap("open")
+    assert cap is not None
+    assert [s.primitive for s in cap.via] == ["activate"]
+
+
+def test_double_click_is_offered_on_a_control_but_not_on_a_label():
+    """The gesture is available as its own capability, so the caller can reach
+    for it when activate does nothing. It is granted only to real controls - an
+    element with an interaction pattern - never to a text label."""
+    row = _n(
+        "group",
+        patterns=_SEL,
+        children=[_n("text", "Row", patterns=_TEXT, runtime_id=2)],
+    )
+    label = _n("text", "Just a label", patterns=_TEXT, runtime_id=30)
+    tree = _packless_tree([row, label])
+    res = _compile_packless(tree)
+
+    control = res.find("g1")
+    assert control is not None
+    assert "double_click" in control.cap_names()
+
+    text_node = next(
+        n for n in res.root.walk() if n.role == "text" and n.name == "Just a label"
+    )
+    assert "double_click" not in text_node.cap_names()
+
+
+def test_inert_node_gets_no_action_capabilities():
+    """Nothing is offered on a node the platform does not mark as operable."""
+    label = _n("text", "Static", patterns=_TEXT)
+    image = _n("image")
+    tree = _packless_tree([label, image])
+    res = _compile_packless(tree)
+    for node in res.root.walk():
+        if node.role in ("text", "image"):
+            assert "activate" not in node.cap_names()
+            assert "set_text" not in node.cap_names()
+            assert "double_click" not in node.cap_names()
+            assert "toggle" not in node.cap_names()
+
+
+# --------------------------------------------------------------------------
 # the permission check must use the compiled window's process
 # --------------------------------------------------------------------------
 

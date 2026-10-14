@@ -22,11 +22,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "observe",
         "description": (
-            "Return the current semantic overview (L0) of the target window as "
-            "SUI-Text. Contains windows, screens, entities and their "
-            "capabilities. No pixels, coordinates or native ids.\n"
-            "Pass windows_only=true to get just the desktop window list, which "
-            "is how you switch to another window (CALL wN.focus())."
+            "Return the semantic overview (L0) of one window as SUI-Text: "
+            "its screens, entities and their capabilities. No pixels, "
+            "coordinates or native ids.\n"
+            "Only the target window is described; set include_other_windows "
+            "to also list the rest of the desktop, or windows_only to get "
+            "just the window list (which is how you switch windows with "
+            "CALL wN.focus())."
         ),
         "inputSchema": {
             "type": "object",
@@ -38,6 +40,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "windows_only": {
                     "type": "boolean",
                     "description": "list windows only, without any control tree",
+                },
+                "include_other_windows": {
+                    "type": "boolean",
+                    "description": (
+                        "also list the other desktop windows (off by default, "
+                        "they are not what you asked for)"
+                    ),
                 },
             },
         },
@@ -100,7 +109,9 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
     try:
         if name == "observe":
             return session.observe(
-                args.get("window"), windows_only=bool(args.get("windows_only"))
+                args.get("window"),
+                windows_only=bool(args.get("windows_only")),
+                include_other_windows=bool(args.get("include_other_windows")),
             ).text
         if name == "find":
             # The `query` argument accepts the FIND syntax verbatim

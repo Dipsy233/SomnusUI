@@ -44,7 +44,7 @@ DEFAULT_CAP = {
 
 #: Generic capabilities that are implied for every node and never printed
 #: unless the node is inspected directly (L2). This is the biggest token win.
-UBIQUITOUS_CAPS = frozenset({"focus", "read"})
+UBIQUITOUS_CAPS = frozenset({"focus", "read", "double_click"})
 #: Container capabilities implied by the role (list/tree/pane scroll).
 IMPLIED_CONTAINER_CAPS = frozenset({"scroll"})
 

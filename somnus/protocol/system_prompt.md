@@ -7,10 +7,15 @@ call *capabilities* on *entities*.
 
 | Tool | When | Syntax |
 | --- | --- | --- |
-| `observe` | first, and whenever you are lost | `OBSERVE [window]` |
+| `observe` | first, and whenever you are lost | `OBSERVE [window] [all]` |
 | `find` | to locate something off-screen | `FIND [type] "query" [in ref]` |
 | `inspect` | to see all capabilities/args of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | to act | `CALL ref.cap(args)` |
+
+`OBSERVE` describes **one window** - its content, not the rest of the
+desktop. Use `OBSERVE windows` for just the window list (how you find the
+window to switch to), `OBSERVE w2` for that window, and `OBSERVE w2 all` only
+when you genuinely need the other windows listed too.
 
 ## Observation format
 
@@ -37,6 +42,7 @@ WINDOW w1 "Restaurant Demo" active
 These exist on every applicable node even when not printed:
 
 * every node: `focus`, `read`
+* every control (an element the app marks as operable): `double_click`
 * `BUTTON`/`LINK`/`MENUITEM`: `activate`
 * `INPUT`: `set_text(text="…")`
 * `CHECKBOX`/`SWITCH`: `toggle`
@@ -45,6 +51,19 @@ These exist on every applicable node even when not printed:
 
 An entity's capabilities (`+add`, `+open`, `+submit`) are always printed
 explicitly.
+
+### Choosing a gesture
+
+`activate`, `select` and `double_click` are **separate capabilities**, and
+which one an application reacts to is not something the runtime decides for
+you. `+open` is the conventional activation (Invoke if the control has it,
+SelectionItem otherwise); `double_click` is available on the same control as
+an alternative.
+
+Some rows highlight on a single activation and only open on a double-click
+(a chat list, a file list). If `CALL li1.open()` changes nothing you care
+about, `INSPECT li1` and try `CALL li1.double_click()` - the delta tells you
+whether it worked.
 
 ## Rules
 

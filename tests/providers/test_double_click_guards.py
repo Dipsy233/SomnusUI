@@ -73,6 +73,8 @@ class _FakeWin32:
             target.value = hit_pid
 
         self.GetWindowThreadProcessId = self._Fn(_get_pid)
+        # GA_ROOT lookup; return 0 so only the element's own pid is allowed.
+        self.GetAncestor = self._Fn(lambda hwnd, flags: 0)
 
 
 def _patched_user32(hit_pid: int):

@@ -200,17 +200,27 @@ def _double_click_element(element: Any, UIA: Any) -> ExecResult:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(hit_pid))
         hit_pid = int(hit_pid.value)
         own_pid = int(element.CurrentProcessId)
+        top_hwnd = int(user32.GetAncestor(hwnd, 2) or 0)  # GA_ROOT
+        top_pid = wintypes.DWORD()
+        if top_hwnd:
+            user32.GetWindowThreadProcessId(top_hwnd, ctypes.byref(top_pid))
     except Exception as exc:  # noqa: BLE001 - reported as a code
         return ExecResult(
             ok=False,
             error="TARGET_NOT_FOREGROUND",
             message=f"cannot verify the click point: {exc}",
         )
-    if hit_pid and hit_pid != own_pid:
+    # A UWP app's pixels belong to its host process (ApplicationFrameHost.exe)
+    # while the element reports the app process (SystemSettings.exe), so the
+    # top-level window's pid is accepted alongside the element's own.
+    allowed = {own_pid}
+    if top_pid.value:
+        allowed.add(int(top_pid.value))
+    if hit_pid and hit_pid not in allowed:
         return ExecResult(
             ok=False,
             error="TARGET_NOT_FOREGROUND",
-            message=f"point ({x},{y}) belongs to pid {hit_pid}, not {own_pid}",
+            message=f"point ({x},{y}) belongs to pid {hit_pid}, not {sorted(allowed)}",
         )
     return double_click(x, y)
 
@@ -233,6 +243,14 @@ def _ensure_visible(element: Any, UIA: Any) -> ExecResult:
         # to the top-level window owned by the same process.
         hwnd = _top_level_window_for_pid(own_pid)
     if not hwnd:
+        # A UWP app runs inside ApplicationFrameHost.exe, so the window handle
+        # belongs to the host, not to the app process (live: Windows Settings is
+        # SystemSettings.exe inside an ApplicationFrameHost window, and the pid
+        # lookup found nothing). Falling back to the *foreground* window is
+        # correct here: the caller is about to click inside the target, so the
+        # target must already be what the user is looking at.
+        hwnd = _foreground_window()
+    if not hwnd:
         return ExecResult(
             ok=False,
             error="TARGET_NOT_FOREGROUND",
@@ -250,6 +268,15 @@ def _ensure_visible(element: Any, UIA: Any) -> ExecResult:
         return ExecResult(
             ok=False, error="TARGET_NOT_FOREGROUND", message=f"cannot raise window: {exc}"
         )
+
+
+def _foreground_window() -> int:
+    """The current foreground window handle, or 0."""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        return int(user32.GetForegroundWindow() or 0)
+    except Exception:  # noqa: BLE001 - best effort
+        return 0
 
 
 def _top_level_window_for_pid(pid: int) -> int:

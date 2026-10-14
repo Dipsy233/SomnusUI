@@ -238,8 +238,16 @@ class Session:
         *,
         level: int = 0,
         windows_only: bool = False,
+        include_other_windows: bool = False,
     ) -> Observation:
-        """Observe the current screen, or just the window list.
+        """Observe one window's content, or just the window list.
+
+        The body is the target window only. Other windows are *not* listed by
+        default: an agent that asked for one window's content should get that
+        window, not a desktop dump it did not ask for and must pay tokens for
+        (found live: 10 unrelated windows prefixed every observation). Use
+        ``include_other_windows`` (or observe with ``windows_only``) when the
+        desktop context is actually wanted.
 
         Observation is read-only and side-effect free, so an unknown window ref
         must not dead-end the agent: fall back to the default window and let the
@@ -279,7 +287,13 @@ class Session:
         window_delta = self._window_delta()
         if not had_baseline:
             window_delta = ""
-        header = self._window_header(result)
+        # The desktop header is opt-in. When it is not requested the only
+        # context carried is the window delta - a window appearing or vanishing
+        # changes what the agent can act on, so it must still be reported even
+        # in single-window mode.
+        header: list[str] = []
+        if include_other_windows:
+            header = self._window_header(result)
         if window_delta:
             header.append(window_delta)
         # The header (other windows + deltas) consumes part of the observation
@@ -759,7 +773,9 @@ class Session:
         try:
             if action.kind == "observe":
                 return self.observe(
-                    action.window, windows_only=(action.query == "windows")
+                    action.window,
+                    windows_only=(action.query == "windows"),
+                    include_other_windows=(action.scope == "desktop"),
                 ).text
             if action.kind == "find":
                 return self.find(action)

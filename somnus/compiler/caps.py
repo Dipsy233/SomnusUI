@@ -53,6 +53,39 @@ def _cap(name: str, params: dict[str, ParamSpec] | None = None) -> Capability:
 _TEXT_ENTRY_ROLES: frozenset[str] = frozenset({"input", "select", "slider"})
 
 
+#: Patterns that mean "this element is something the user interacts with".
+#: The absence of all of them means the element is inert (a label, an image,
+#: a layout container) and must not be offered any action.
+_INTERACTIVE_PATTERNS: frozenset[str] = frozenset(
+    {
+        "invoke",
+        "toggle",
+        "selectionitem",
+        "griditem",
+        "value",
+        "rangevalue",
+        "expandcollapse",
+        "scrollitem",
+    }
+)
+
+
+def _is_control(node: RawNode) -> bool:
+    """Whether ``node`` is an operable control rather than inert content.
+
+    A control is defined by the platform, not guessed: it exposes at least one
+    interaction pattern. That keeps the capability honest - nothing is offered
+    on a text label or a wrapping pane, and nothing is withheld from a control
+    because of what application it belongs to.
+    """
+    if node.patterns & _INTERACTIVE_PATTERNS:
+        return True
+    # A disabled control still exists and still has an area; the executor
+    # refuses it with TARGET_DISABLED, which is clearer than the capability
+    # silently disappearing from the observation.
+    return node.role in ("button", "listitem", "tab", "treeitem", "menuitem")
+
+
 def _prefers_keyboard_entry(node: RawNode) -> bool:
     """Whether ``set_text`` should type rather than use the Value pattern.
 
@@ -232,5 +265,23 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     caps.setdefault("focus", _cap("focus"))
     if node.name or node.value:
         caps.setdefault("read", _cap("read"))
+
+    # A control can be double-clicked. This is offered as its own capability on
+    # every control rather than folded into some notion of "open": choosing a
+    # gesture is the caller's decision, and an application that only reacts to a
+    # double-click (QQ's conversation list) must not force a special case on
+    # every other one. A double-click is synthetic input, so it is granted only
+    # where there is a real target to hit - an interactive element with an area -
+    # and never to a plain text label or an inert container.
+    if _is_control(node):
+        caps.setdefault(
+            "double_click",
+            Capability(
+                name="double_click",
+                level="primitive",
+                via=[PrimitiveStep(primitive="double_click", target="$self")],
+                risk="normal",
+            ),
+        )
 
     return list(caps.values())
