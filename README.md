@@ -1,5 +1,7 @@
 # SomnusUI
 
+[English](README.md) | 中文
+
 **Compile a native GUI into a pure-text, no-vision, low-token Semantic API** so
 an LLM can operate software by *capability calls* instead of *pixel clicks*.
 
