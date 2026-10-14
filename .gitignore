@@ -54,3 +54,5 @@ recordings/
 
 # playwright-cli scratch
 .playwright-cli/
+
+steam.txt
