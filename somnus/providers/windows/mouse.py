@@ -101,24 +101,26 @@ def double_click(x: int, y: int, *, interval_s: float = 0.05) -> ExecResult:
         return nx, ny
 
     nx, ny = abs_coords(x, y)
-    events = [
-        _mouse(nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),
-        _mouse(nx, ny, MOUSEEVENTF_LEFTDOWN),
-        _mouse(nx, ny, MOUSEEVENTF_LEFTUP),
-    ]
-    for _ in range(2):  # the second press/release pair is the "double"
-        events.append(_mouse(nx, ny, MOUSEEVENTF_LEFTDOWN))
-        events.append(_mouse(nx, ny, MOUSEEVENTF_LEFTUP))
-        events.append(_mouse(nx, ny, MOUSEEVENTF_MOVE))
+    move = _mouse(
+        nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+    )
+    down = _mouse(nx, ny, MOUSEEVENTF_LEFTDOWN)
+    up = _mouse(nx, ny, MOUSEEVENTF_LEFTUP)
 
-    # Send the move + first click, pause, then the second click, so the shell
-    # recognises it as a double-click rather than two separate clicks.
-    first = events[:3]
-    second = events[3:]
-    if not _send(user32, first):
+    # Exactly two click pairs, and nothing else. A third pair would be read as a
+    # triple-click by the shell, and a triple-click is a *different* gesture
+    # (select-all / default action) that can close or otherwise mutate the
+    # target - the historical bug here was three pairs, which closed windows.
+    # The move is sent once, first, so the pointer is over the target before the
+    # button events; sending extra moves between clicks can also make the shell
+    # treat the second click as a fresh single click rather than a double.
+    click = [down, up]
+    if not _send(user32, [move]):
+        return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED", message="SendInput failed")
+    if not _send(user32, click):
         return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED", message="SendInput failed")
     time.sleep(interval_s)
-    if not _send(user32, second):
+    if not _send(user32, click):
         return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED", message="SendInput failed")
     return ExecResult(ok=True)
 

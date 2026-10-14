@@ -8,6 +8,9 @@ instead of hanging (dev doc sections 9.2, 13).
 
 from __future__ import annotations
 
+import ctypes
+import time
+from ctypes import wintypes
 from typing import Any
 
 from somnus.ir.action import ExecResult
@@ -126,29 +129,152 @@ def run_primitive(
 
 
 def _double_click_element(element: Any, UIA: Any) -> ExecResult:
-    """Double-click an element at its centre.
+    """Double-click an element at its centre, safely.
 
-    The rectangle is read fresh so the point reflects the element's current
-    position. Only reached through a pack-declared `double_click` step: UIA has
-    no DoubleClick pattern, so a few apps (QQ) cannot be opened any other way.
+    Synthetic clicks are coordinate based, so unlike every other primitive they
+    can land on the wrong thing. Two guards keep that from happening:
+
+    * the rectangle is read fresh, and a degenerate one is refused;
+    * the element is moved into view and the pointer is only clicked once
+      ``ElementFromPoint`` confirms our element is actually on top there. Without
+      that check a click can hit whatever else happens to be over the element
+      (a tooltip, an overlay, another window), which is how a stray click ends
+      up closing something.
     """
     try:
         element.SetFocus()
     except Exception:
         pass
+    # A minimised window still reports UIA rectangles, but they are the *old*
+    # layout positions, not where the window is on screen - so a synthetic click
+    # would land on the desktop or on whatever occupies those pixels (live: QQ
+    # minimised to (-32000,-32000) while its rows still reported y~200, and the
+    # click hit explorer). Restore and raise the window before touching the
+    # mouse; if that cannot be done, refuse rather than click blind.
+    restored = _ensure_visible(element, UIA)
+    if not restored.ok:
+        return restored
+    # A target inside a scrolled region may be clipped or logically offscreen;
+    # bring it into view first so its rectangle is where it claims to be.
+    try:
+        _pattern(
+            element, UIA.UIA_ScrollItemPatternId, UIA.IUIAutomationScrollItemPattern
+        ).ScrollIntoView()
+    except Exception:
+        pass
     try:
         rect = element.CurrentBoundingRectangle
-        x = (rect.left + rect.right) // 2
-        y = (rect.top + rect.bottom) // 2
+        left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
     except Exception as exc:  # noqa: BLE001 - reported as a code
         return ExecResult(
             ok=False, error="ACTION_NOT_SUPPORTED", message=f"no bounds: {exc}"
         )
-    if x <= 0 and y <= 0:
+    # Require a real area. `x <= 0 and y <= 0` was wrong twice over: it accepted
+    # an element at y=0 (a valid top-edge target) and accepted a zero-size rect
+    # as long as its centre was positive. A degenerate rect means there is
+    # nothing to click, and clicking the desktop origin is exactly the kind of
+    # stray input that can hit an unrelated window.
+    if right <= left or bottom <= top:
         return ExecResult(
-            ok=False, error="ACTION_NOT_SUPPORTED", message="element has no area"
+            ok=False,
+            error="ACTION_NOT_SUPPORTED",
+            message=f"element has no area ({left},{top},{right},{bottom})",
+        )
+    x = (left + right) // 2
+    y = (top + bottom) // 2
+
+    # Hit-test: something must actually be there. If the point is on another
+    # window (the app is not foreground), do not click blindly - report it so
+    # the caller can focus the window and retry instead of clicking into
+    # whatever is on screen. `WindowFromPoint` is used rather than a UIA
+    # ElementFromPoint because it is always available and answers exactly the
+    # question asked: which window owns this screen pixel.
+    #
+    # This guard fails *closed*: if the hit-test cannot be performed at all, the
+    # click is refused. Proceeding without knowing what is under the point is
+    # exactly the situation the guard exists to prevent.
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = user32.WindowFromPoint(wintypes.POINT(x, y))
+        hit_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(hit_pid))
+        hit_pid = int(hit_pid.value)
+        own_pid = int(element.CurrentProcessId)
+    except Exception as exc:  # noqa: BLE001 - reported as a code
+        return ExecResult(
+            ok=False,
+            error="TARGET_NOT_FOREGROUND",
+            message=f"cannot verify the click point: {exc}",
+        )
+    if hit_pid and hit_pid != own_pid:
+        return ExecResult(
+            ok=False,
+            error="TARGET_NOT_FOREGROUND",
+            message=f"point ({x},{y}) belongs to pid {hit_pid}, not {own_pid}",
         )
     return double_click(x, y)
+
+
+def _ensure_visible(element: Any, UIA: Any) -> ExecResult:
+    """Restore and raise the window owning ``element`` before a synthetic click.
+
+    Returns a failed ``ExecResult`` when the window cannot be made visible, so
+    the caller refuses to click a coordinate that may not belong to the target.
+    """
+    try:
+        hwnd = int(element.CurrentNativeWindowHandle or 0)
+        own_pid = int(element.CurrentProcessId)
+    except Exception as exc:  # noqa: BLE001 - reported as a code
+        return ExecResult(
+            ok=False, error="TARGET_NOT_FOREGROUND", message=f"cannot read target: {exc}"
+        )
+    if not hwnd:
+        # Rows inside a self-drawn surface have no handle of their own; fall back
+        # to the top-level window owned by the same process.
+        hwnd = _top_level_window_for_pid(own_pid)
+    if not hwnd:
+        return ExecResult(
+            ok=False,
+            error="TARGET_NOT_FOREGROUND",
+            message="no native window handle for the target",
+        )
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            time.sleep(0.25)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.1)
+        return ExecResult(ok=True)
+    except Exception as exc:  # noqa: BLE001 - reported as a code
+        return ExecResult(
+            ok=False, error="TARGET_NOT_FOREGROUND", message=f"cannot raise window: {exc}"
+        )
+
+
+def _top_level_window_for_pid(pid: int) -> int:
+    """The handle of the first visible top-level window owned by ``pid``."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found: list[int] = []
+    enum_proc = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+
+    def _cb(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid:
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length:
+                    found.append(int(hwnd))
+        return True
+
+    try:
+        user32.EnumWindows(enum_proc(_cb), 0)
+    except Exception:  # noqa: BLE001 - best effort
+        return 0
+    return found[0] if found else 0
 
 
 def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
