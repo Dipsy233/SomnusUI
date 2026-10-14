@@ -26,8 +26,8 @@ REPL 在一个进程里维持同一个 `Session`，ref 稳定、状态连续。
 # 通用模式：不应用任何 App Pack
 somnus --no-pack repl
 
-# 应用某个 App Pack
-somnus --pack notepad repl
+# 应用某个 App Pack（内置 restaurant-demo，配合演示应用）
+somnus --pack restaurant-demo repl
 
 # 演示数据（不需要 Windows）
 somnus --demo repl
@@ -75,9 +75,15 @@ OK_UNVERIFIED rev=3
 | --- | --- |
 | `OBSERVE windows` | 只要窗口清单 |
 | `OBSERVE w4` | 只观察 w4 的内容（默认） |
-| `OBSERVE w4 all` | w4 的内容，并附上其他窗口 |
+| `OBSERVE w4 desktop` | w4 的内容，并附上其他窗口 |
+| `OBSERVE w4 full` | 完整树，不折叠、不限预算 |
+| `OBSERVE w4 expand g3` | 定点展开一个折叠节点，其余保持折叠 |
 
 其他窗口默认不列出：只要一个窗口的内容，就不该为整张桌面付 token。
+
+大同类列表（游戏列表、消息列表）只展示前 3 项，其余折叠为 `… +N more`；
+用 `FIND` 直接在其中搜索，无需先展开。无名字、无能力的匿名叶子在 L0
+折叠为一行 `… +N unnamed` 汇总，`INSPECT` / `expand` / `full` 可展开。
 
 ## 手势
 

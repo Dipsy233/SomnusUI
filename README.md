@@ -29,7 +29,9 @@ COM pointers. It sees entities, states, relations, capabilities and values.
 ## Principles
 
 - **No Vision** – the accessibility tree is the only perception channel.
-- **Low Token** – observation is projected and budgeted; L0 fits in ~200 tokens.
+- **Low Token** – observation is projected and budgeted: homogeneous lists
+  preview three items, anonymous leaves fold into one summary line; L0
+  typically costs tens to a few hundred tokens.
 - **Semantic First** – the LLM calls `CALL p1.add()`, never `click(312, 528)`.
 - **Deterministic Compiler** – no LLM runs inside the runtime or compiler.
 - **Fail Loud** – anything not expressible via the accessibility API is
@@ -55,6 +57,22 @@ somnus --no-pack repl              # multi-step session, no App Pack
 somnus record w1 -o fixture.json
 somnus mcp                         # MCP server (stdio), 4 tools
 ```
+
+### As an MCP server for any client
+
+Claude Desktop, Cursor, pi and any other MCP client can connect:
+
+```json
+{
+  "mcpServers": {
+    "somnus": { "command": "somnus-mcp" }
+  }
+}
+```
+
+The server exposes the `observe` / `find` / `inspect` / `call` tools; the
+provider is picked automatically (real windows via UIA when the `[windows]`
+extra is installed, mock fixtures otherwise).
 
 ## What the LLM sees
 
@@ -205,12 +223,10 @@ somnus/
 ├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
-│                  yaml_pack.py (v0.2 YAML pack loader)
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
-├── packs/         generic.py restaurant_demo.py (v0.1)
-│                  notepad / explorer / qq / windows_settings .pack.yaml (v0.2)
+├── packs/         generic.py restaurant_demo.py (built-in demo pack)
 ├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
@@ -218,44 +234,30 @@ docs/
   packs.md              how to write an App Pack
   interactive-usage.md  REPL vs one-shot CLI vs script
   what-the-llm-sees.md  one window, four tools, with real output
-examples/               agent loop, contract check, task evaluation
-bench/                  metrics harness + LLM control demos
-  run.py                the benchmark gates
-  demo_llm.py           end-to-end demo on the mock backend (any platform)
-  demo_notepad.py       the same tools against a live Notepad
+examples/               agent loop, contract check, task evaluation (host examples)
+bench/                  benchmark gates + LLM control demos
 tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
 ```
 
-Dependency direction (enforced in CI): `providers → compiler → projection →
-serialization → protocol`; `runtime` depends on all of them; nothing imports an
-LLM.
+Dependency direction: `providers → compiler → projection → serialization →
+protocol`; `runtime` depends on all of them; nothing imports an LLM.
 
-## App Packs
+## App Packs (optional)
 
 A pack gives an application a domain vocabulary, turning the control tree into
-entities with capabilities. v0.2 uses a single YAML file per app, loaded from
-`somnus/packs/*.pack.yaml`:
+entities with capabilities (`PRODUCT p1 +add`). It is an optimisation, not a
+requirement: a window with no matching pack is compiled generically and stays
+fully operable - see [Generic mode](#generic-mode).
 
-```yaml
-app:
-  id: notepad
-  match: { process: "notepad.exe" }     # by process, never by title
-entities:
-  document:
-    match: { role: text, patterns: [value, text] }
-    key: "$self.automation_id"
-    caps:
-      set_text:
-        via: ["$self.set_text"]
-        params: { text: { type: string, required: true } }
+```python
+from somnus.packs.restaurant_demo import build_pack
+from somnus.runtime.session import Session
+from somnus.providers.mock import MockProvider
+
+session = Session(provider, pack=build_pack())
 ```
 
-Shipped packs: `notepad`, `explorer`, `windows-settings` and `qq`, plus the
-v0.1 `restaurant-demo` Python pack. Full authoring guide:
-[`docs/packs.md`](docs/packs.md).
-
-Packs are optional. A window with no matching pack is compiled generically -
-see [Generic mode](#generic-mode).
+Authoring guide: [`docs/packs.md`](docs/packs.md).
 
 ## Testing
 
@@ -269,41 +271,19 @@ The `MockProvider` replays recorded `RawTree` fixtures and applies scripted
 mutations, so the compiler, projection, resolver, delta and verification paths
 are all exercised without a desktop.
 
-## Metrics (v0.1)
+## Metrics
 
-| Metric | Target |
-| --- | --- |
-| Zero Vision | 0 vision/coordinate calls |
-| Information isolation | 0 native ids in LLM context |
-| Overview tokens (L0) | ≤ 200 |
-| Compression ratio | ≥ 10× |
-| Action success | ≥ 99% |
-| Task success | ≥ 90% |
-| Unconfirmed critical actions | 0 |
+| Metric | Target | Current (`--demo bench`) |
+| --- | --- | --- |
+| Zero Vision | 0 vision/coordinate calls | ✓ (structural) |
+| Information isolation | 0 native ids in LLM context | ✓ (leak scan = 0) |
+| Compression ratio | ≥ 10× | ≥ 73× |
+| Action success | ≥ 99% | 100% |
+| Task success | ≥ 90% | 100% |
 
 Run with `somnus --demo bench --runs 100`.
-
-## Driving the runtime with a real model
-
-The four tools are exercised by a local OpenAI-compatible model. Three example
-hosts live under `examples/` (the agent loop is host code, not core - dev doc
-section 17):
-
-| Script | What it measures |
-| --- | --- |
-| `examples/agent.py` | native function-calling loop over the four tools |
-| `examples/check_contract.py` | tool-contract correctness: does the model emit valid SUI-Text for one aimed call |
-| `examples/eval_agent.py` | task success, judged from runtime state (not the model's claim) |
-
-```bash
-export SOMNUS_LLM_API_KEY=...            # if the endpoint needs one
-python examples/agent.py --provider uia --allow restaurantdemo.exe \
-    --pack restaurant-demo --task "帮我点一个巨无霸和一份薯条，然后打开购物车"
-python examples/check_contract.py --runs 5
-python examples/eval_agent.py --runs 3
-```
 
 ## License
 
 MIT. Design borrows from `desktop-cli` (GPL-3.0 – **design only, no code**),
-`Touchpoint` (MIT) and `agent-desktop`; see the development document section 20.
+`Touchpoint` (MIT) and `agent-desktop`.

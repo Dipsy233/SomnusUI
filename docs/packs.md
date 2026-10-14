@@ -9,10 +9,10 @@ generically and can reach and operate it; a pack adds a vocabulary the generic
 path cannot infer (which button means "add to cart", what a row's price is).
 Use `--no-pack` to drive an application with no pack at all.
 
-v0.1 packs were Python modules. **v0.2 uses a single YAML file** per app,
-discovered automatically from `somnus/packs/*.pack.yaml`. See
-`somnus/packs/notepad.pack.yaml` and `somnus/packs/explorer.pack.yaml` for
-complete, real-world examples.
+A pack can be written as a **single YAML file** (loaded with
+`somnus.compiler.yaml_pack.load_pack_file`) or as a Python module (the built-in
+`restaurant-demo` pack is one). The YAML loader is a soft dependency: it needs
+PyYAML.
 
 ## File shape
 
@@ -208,39 +208,6 @@ rather than a wrong one.
 
 4. Keep a trimmed fixture under `tests/` and assert the entities in a test, so
    the pack is verified in CI (see `tests/compiler/test_yaml_pack.py`).
-
-## Verification status
-
-| Pack | Backend | Verified |
-| --- | --- | --- |
-| `restaurant-demo` | Python module (v0.1) | fixture + live WPF app |
-| `notepad` | YAML | live Windows 11 Notepad |
-| `explorer` | YAML | live Windows 11 File Explorer |
-| `windows-settings` | YAML | live Windows 11 Settings (UWP) |
-| `generic` | YAML-less defaults | projection rules for every app |
-
-### Windows Settings (UWP)
-
-Settings is a UWP app: `SystemSettings.exe` is a small launcher and the real UI
-lives in a window hosted by `ApplicationFrameHost.exe`. The provider resolves
-the real process (see "UWP windows" below), so the pack matches on
-`systemsettings.exe` like any other app.
-
-`windows_settings.pack.yaml` models the WinUI NavigationView:
-
-* **`category`** - every named `listitem` (the left categories and the home
-  page's recommended cards), exposing `select`;
-* **`toggle_setting`** - a `Button` whose class name is `ToggleSwitch`
-  (Bluetooth, Wi-Fi, ...), exposing `toggle`;
-* **`choice_setting`** - a `ComboBox`, exposing `expand` / `collapse` /
-  `select`;
-* **`text_setting`** - a `TextBox` with the Value pattern, exposing `set_text`
-  (native, with a keyboard fallback);
-* **`system_action`** - system menu entries (shut down, restart, sign out),
-  marked `critical`.
-
-The Bluetooth toggle is recognised from its class name, and the navigation
-categories are selectable. The fixture used in CI is de-identified.
 
 ## UWP windows (ApplicationFrameHost)
 

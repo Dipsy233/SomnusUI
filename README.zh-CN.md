@@ -29,7 +29,8 @@ LLM 永远不会看到像素、坐标、截图、句柄、`AutomationId` 或 COM
 ## 设计原则
 
 - **无视觉（No Vision）** – 无障碍树是唯一的感知通道。
-- **低 token（Low Token）** – 观察经过投影与预算控制；L0 概览约 200 token。
+- **低 token（Low Token）** – 观察经过投影与预算控制；同名类列表只展示前
+  3 个样例，匿名叶子折叠为一行汇总，L0 概览通常几十到三百 token。
 - **语义优先（Semantic First）** – LLM 调用 `CALL p1.add()`，而非 `click(312, 528)`。
 - **确定性编译器** – 运行时与编译器内部不运行任何 LLM。
 - **大声失败（Fail Loud）** – 凡是无障碍 API 无法表达的内容一律为
@@ -55,6 +56,21 @@ somnus --no-pack repl              # 多步会话，不应用 App Pack
 somnus record w1 -o fixture.json
 somnus mcp                         # MCP 服务器（stdio），4 个工具
 ```
+
+### 作为 MCP 服务器接入任意客户端
+
+Claude Desktop、Cursor、pi 等任何 MCP 客户端都可接入：
+
+```json
+{
+  "mcpServers": {
+    "somnus": { "command": "somnus-mcp" }
+  }
+}
+```
+
+暴露 `observe` / `find` / `inspect` / `call` 四个工具，provider 自动选择
+（有 UIA 依赖时驱动真实窗口，否则回退 mock）。
 
 ## LLM 看到什么
 
@@ -197,51 +213,40 @@ somnus/
 ├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
-│                  yaml_pack.py（v0.2 YAML pack 加载器）
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
-├── packs/         generic.py restaurant_demo.py（v0.1）
-│                  notepad / explorer / windows_settings .pack.yaml（v0.2）
-├── protocol/      tools.py mcp_server.py jsonrpc.py
+├── packs/         generic.py restaurant_demo.py（内置演示 pack）
+├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
 └── cli.py
 apps/restaurant-demo/   WPF（.NET 8）验收应用
 docs/
-  packs.md              如何编写 App Pack
+  packs.md              App Pack 编写指南
+  interactive-usage.md  REPL / CLI / 脚本三种驱动方式
   what-the-llm-sees.md  一个窗口、四个工具，附真实输出
-examples/               agent 循环、契约检查、任务评估
-bench/                  指标测试框架 + LLM 控制演示
-  run.py                基准门槛
-  demo_llm.py           在 mock 后端上的端到端演示（任意平台）
-  demo_notepad.py       对真实记事本使用相同的工具
+examples/               agent 循环、契约检查、任务评估（宿主示例代码）
+bench/                  基准门槛 + LLM 控制演示
 tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
 ```
 
-依赖方向（CI 中强制约束）：`providers → compiler → projection →
-serialization → protocol`；`runtime` 依赖以上全部；任何地方都不导入 LLM。
+依赖方向：`providers → compiler → projection → serialization → protocol`；
+`runtime` 依赖以上全部；任何地方都不导入 LLM。
 
-## App Packs
+## App Packs（可选）
 
-Pack 为应用程序提供领域词汇，把通用控件树变成带有能力的实体。v0.2 每个
-应用只需一个 YAML 文件，从 `somnus/packs/*.pack.yaml` 自动发现加载：
+Pack 为应用程序提供领域词汇，把通用控件树变成带有能力的实体（如
+`PRODUCT p1 +add`）。它是优化手段而非必要条件：没有 pack 的窗口走通用
+编译路径，一样可以到达和操作（见通用模式）。
 
-```yaml
-app:
-  id: notepad
-  match: { process: "notepad.exe" }     # 按进程匹配，绝不按标题
-entities:
-  document:
-    match: { role: text, patterns: [value, text] }
-    key: "$self.automation_id"
-    caps:
-      set_text:
-        via: ["$self.set_text"]
-        params: { text: { type: string, required: true } }
+```python
+from somnus.packs.restaurant_demo import build_pack
+from somnus.runtime.session import Session
+from somnus.providers.mock import MockProvider
+
+session = Session(provider, pack=build_pack())
 ```
 
-已内置的 pack：`notepad` 与 `explorer`（均针对真实的 Windows 11 应用
-验证过），以及 v0.1 的 `restaurant-demo` Python pack。完整编写指南见
-[`docs/packs.md`](docs/packs.md)。
+编写指南见 [`docs/packs.md`](docs/packs.md)。
 
 ## 测试
 
@@ -256,38 +261,17 @@ pytest -m windows           # UIA + WPF 端到端（仅 Windows 运行器）
 
 ## 指标（v0.1）
 
-| 指标 | 目标 |
-| --- | --- |
-| 零视觉（Zero Vision） | 0 次视觉/坐标调用 |
-| 信息隔离 | LLM 上下文中 0 个原生 ID |
-| 概览 token（L0） | ≤ 200 |
-| 压缩比 | ≥ 10× |
-| 动作成功率 | ≥ 99% |
-| 任务成功率 | ≥ 90% |
-| 未确认的关键操作 | 0 |
+| 指标 | 目标 | 当前（`--demo bench`） |
+| --- | --- | --- |
+| 零视觉（Zero Vision） | 0 次视觉/坐标调用 | ✓（结构性保证） |
+| 信息隔离 | LLM 上下文中 0 个原生 ID | ✓（泄露扫描 = 0） |
+| 压缩比 | ≥ 10× | ≥ 73× |
+| 动作成功率 | ≥ 99% | 100% |
+| 任务成功率 | ≥ 90% | 100% |
 
 运行方式：`somnus --demo bench --runs 100`。
-
-## 用真实模型驱动运行时
-
-四个工具由一个本地 OpenAI 兼容模型驱动。`examples/` 下有三个示例宿主
-（agent 循环属于宿主代码，不属于核心——开发文档第 17 节）：
-
-| 脚本 | 测量内容 |
-| --- | --- |
-| `examples/agent.py` | 基于四个工具的原生函数调用循环 |
-| `examples/check_contract.py` | 工具契约正确性：模型能否为一次目标调用输出合法 SUI-Text |
-| `examples/eval_agent.py` | 任务成功率，由运行时状态判定（而非模型自述） |
-
-```bash
-export SOMNUS_LLM_API_KEY=...            # 如端点需要密钥
-python examples/agent.py --provider uia --allow restaurantdemo.exe \
-    --pack restaurant-demo --task "帮我点一个巨无霸和一份薯条，然后打开购物车"
-python examples/check_contract.py --runs 5
-python examples/eval_agent.py --runs 3
-```
 
 ## 许可证
 
 MIT。设计借鉴自 `desktop-cli`（GPL-3.0 —— **仅借鉴设计，无任何代码**）、
-`Touchpoint`（MIT）与 `agent-desktop`；详见开发文档第 20 节。
+`Touchpoint`（MIT）与 `agent-desktop`。

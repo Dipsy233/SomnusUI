@@ -6,11 +6,10 @@
 
 ## ① `observe` — 概览
 
+`observe` 只返回目标窗口的内容（其他桌面窗口用 `OBSERVE windows` 单独列出）：
+
 ```
 @rev 1
-WINDOW w2 "任务栏"
-WINDOW w3 "E:\0down\SomnusUI"
-WINDOW w4 "Program Manager"
 WINDOW w1 "agent 属性" +scroll_into_view
   SCREEN s1 "网络文件和文件夹共享"
   IMAGE im1 "网络文件和文件夹共享"
@@ -44,7 +43,7 @@ WINDOW w1 "agent 属性" +scroll_into_view
 
 | 信息 | 来源 |
 |---|---|
-| 有哪些窗口，哪个是当前目标 | `WINDOW` 行；目标在最前，带 `+scroll_into_view` |
+| 界面是否就绪、目标窗口是否就位 | `WINDOW` 行（`+scroll_into_view` 表示已就绪） |
 | 界面的语义分区 | `SCREEN s1 "网络文件和文件夹共享"` 等 |
 | 哪些是输入框 | `INPUT q1`（`readonly` 明确标注不可编辑） |
 | 哪些能点 | `BUTTON b1 "共享(S)..."` |
@@ -155,8 +154,8 @@ somnus observe w1
 # 交互式
 somnus --no-pack repl
 
-# 应用某个 pack
-somnus --pack notepad observe
+# 应用某个 pack（如内置的 restaurant-demo，需先启动演示应用）
+somnus --pack restaurant-demo observe
 ```
 
 或在 Python 里：
