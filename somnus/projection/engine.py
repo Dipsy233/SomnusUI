@@ -14,6 +14,10 @@ from somnus.ir.node import SemanticNode
 from somnus.projection.budget import ObservationBudget, count_tokens
 from somnus.projection.rules import Projection, Rule
 
+#: Roles that stay visible at L0 even when anonymous: inputs carry values the
+#: agent may set, and these document/structural roles carry meaning.
+_L0_KEEP_ROLES = frozenset({"input", "document", "list", "tree", "table"})
+
 
 @dataclass(slots=True)
 class Line:
@@ -51,9 +55,13 @@ class ProjectionEngine:
         budget: ObservationBudget | None = None,
         *,
         auto_collapse_threshold: int = 8,
+        l0: bool = False,
     ) -> None:
         self.budget = budget or ObservationBudget()
         self.auto_collapse_threshold = auto_collapse_threshold
+        #: When True, anonymous actionless leaves are folded at overview level
+        #: (the L0 noise floor). The engine's caller passes level == 0.
+        self.l0 = l0
 
     def plan(
         self,
@@ -143,8 +151,28 @@ class ProjectionEngine:
 
         if full or id(node) in expanded:
             collapsed = False
+            folded_leaf = False
         else:
             collapsed = rule is Rule.COLLAPSE or self._auto_collapse(node)
+            # L0 noise floor: an anonymous leaf (a TEXT/IMAGE the app gave no
+            # name to) carries no actionable signal at overview level - the
+            # bulk of a CEF page is such lines, and an unnamed icon button
+            # cannot be told apart from decoration anyway. Folded leaves are
+            # counted and reported as one summary line after the siblings;
+            # INSPECT / expand / full reveal them. `input` stays visible: its
+            # value may be what the agent needs to set or read.
+            folded_leaf = (
+                not collapsed
+                and self.l0
+                and depth > 0
+                and not node.children
+                and not node.name
+                and not node.entity
+                and node.role not in _L0_KEEP_ROLES
+            )
+            if folded_leaf:
+                counter["folded_leaves"] = counter.get("folded_leaves", 0) + 1
+                return
         line = Line(node=node, depth=depth, collapsed=collapsed)
         if collapsed:
             line.hidden_count = self._count(node)
@@ -180,11 +208,13 @@ class ProjectionEngine:
                     )
                 )
                 counter["tokens"] += count_tokens(f"  \u2026 +{hidden} more")
+                self._flush_folded_leaves(counter, plan, depth + 1)
                 return
             self._walk(
                 child, depth + 1, max_depth, projection, plan, counter,
                 full=full, expanded=expanded,
             )
+        self._flush_folded_leaves(counter, plan, depth + 1)
 
     def _emit(
         self, line: Line, plan: RenderPlan, counter: dict[str, int], *, full: bool = False
@@ -206,6 +236,24 @@ class ProjectionEngine:
         counter["tokens"] += cost
         counter["nodes"] += 1
         return True
+
+    def _flush_folded_leaves(self, counter: dict[str, int], plan: RenderPlan, depth: int) -> None:
+        """Emit one summary line for the anonymous leaves folded this round.
+
+        The line is what makes the folding *discoverable*: an agent that sees
+        `… +11 unnamed` knows the window has more content and can INSPECT the
+        parent or re-observe with expand/full, instead of believing the tree
+        really is that small.
+        """
+        n = counter.pop("folded_leaves", 0)
+        if not n:
+            return
+        text = f"\u2026 +{n} unnamed"
+        plan.lines.append(
+            Line(node=plan.lines[-1].node if plan.lines else None, depth=depth,
+                 marker=True, marker_text=text)
+        )
+        counter["tokens"] += count_tokens("  " + text)
 
     def _auto_collapse(self, node: SemanticNode) -> bool:
         # Homogeneous collections over the threshold collapse automatically.

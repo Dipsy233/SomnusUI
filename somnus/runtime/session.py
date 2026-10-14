@@ -515,7 +515,7 @@ class Session:
             max_tokens=max(100, budget.max_tokens - header_tokens - 6),
             hard_tokens=budget.hard_tokens,
         )
-        engine = ProjectionEngine(body_budget)
+        engine = ProjectionEngine(body_budget, l0=(level == 0))
         projection = apply_projection(result.root, self._pack_projection())
         plan = engine.plan(
             result.root,
