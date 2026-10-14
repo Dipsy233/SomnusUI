@@ -231,10 +231,10 @@ def test_open_uses_activate_when_the_control_reports_invoke():
     assert [s.primitive for s in cap.via] == ["activate"]
 
 
-def test_double_click_is_offered_on_a_control_but_not_on_a_label():
-    """The gesture is available as its own capability, so the caller can reach
-    for it when activate does nothing. It is granted only to real controls - an
-    element with an interaction pattern - never to a text label."""
+def test_context_menu_is_offered_on_a_control_but_not_on_a_label():
+    """The menu is available as its own capability, so the caller can reach for
+    it when the native gesture does nothing. It is granted only to real controls
+    - an element with an interaction pattern - never to a text label."""
     row = _n(
         "group",
         patterns=_SEL,
@@ -246,12 +246,12 @@ def test_double_click_is_offered_on_a_control_but_not_on_a_label():
 
     control = res.find("g1")
     assert control is not None
-    assert "double_click" in control.cap_names()
+    assert "context_menu" in control.cap_names()
 
     text_node = next(
         n for n in res.root.walk() if n.role == "text" and n.name == "Just a label"
     )
-    assert "double_click" not in text_node.cap_names()
+    assert "context_menu" not in text_node.cap_names()
 
 
 def test_inert_node_gets_no_action_capabilities():
@@ -264,7 +264,7 @@ def test_inert_node_gets_no_action_capabilities():
         if node.role in ("text", "image"):
             assert "activate" not in node.cap_names()
             assert "set_text" not in node.cap_names()
-            assert "double_click" not in node.cap_names()
+            assert "context_menu" not in node.cap_names()
             assert "toggle" not in node.cap_names()
 
 

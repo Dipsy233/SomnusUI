@@ -47,11 +47,13 @@ somnus --demo bench --runs 100
 
 # 操作真实的 Windows 应用（需要 [windows] 扩展）：
 pip install -e ".[windows]"
-somnus windows
-somnus observe w1
+somnus windows                     # 列出窗口
+somnus observe                     # 目标窗口提供了什么
+somnus observe w1                  # 只观察某个窗口
 somnus call 'CALL b1.activate()'
+somnus --no-pack repl              # 多步会话，不应用 App Pack
 somnus record w1 -o fixture.json
-somnus mcp           # MCP 服务器（stdio），4 个工具
+somnus mcp                         # MCP 服务器（stdio），4 个工具
 ```
 
 ## LLM 看到什么
@@ -111,6 +113,31 @@ ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 模型永远看不到句柄、坐标、`AutomationId`、进程 ID、COM 指针、原始
 `control_type`，也看不到 UIA 转储中大量无名的 `Pane` 包装节点。完整演练见
 [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md)。
+
+## 通用模式（Generic mode）
+
+pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来就没有对应 pack）
+时，编译器完全从结构与原生模式推导，从未见过的应用依然可用：
+
+- **控件**由平台定义——暴露交互模式（`invoke`、`selectionitem`、`toggle`、
+  `value` 等）的元素。纯静态文本和布局容器不会获得任何操作。
+- **`set_text`** 为每个可输入表面推导，执行时才选择路径：普通字段走 Value
+  模式，富文本/文档编辑器则用键盘输入。自绘编辑器（Chromium/Electron）
+  无需 pack 即可写入。
+- **`context_menu`** 与 `activate` 并列提供给每个控件。它是面对"忽略原生模式
+  的应用"时的出口：菜单通过 UIA 自身打开（`ShowContextMenu`），指针不会移动、
+  不发送任何按键，而菜单项本身是标准菜单项，其 `activate` 可用。默认动作
+  只做高亮的应用（如聊天列表）正是这样被驱动的，且无需合成输入。
+- **实体**按结构识别：标题加动词按钮的行，或同一容器下三个以上的标题行
+  （列表、工具栏、导航栏）。
+
+```bash
+somnus --no-pack repl          # 驱动任意应用
+somnus --no-pack observe w4
+```
+
+pack 仍适合编码通用路径无法推断的领域词汇（`PRODUCT p1 +add`、`+submit!`），
+但为了“够到并操作一个控件”从不需要它。
 
 ## 提供者（Providers）
 
@@ -276,21 +303,21 @@ pytest -m windows           # UIA + WPF 端到端（仅 Windows 运行器）
 
 ## 指标（v0.1）
 
-| 指标 | 目标 | 演示结果 |
-| --- | --- | --- |
-| 零视觉（Zero Vision） | 0 次视觉/坐标调用 | 0 |
-| 信息隔离 | LLM 上下文中 0 个原生 ID | 0 |
-| 概览 token（L0） | ≤ 200 | 176 |
-| 压缩比 | ≥ 10× | 41× |
-| 动作成功率 | ≥ 99% | 100% |
-| 任务成功率 | ≥ 90% | 100% |
-| 未确认的关键操作 | 0 | 0 |
+| 指标 | 目标 |
+| --- | --- |
+| 零视觉（Zero Vision） | 0 次视觉/坐标调用 |
+| 信息隔离 | LLM 上下文中 0 个原生 ID |
+| 概览 token（L0） | ≤ 200 |
+| 压缩比 | ≥ 10× |
+| 动作成功率 | ≥ 99% |
+| 任务成功率 | ≥ 90% |
+| 未确认的关键操作 | 0 |
 
-复现方式：`somnus --demo bench --runs 100`。
+运行方式：`somnus --demo bench --runs 100`。
 
 ## 用真实模型驱动运行时
 
-四个工具由一个本地 OpenAI 兼容模型驱动验证。`examples/` 下有三个示例宿主
+四个工具由一个本地 OpenAI 兼容模型驱动。`examples/` 下有三个示例宿主
 （agent 循环属于宿主代码，不属于核心——开发文档第 17 节）：
 
 | 脚本 | 测量内容 |
@@ -306,18 +333,6 @@ python examples/agent.py --provider uia --allow restaurantdemo.exe \
 python examples/check_contract.py --runs 5
 python examples/eval_agent.py --runs 3
 ```
-
-针对 `hy3`（推理模型，原生工具调用）的实测结果：
-
-| 检查项 | 结果 |
-| --- | --- |
-| 工具契约（`add_product`、`open_cart`） | 10/10 |
-| 任务成功（`one_big_mac`、`big_mac_and_fries`、`three_colas`） | 9/9 |
-| 真实 WPF 应用完整验收 | 3 次工具调用内完成 |
-
-在真实 WPF 应用上，模型依次执行 `observe` → `p1.add()` → `p2.add()` →
-`c1.open()`，每次都产生预期的增量（`~ c1 count 0→1 total 0→5.99`，随后
-`1→2`，最后是一个真实的 `+ WINDOW "Cart"`），并自主报告任务完成。
 
 ## 许可证
 

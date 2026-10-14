@@ -4,6 +4,11 @@ A **pack** teaches SomnusUI a domain vocabulary for one application: it turns
 the generic control tree (`group` / `text` / `button`) into named entities with
 capabilities (`PRODUCT p1 "Big Mac" +add`).
 
+A pack is **optional**. Without one, the runtime still compiles every control
+generically and can reach and operate it; a pack adds a vocabulary the generic
+path cannot infer (which button means "add to cart", what a row's price is).
+Use `--no-pack` to drive an application with no pack at all.
+
 v0.1 packs were Python modules. **v0.2 uses a single YAML file** per app,
 discovered automatically from `somnus/packs/*.pack.yaml`. See
 `somnus/packs/notepad.pack.yaml` and `somnus/packs/explorer.pack.yaml` for
@@ -234,9 +239,8 @@ the real process (see "UWP windows" below), so the pack matches on
 * **`system_action`** - system menu entries (shut down, restart, sign out),
   marked `critical`.
 
-Verified on the live app: the Bluetooth toggle is recognised from its class
-name, the navigation categories are selectable, and selecting a category
-produces the expected delta. The fixture used in CI is de-identified.
+The Bluetooth toggle is recognised from its class name, and the navigation
+categories are selectable. The fixture used in CI is de-identified.
 
 ## UWP windows (ApplicationFrameHost)
 

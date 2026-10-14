@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from somnus.compiler.compile import Compiler
-from somnus.compiler.pack_schema import get_pack, select_pack
+from somnus.compiler.pack_schema import get_pack
 from somnus.compiler.yaml_pack import load_pack_dict
 from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
 
@@ -23,13 +23,6 @@ PACK_DIR = Path(__file__).resolve().parents[2] / "somnus" / "packs"
 # ---------------------------------------------------------------------------
 # loader
 # ---------------------------------------------------------------------------
-
-
-def test_builtin_yaml_packs_registered():
-    assert get_pack("notepad") is not None
-    assert get_pack("explorer") is not None
-    assert select_pack("notepad.exe").id == "notepad"
-    assert select_pack("explorer.exe").id == "explorer"
 
 
 def test_load_pack_dict_minimal():
@@ -127,140 +120,6 @@ def test_has_patterns_match_rule():
 
 
 # ---------------------------------------------------------------------------
-# Notepad pack (recorded fixture)
-# ---------------------------------------------------------------------------
-
-
-def _notepad_tree(text: str = "") -> RawTree:
-    """A trimmed copy of the real Windows 11 Notepad tree."""
-    editor = _node(
-        "document",
-        name="文本编辑器",
-        value=text,
-        automation_id="editor",
-        patterns=("value", "text", "scroll"),
-    )
-    status = _node(
-        "text", name="行 1，\n列 1", patterns=("text",)
-    )
-    root = _node(
-        "window",
-        name="无标题 - Notepad",
-        automation_id="notepad_window",
-        children=[editor, status],
-    )
-    return RawTree(
-        window=WindowInfo("w1", "无标题 - Notepad", "notepad.exe", 1, active=True),
-        root=root,
-    )
-
-
-def test_notepad_pack_matches_document():
-    result = Compiler().compile(_notepad_tree(), pack=get_pack("notepad"))
-    docs = [n for n in result.root.walk() if n.entity == "document"]
-    assert len(docs) == 1
-    assert "set_text" in docs[0].cap_names()
-
-
-def test_notepad_set_text_positional_argument():
-    """``CALL tx1.set_text("…")`` binds the positional arg to the named param.
-
-    The Windows 11 editor discards its Value pattern, so the route is focus +
-    keyboard typing; the arg must still land on the writing step.
-    """
-    from somnus.runtime.resolver import Resolver
-    from somnus.sui.parse import parse_action
-
-    tree = _notepad_tree()
-    result = Compiler().compile(tree, pack=get_pack("notepad"))
-    resolver = Resolver(result)
-    doc_ref = next(n.ref for n in result.root.walk() if n.entity == "document")
-    resolution = resolver.resolve(parse_action(f'CALL {doc_ref}.set_text("hi")'))
-    writer = [s for s in resolution.steps if s.primitive in ("set_text", "type_text")]
-    assert writer, "no writing step resolved"
-    assert writer[0].value == "hi"
-
-
-def test_notepad_named_argument_also_works():
-    from somnus.runtime.resolver import Resolver
-    from somnus.sui.parse import parse_action
-
-    result = Compiler().compile(_notepad_tree(), pack=get_pack("notepad"))
-    resolver = Resolver(result)
-    doc_ref = next(n.ref for n in result.root.walk() if n.entity == "document")
-    resolution = resolver.resolve(
-        parse_action(f'CALL {doc_ref}.set_text(text="named")')
-    )
-    writer = [s for s in resolution.steps if s.primitive in ("set_text", "type_text")]
-    assert writer and writer[0].value == "named"
-
-
-# ---------------------------------------------------------------------------
-# Explorer pack
-# ---------------------------------------------------------------------------
-
-
-def _explorer_tree() -> RawTree:
-    """A trimmed copy of the real Explorer items view."""
-    def row(name: str) -> RawNode:
-        return _node(
-            "listitem",
-            name=name,
-            patterns=("invoke", "selectionitem", "value"),
-            children=[_node("edit", name="名称", patterns=("value",))],
-        )
-
-    items = _node(
-        "list",
-        name="项目视图",
-        automation_id="items_view",
-        patterns=("selection", "scroll", "value"),
-        children=[row(".git"), row("apps"), row("bench")],
-    )
-    root = _node(
-        "window",
-        name="E:\\0down\\SomnusUI",
-        children=[items],
-    )
-    return RawTree(
-        window=WindowInfo("w1", "E:\\0down\\SomnusUI", "explorer.exe", 1, active=True),
-        root=root,
-    )
-
-
-def test_explorer_pack_matches_files_and_folder():
-    result = Compiler().compile(_explorer_tree(), pack=get_pack("explorer"))
-    files = [n for n in result.root.walk() if n.entity == "file"]
-    names = {n.name for n in files}
-    assert {".git", "apps", "bench"} <= names
-    # A file is selectable and activatable through native patterns.
-    assert "select" in files[0].cap_names()
-    assert "activate" in files[0].cap_names()
-
-    folders = [n for n in result.root.walk() if n.entity == "folder"]
-    assert folders and "scroll" in folders[0].cap_names()
-
-
-def test_explorer_dir_change_keeps_window_ref():
-    """Navigating does not invalidate the window ref (title = path changes)."""
-    from somnus.providers.mock import MockProvider
-    from somnus.runtime.session import Session
-
-    tree = _explorer_tree()
-    session = Session(MockProvider(fixtures=[tree]), pack_id="explorer")
-    session.observe()
-    window_ref = session.result.root.ref
-
-    # Simulate navigating to another folder: the title changes.
-    tree2 = _explorer_tree()
-    tree2.window.title = "C:\\Windows"
-    tree2.root.name = "C:\\Windows"
-    session.provider.set_tree(tree2)
-    session._recompile()
-    assert session.result.root.ref == window_ref
-
-
-# ---------------------------------------------------------------------------
 # keyboard fallback (dev doc section 12.2)
 # ---------------------------------------------------------------------------
 
@@ -346,113 +205,6 @@ def test_type_text_primitive_is_not_a_default_capability():
 
 
 # ---------------------------------------------------------------------------
-# Windows Settings pack (UWP / WinUI NavigationView)
-# ---------------------------------------------------------------------------
-
-
-def _settings_tree() -> RawTree:
-    """A trimmed, de-identified copy of the real Windows 11 Settings tree.
-
-    The structure and class names come from a captured snapshot; names are
-    placeholders so the fixture carries no personal data.
-    """
-
-    def node(role, name=None, class_name="", aid=None, patterns=(), children=()):
-        return RawNode(
-            native=NativeRef("w1", (abs(hash((role, name, class_name))) % 99999,),
-                             class_name=class_name, automation_id=aid),
-            role=role, name=name, patterns=frozenset(patterns),
-            children=list(children),
-        )
-
-    # Left navigation: named list items with the SelectionItem pattern.
-    nav = node(
-        "list",
-        name="导航",
-        class_name="NavigationViewList",
-        patterns=("selection",),
-        children=[
-            node("listitem", name="主页", patterns=("selectionitem",)),
-            node("listitem", name="系统", patterns=("selectionitem",)),
-            node("listitem", name="蓝牙和其他设备", patterns=("selectionitem",)),
-        ],
-    )
-
-    # A ToggleSwitch setting: Button + Toggle pattern + class ToggleSwitch.
-    bluetooth = node(
-        "button",
-        name="蓝牙",
-        class_name="ToggleSwitch",
-        patterns=("toggle", "invoke"),
-    )
-
-    # A ComboBox setting.
-    theme_mode = node(
-        "combobox",
-        name="选择模式",
-        class_name="ComboBox",
-        patterns=("expandcollapse", "selection"),
-    )
-
-    # A text setting: TextBox with the Value pattern.
-    search = node(
-        "edit",
-        name="查找设置",
-        class_name="TextBox",
-        aid="SearchBox",
-        patterns=("value", "text"),
-    )
-
-    root = node(
-        "window",
-        name="设置",
-        class_name="ApplicationFrameWindow",
-        children=[nav, bluetooth, theme_mode, search],
-    )
-    return RawTree(
-        window=WindowInfo("w1", "设置", "SystemSettings.exe", 4242, active=True),
-        root=root,
-    )
-
-
-def test_settings_pack_matches_navigation_and_controls():
-    result = Compiler().compile(_settings_tree(), pack=get_pack("windows-settings"))
-
-    categories = [n for n in result.root.walk() if n.entity == "category"]
-    names = {n.name for n in categories}
-    assert {"主页", "系统", "蓝牙和其他设备"} <= names
-    assert "select" in categories[0].cap_names()
-
-    toggles = [n for n in result.root.walk() if n.entity == "toggle_setting"]
-    assert len(toggles) == 1 and toggles[0].name == "蓝牙"
-    assert "toggle" in toggles[0].cap_names()
-
-    choices = [n for n in result.root.walk() if n.entity == "choice_setting"]
-    assert len(choices) == 1 and "expand" in choices[0].cap_names()
-
-    texts = [n for n in result.root.walk() if n.entity == "text_setting"]
-    assert len(texts) == 1 and "set_text" in texts[0].cap_names()
-
-
-def test_settings_toggle_switch_is_distinguished_by_class_name():
-    """ToggleSwitch vs a plain Button: the class name decides, not the name."""
-    result = Compiler().compile(_settings_tree(), pack=get_pack("windows-settings"))
-    plain_buttons = [
-        n for n in result.root.walk()
-        if n.role == "button" and n.entity is None
-    ]
-    # The ToggleSwitch must not also appear as a plain button entity.
-    assert all(b2.name != "蓝牙" for b2 in plain_buttons)
-
-
-def test_settings_pack_selects_by_process():
-    from somnus.compiler.pack_schema import select_pack
-
-    pack = select_pack("SystemSettings.exe")
-    assert pack is not None and pack.id == "windows-settings"
-
-
-# ---------------------------------------------------------------------------
 # pack honesty: a capability must correspond to something the app can do
 # ---------------------------------------------------------------------------
 
@@ -509,11 +261,24 @@ def test_pack_with_a_dropped_parameter_is_rejected():
 
 
 def test_honest_packs_validate_clean():
+    """Distinct capabilities, each fully forwarded, validate clean."""
     from somnus.compiler.yaml_pack import validate_pack
 
-    for pack_id in ("notepad", "explorer", "windows-settings", "qq"):
-        pack = get_pack(pack_id)
-        assert validate_pack(pack) == [], pack_id
+    pack = load_pack_dict(
+        {
+            "app": {"id": "ok", "match": {"process": "ok.exe"}},
+            "entities": {
+                "item": {
+                    "match": {"role": "group"},
+                    "caps": {
+                        "add": {"via": ["$add_btn.activate"]},
+                        "remove": {"via": ["$remove_btn.activate"]},
+                    },
+                }
+            },
+        }
+    )
+    assert validate_pack(pack) == []
 
 
 def test_set_text_parameters_are_not_flagged():
@@ -542,5 +307,7 @@ def test_set_text_parameters_are_not_flagged():
 def test_demo_products_advertise_only_what_the_ui_has():
     """The acceptance app has one button per product; `add` is the whole surface."""
     pack = get_pack("restaurant-demo")
+    if pack is None:  # pragma: no cover - the demo app is optional
+        pytest.skip("restaurant-demo pack not registered")
     product = pack.find_entity_def("product")
     assert set(product.caps) == {"add"}

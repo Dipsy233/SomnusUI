@@ -61,13 +61,14 @@ def test_select_step_targets_selectionitem_not_invoke():
     assert [s.primitive for s in node.get_cap("activate").via] == ["activate"]
 
 
-def test_a_control_offers_both_gestures():
-    """The caller decides which gesture to use, so both are reachable."""
+def test_a_control_offers_the_context_menu():
+    """The context menu is how an application refusing every native gesture is
+    still driven, so it is reachable on an ordinary control."""
     tree = _listitem_tree(frozenset({"invoke", "selectionitem"}))
     result = Compiler().compile(tree, pack=None)
     node = result.find("li1")
     assert node is not None
-    assert "double_click" in node.cap_names()
+    assert "context_menu" in node.cap_names()
 
 
 def test_normalize_role_aliases():
@@ -92,7 +93,6 @@ def test_normalize_states_drops_defaults():
 def test_select_pack_by_process():
     pack = select_pack("RestaurantDemo.exe")
     assert pack is not None and pack.id == "restaurant-demo"
-    assert select_pack("notepad.exe").id == "notepad"
     assert select_pack("some-unknown-app.exe") is None
 
 

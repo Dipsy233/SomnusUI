@@ -14,6 +14,7 @@ Everything returned here is SUI-Text. Native identity never leaves the session.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 
@@ -21,7 +22,7 @@ from somnus.compiler.compile import CompileResult, Compiler
 from somnus.compiler.pack_schema import Pack, select_pack
 from somnus.errors import ErrorCode, SomnusError, target_not_found
 from somnus.ir.action import Action
-from somnus.ir.node import RawTree, SemanticNode, WindowInfo
+from somnus.ir.node import RawTree, Relation, SemanticNode, WindowInfo
 from somnus.projection.budget import ObservationBudget, count_tokens
 from somnus.projection.engine import ProjectionEngine
 from somnus.projection.rules import apply_projection
@@ -32,10 +33,15 @@ from somnus.runtime.registry import SessionRegistry
 from somnus.runtime.resolver import Resolver
 from somnus.runtime.settle import Settler
 from somnus.runtime.verifier import Verifier
-from somnus.sui.serialize import RenderOptions, render_document, render_node_line
+from somnus.sui.serialize import INDENT, RenderOptions, render_document, render_node_line
 from somnus.sui.parse import parse_action
 
 log = logging.getLogger("somnus.session")
+
+#: Set SOMNUS_TRACE_STATES=1 to trace a call end to end: which route a
+#: capability resolved to, what each primitive did, and how the target's states
+#: looked before and after the settle.
+_TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
 
 
 @dataclass(slots=True)
@@ -73,10 +79,16 @@ class Session:
         budget: ObservationBudget | None = None,
         settler: Settler | None = None,
         compiler: Compiler | None = None,
+        allow_packs: bool = True,
     ) -> None:
         self.provider = provider
         self.explicit_pack = pack
         self.pack_id = pack_id
+        #: When False the session never applies an App Pack: every window is
+        #: compiled by the generic path alone. This is how the "no pack" mode is
+        #: requested - it is a property of the session, not a trick played on
+        #: ``_current_pack`` from outside.
+        self.allow_packs = allow_packs
         self.policy = policy or Policy()
         self.budget = budget or ObservationBudget()
         self.settler = settler or Settler()
@@ -96,6 +108,14 @@ class Session:
         self._audit: list[dict] = []
         #: refs whose fingerprint is ambiguous in the current compilation.
         self._ambiguous_refs: set[str] = set()
+        #: menu ref -> the ref of the node whose context menu it is. A context
+        #: menu is a separate native popup with no structural link to the control
+        #: that opened it, so the association has to be remembered here; the
+        #: projection then re-parents the menu under its owner, which is how the
+        #: menu reads as belonging to something instead of floating at window
+        #: level. Cleared automatically once the menu disappears (see
+        #: :meth:`_reattach_open_menu`).
+        self._menu_owner: dict[str, str] = {}
         #: semantic projection digest; `rev` only moves when this changes.
         self._last_signature: tuple | None = None
         #: session ref -> native window_id, and reverse, for CALL w?.focus().
@@ -165,6 +185,8 @@ class Session:
     # ------------------------------------------------------------------ compile
 
     def _current_pack(self) -> Pack | None:
+        if not self.allow_packs:
+            return None
         if self.explicit_pack is not None:
             return self.explicit_pack
         if self.target_window is None:
@@ -192,6 +214,18 @@ class Session:
         self._ambiguous_refs = {
             node.ref for node in result.root.walk() if node.fingerprint in set(report.ambiguous)
         }
+        # A context menu is a floating popup: natively it is a sibling of the
+        # whole window content, with nothing tying it to the control that opened
+        # it. Re-parent it under that control so the tree says which node the
+        # menu belongs to. Nothing to do until a menu has been opened.
+        if self._menu_owner:
+            self._reattach_open_menu(result)
+            if _TRACE_STATES:
+                log.info(
+                    "menu mount: owner map=%s menus=%s",
+                    self._menu_owner,
+                    [n.ref for n in result.root.walk() if n.role == "menu"],
+                )
         # `rev` increments only when the *semantic projection* changes (dev doc
         # section 9.1): a raw tree that repaints identically keeps the same rev.
         signature = self._projection_signature(result)
@@ -199,6 +233,171 @@ class Session:
             self._last_signature = signature
             self._bump_rev()
         return result
+
+    # -------------------------------------------------------------- menu mount
+
+    def _reattach_open_menu(self, result: CompileResult) -> None:
+        """Move an open context menu under the node that opened it.
+
+        The association is by *fingerprint*, not ref: a menu owner may be
+        renamed or re-indexed between compilations (QQ's conversation rows carry
+        the conversation title, which changes when the chat does), and a ref that
+        drifted would silently mount the menu under the wrong node.
+
+        A menu that is no longer present means the menu was dismissed, so the
+        association is dropped here - the mount lasts exactly as long as the menu
+        does, which is what makes "focus elsewhere to close the menu" work
+        without any explicit unmount call.
+        """
+        present = {n.fingerprint for n in result.root.walk() if n.role == "menu"}
+        # Drop owners whose menu is gone: a dismissed menu must not stay
+        # associated with its node, or the next compilation would re-mount a
+        # popup that no longer exists. Owners whose menu is still present are
+        # kept, so opening a second menu does not forget the first.
+        for fp in [fp for fp in self._menu_owner if fp not in present]:
+            self._menu_owner.pop(fp, None)
+        if not self._menu_owner:
+            return
+
+        by_fingerprint = {n.fingerprint: n for n in result.root.walk()}
+        for menu in [n for n in result.root.walk() if n.role == "menu"]:
+            owner_fp = self._menu_owner.get(menu.fingerprint)
+            if owner_fp is None:
+                continue
+            owner = by_fingerprint.get(owner_fp)
+            if owner is None:
+                continue
+            # Detach from wherever the popup was parented, then attach to the
+            # owner. `owner` is looked up per menu, so two menus opened from two
+            # different rows both end up under their own row.
+            _detach(menu, result)
+            menu.relations = [
+                r for r in menu.relations if r.kind not in ("selected_in",)
+            ]
+            # The items' `selected_in` points at the menu container they were
+            # enumerated under, which is the pre-mount ref. Re-point them at this
+            # menu so the relation stays inside the mounted subtree and does not
+            # reference a container that is no longer in the tree. `Relation` is
+            # frozen, so the list is rebuilt rather than mutated.
+            for item in menu.walk():
+                item.relations = [
+                    Relation(kind=r.kind, target=menu.ref)
+                    if r.kind == "selected_in"
+                    else r
+                    for r in item.relations
+                ]
+            owner.children.append(menu)
+
+    # ---------------------------------------------------------- popup (shell)
+
+    def _render_popup_menu(self, owner_ref: str | None) -> str:
+        """Render a shell-owned popup menu as if it hung under ``owner_ref``.
+
+        Returns SUI-Text for the menu, indented under the owning node, so an
+        agent sees where the menu came from. Empty string when no popup is
+        present (the common case: the menu was drawn in-process and is already in
+        the window's own tree).
+        """
+        getter = getattr(self.provider, "popup_menu_snapshot", None)
+        if getter is None:
+            return ""
+        try:
+            found = getter()
+        except Exception as exc:  # noqa: BLE001 - a shell quirk must not fail the call
+            log.debug("popup menu lookup failed: %s", exc)
+            return ""
+        if not found:
+            return ""
+        _window_id, tree = found
+
+        # Compile the popup with the same pipeline as any window, so its nodes
+        # get ordinary refs the agent can call.
+        compiled = self.compiler.compile(tree, pack=None)
+        # Register it with the session registry and mount it under the owning
+        # node in *this* compilation. Without this the menu's refs would live
+        # only inside the temporary compilation and the very next call would
+        # come back STALE_TARGET - the menu would be printable but not usable.
+        self.registry.reconcile(compiled)
+        owner = None
+        if owner_ref and self.result is not None:
+            owner = self.result.find(owner_ref)
+        if owner is not None:
+            menu_nodes = [n for n in compiled.root.walk() if n.role == "menu"]
+            if menu_nodes:
+                menu = menu_nodes[0]
+                # Fold the popup's refs/sources into the live result so the
+                # resolver can find them.
+                for node in compiled.root.walk():
+                    src = compiled.sources.get(node.ref)
+                    if src is not None:
+                        self.result.sources[node.ref] = src
+                    fp = compiled.fingerprints.get(node.ref)
+                    if fp:
+                        self.result.fingerprints[node.ref] = fp
+                    if node.ref in compiled.members_by_ref:
+                        self.result.members_by_ref[node.ref] = compiled.members_by_ref[node.ref]
+                    raw = compiled.raw_by_ref.get(node.ref)
+                    if raw is not None:
+                        self.result.raw_by_ref[node.ref] = raw
+                owner.children.append(menu)
+
+        lines: list[str] = []
+        for node in compiled.root.walk():
+            if node is compiled.root:
+                continue
+            if node.role == "separator" or (node.role == "image" and not node.name):
+                continue
+            if not (node.name or node.role in ("menu", "menuitem")):
+                continue
+            depth = _depth_of(compiled.root, node)
+            lines.append(
+                INDENT * max(1, depth - 1)
+                + render_node_line(node, RenderOptions(include_default_caps=False))
+            )
+        if not lines:
+            return ""
+        head = ""
+        if owner is not None:
+            head = INDENT + render_node_line(
+                owner, RenderOptions(include_default_caps=False)
+            ) + "\n"
+        return head + "\n".join(lines)
+
+    def _record_menu_owner(
+        self,
+        owner_ref: str | None,
+        result: CompileResult,
+        before_fingerprints: set[str],
+    ) -> None:
+        """Remember which node's context menu is now open (post-compile).
+
+        Only a menu that was *not* in the tree before counts. A window may
+        already contain menus that have nothing to do with this call - File
+        Explorer's title bar exposes its system menu (`MENU "系统"`) permanently
+        - and picking any menu would mount the window menu under the row that
+        happened to be right-clicked (observed live).
+        """
+        if not owner_ref:
+            return
+        owner = result.find(owner_ref)
+        if owner is None:
+            return
+        fresh = [
+            n
+            for n in result.root.walk()
+            if n.role == "menu" and n.fingerprint not in before_fingerprints
+        ]
+        if _TRACE_STATES:
+            log.info(
+                "record-menu-owner ref=%s found=%s new_menus=%s",
+                owner_ref,
+                owner is not None,
+                [n.ref for n in fresh],
+            )
+        for menu in fresh:
+            self._menu_owner[menu.fingerprint] = owner.fingerprint
+        if _TRACE_STATES:
+            log.info("menu_owner now: %s", self._menu_owner)
 
     def _projection_signature(self, result: CompileResult) -> tuple:
         """A stable digest of the projected structure + the window set.
@@ -567,6 +766,17 @@ class Session:
             if entity_node is not None:
                 verifier.capture(entity_node.ref)
 
+        if _TRACE_STATES:
+            log.info(
+                "call ref=%s cap=%s steps=%s effects=%s target_states=%s",
+                action.ref,
+                action.capability,
+                [(s.primitive, s.value) for s in resolution.steps],
+                [e.target for e in resolution.effects],
+                sorted((self.result.find(action.ref or "").states)
+                       if self.result.find(action.ref or "") else []),
+            )
+
         # Execute steps in order, with a per-step timeout.
         app_api_values: list[Any] = []
         for step in resolution.steps:
@@ -579,6 +789,16 @@ class Session:
                 code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
                 self.policy.check_native_permission(code)
                 raise SomnusError(code, ref=action.ref, message=exec_result.message)
+            if _TRACE_STATES:
+                log.info(
+                    "step primitive=%s ok=%s undetermined=%s error=%s msg=%s value=%r",
+                    step.primitive,
+                    exec_result.ok,
+                    exec_result.undetermined,
+                    exec_result.error,
+                    (exec_result.message or "")[:120],
+                    step.value,
+                )
             if exec_result.undetermined:
                 # A modal dialog may be opening; settle will capture it.
                 break
@@ -616,6 +836,46 @@ class Session:
         self.result = result
         self._bump_rev()
 
+        if _TRACE_STATES:
+            # The ref the agent used may be gone after a recompile; compare by
+            # fingerprint so "did the button I was about to touch change state"
+            # is answerable even when the ref shifted.
+            before_node = verifier.by_ref.get(action.ref or "")
+            after_node = None
+            if before_node is not None:
+                for node in result.root.walk():
+                    if node.fingerprint == before_node.fingerprint:
+                        after_node = node
+                        break
+            log.info(
+                "after settled=%s timed_out=%s before_states=%s after_states=%s",
+                settle_result.settled,
+                settle_result.timed_out,
+                sorted(before_node.states) if before_node else None,
+                sorted(after_node.states) if after_node else "<ref gone>",
+            )
+
+        # A context_menu call opened a popup that has no native link to its
+        # origin; remember the association and mount it *before* the delta is
+        # computed, so the very response that opened the menu already shows it
+        # under the node that owns it - the agent should not have to make a
+        # second call to see what it just opened.
+        popup_text = ""
+        if any(s.primitive == "context_menu" for s in resolution.steps):
+            self._record_menu_owner(
+                action.ref,
+                result,
+                before_fingerprints=set(before_index),
+            )
+            if self._menu_owner:
+                self._reattach_open_menu(result)
+            else:
+                # Nothing mounted, so the menu is not part of this window's own
+                # tree. The classic Win32 Shell menu is a separate top-level
+                # popup window (#32768), which would otherwise leave the agent
+                # with "context_menu succeeded" and nothing to act on.
+                popup_text = self._render_popup_menu(action.ref)
+
         after_index = index_by_fingerprint(result.root)
         delta = diff_trees(before_index, after_index)
 
@@ -642,6 +902,11 @@ class Session:
                 text += f"\n= {rendered}"
         body = self._window_delta()
         tree_body = self.delta_text(delta)
+        if popup_text:
+            # A popup menu is rendered as a subtree of the node that opened it,
+            # so the agent reads one coherent structure either way - whether the
+            # application draws its menu in-process or hands it to the shell.
+            tree_body = f"{tree_body}\n{popup_text}" if tree_body else popup_text
         if tree_body:
             body = f"{body}\n{tree_body}" if body else tree_body
         if body:
@@ -823,6 +1088,26 @@ def _render_subtree(node: SemanticNode, lines: list[str], opts: RenderOptions, d
     for child in node.children:
         lines.append("  " * indent + render_node_line(child, opts))
         _render_subtree(child, lines, opts, depth - 1, indent + 1)
+
+
+def _detach(node: SemanticNode, result: CompileResult) -> None:
+    """Remove ``node`` from whatever parent currently holds it."""
+    for parent in result.root.walk():
+        if node in parent.children:
+            parent.children.remove(node)
+            return
+
+
+def _depth_of(root: SemanticNode, target: SemanticNode) -> int:
+    """Depth of ``target`` below ``root`` (root itself is 0)."""
+    stack: list[tuple[SemanticNode, int]] = [(root, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if node is target:
+            return depth
+        for child in node.children:
+            stack.append((child, depth + 1))
+    return 0
 
 
 def _q(text: str | None) -> str:

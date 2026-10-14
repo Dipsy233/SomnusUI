@@ -44,10 +44,16 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         "decrement",
         "scroll",
         "scroll_into_view",
-        # The one interaction UIA has no pattern for; a pack must declare it.
-        "double_click",
         "open",
         "close",
+        # Opens the element's context menu through UIA itself
+        # (IUIAutomationElement3::ShowContextMenu). This is a semantic call, not
+        # synthetic input: the pointer does not move, no keystroke is sent, and
+        # it does not need the window to be foreground. It is how an application
+        # whose default action is not enough (QQ's conversation rows, whose
+        # Invoke merely highlights) is still driven - the menu's own items are
+        # ordinary UIA menu items and their Invoke works.
+        "context_menu",
         # Declarative keyboard fallback (v0.2): focus the target and type the
         # value. Never offered to the LLM as a capability of its own - it only
         # appears as a `via` step inside a pack capability (dev doc section 12.2).
@@ -57,7 +63,7 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
 
 #: Capabilities that never change application state.
 SAFE_CAPABILITIES: frozenset[str] = frozenset(
-    {"read", "focus", "expand", "collapse", "scroll"}
+    {"read", "focus", "expand", "collapse", "scroll", "context_menu"}
 )
 
 #: Capabilities considered `critical` when they originate from a pack.

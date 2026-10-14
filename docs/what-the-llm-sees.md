@@ -4,7 +4,7 @@
 
 ---
 
-## ① `observe` — 概览（304 tokens）
+## ① `observe` — 概览
 
 ```
 @rev 1
@@ -108,10 +108,8 @@ CALL b2.click()        # 原语动词，禁止
 
 ### 成功的操作会产生 delta
 
-以 Notepad 为例（同样是真实窗口）：
-
 ```
-OBSERVE（有 pack）
+OBSERVE
 @rev 1
 WINDOW w1 "无标题 - Notepad"
   DOCUMENT tx1 "文本编辑器" selected focused +set_text(text) +scroll(…)
@@ -123,10 +121,6 @@ WINDOW w1 "无标题 - Notepad"
           BUTTON b1 "关闭标签页"
       BUTTON b2 "添加新标签页"
   …
-  PANE pn4 disabled focused
-    TEXT tx3 "行 1，\n列 1"
-    TEXT tx4 "0 个字符"
-    TEXT tx6 " Windows (CRLF)"
 ```
 
 ```
@@ -151,18 +145,18 @@ CALL tx1.set_text("Hello SomnusUI")
 ## 复现
 
 ```bash
-# 无 pack 的通用视图（任意窗口）
-somnus --provider uia observe
+# 通用模式（不应用 App Pack，任意窗口）
+somnus --no-pack observe
 
-# 查看某个窗口
-somnus --provider uia windows
-somnus --provider uia observe w1
+# 指定窗口
+somnus windows
+somnus observe w1
 
 # 交互式
-somnus --provider uia --allow explorer.exe repl
+somnus --no-pack repl
 
-# 带 pack
-somnus --provider uia --allow notepad.exe --pack notepad observe
+# 应用某个 pack
+somnus --pack notepad observe
 ```
 
 或在 Python 里：
@@ -171,9 +165,9 @@ somnus --provider uia --allow notepad.exe --pack notepad observe
 from somnus.providers.windows.uia import UiaProvider
 from somnus.runtime.session import Session
 
-session = Session(UiaProvider(allow_list=["notepad.exe"]), pack_id="notepad")
+session = Session(UiaProvider(), allow_packs=False)
 print(session.observe().text)                  # ① 概览
-print(session.dispatch('FIND "编辑"'))          # ② 查找
-print(session.dispatch("INSPECT mi2"))          # ③ 详情
-print(session.dispatch("CALL mi2.expand()"))    # ④ 操作 + delta
+print(session.dispatch('FIND "共享"'))          # ② 查找
+print(session.dispatch("INSPECT b2"))           # ③ 详情
+print(session.dispatch("CALL b2.activate()"))   # ④ 操作 + delta
 ```

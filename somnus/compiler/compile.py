@@ -342,10 +342,23 @@ class Compiler:
         # A window's identity is its process, never its title: the title changes
         # with the open document ("*file - Notepad") and must not invalidate all
         # refs on every edit (dev doc section 8, rule 4).
+        #
+        # A pack's primary key wins when there is one. Otherwise the native
+        # automation id is used, and when that is absent the class name stands
+        # in: it is the only remaining property that names *what the element is*
+        # rather than *what it currently displays*. Without it the identity is
+        # empty and the fingerprint falls back to `name`, which for a self-drawn
+        # app (Chromium/Electron, no automation ids) is frequently volatile -
+        # QQ's ProseMirror message box is named after the *conversation* it is
+        # showing, so switching chats changed every chat-pane ref
+        # (found live: a ref held across a recompile landed on the search box
+        # and the message was typed into it).
         if node.role == "window":
             identity = result.process
         else:
-            identity = em.identity if em else raw.native.automation_id
+            identity = (em.identity if em else raw.native.automation_id) or None
+            if not identity:
+                identity = _identity_class(raw.native.class_name)
         node.fingerprint = compute_fingerprint(
             entity=node.entity,
             role=node.role,
@@ -472,6 +485,69 @@ class Compiler:
 
 def _name_key(node: RawNode) -> str:
     return (node.name or "").strip().casefold()
+
+
+#: Class-name tokens that carry no identity: they describe appearance or state,
+#: so including them would make a fingerprint change when the *look* of an
+#: element changes (a button gaining `--disabled`, an editor gaining
+#: `is-empty`). A class name is only useful as identity for the tokens that
+#: name the element itself.
+_VOLATILE_CLASS_TOKENS = frozenset(
+    {
+        "prosemirror-focused",
+        "prosemirror-focused-selection",
+        "is-empty",
+        "is-focus",
+        "is-hover",
+        "is-active",
+        "is-selected",
+        "is-disabled",
+        "is-readonly",
+        "active",
+        "selected",
+        "focused",
+        "disabled",
+        "hover",
+        "enable",
+        "normal",
+        "hide",
+        "show",
+        "visible",
+        "hidden",
+        "open",
+        "closed",
+    }
+)
+
+
+def _identity_class(class_name: str | None) -> str | None:
+    """Derive a stable identity from a class name, or None.
+
+    Self-drawn toolkits expose no automation id, but their class names are
+    structured: a stable prefix naming the element (`send-msg`, `ExEditor-qq-
+    msg-editor`) followed by state modifiers that come and go
+    (`ProseMirror-focused`, `is-empty`, `--disabled`). Only the stable part may
+    take part in a fingerprint, otherwise an element's identity would change
+    every time its appearance did.
+
+    Returns None when nothing stable is left, so the caller falls back to the
+    previous behaviour rather than inventing an identity from noise.
+    """
+    if not class_name:
+        return None
+    kept: list[str] = []
+    for token in class_name.split():
+        low = token.casefold()
+        if low in _VOLATILE_CLASS_TOKENS:
+            continue
+        # BEM state modifiers (`q-button--primary`) and framework state suffixes
+        # are markup for a state, not a name.
+        if "--" in token:
+            continue
+        kept.append(low)
+    if not kept:
+        return None
+    return " ".join(kept)
 
 
 def _duplicate_keys(children: list[RawNode]) -> set[tuple[str, str]]:

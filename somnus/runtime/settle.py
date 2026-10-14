@@ -8,11 +8,17 @@ whatever delta we observed.
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from somnus.ir.node import RawTree
+
+log = logging.getLogger("somnus.settle")
+
+_TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
 
 
 @dataclass(slots=True)
@@ -60,6 +66,8 @@ class Settler:
             elapsed_ms = (now - start) * 1000
 
             if previous is None or not _same_shape(previous, tree):
+                if _TRACE_STATES and previous is not None:
+                    log.info("settle: state/structure moved, restarting quiet window")
                 last_change = now
             previous = tree
 
@@ -88,12 +96,30 @@ class Settler:
 
 
 def _same_shape(a: RawTree, b: RawTree) -> bool:
-    """Cheap structural comparison: role/name/value/child-count signature."""
+    """Cheap structural comparison: role/name/value/child-count/state signature.
+
+    ``states`` **must** be part of it. A control that only flips between disabled
+    and enabled changes no role, name, value or child count, so leaving states
+    out made such a change invisible to settle (found live: QQ's 发送 button is
+    disabled while the message box is empty and enabled once it has text; after
+    `set_text` the old code called the UI settled immediately, the stale
+    `disabled` state survived into the next compilation, and `activate` was
+    refused with TARGET_DISABLED - even though the button was by then clickable
+    and a plain UIA Invoke worked).
+    """
     return _sig(a.root) == _sig(b.root)
 
 
 def _sig(node) -> str:
-    parts = [node.role, node.name or "", node.value or "", str(len(node.children))]
+    # Sorted states keep the signature stable when the provider happens to
+    # enumerate the same state set in a different order between snapshots.
+    parts = [
+        node.role,
+        node.name or "",
+        node.value or "",
+        str(len(node.children)),
+        ",".join(sorted(node.states)),
+    ]
     for c in node.children:
         parts.append(_sig(c))
     return "|".join(parts)

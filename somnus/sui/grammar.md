@@ -27,12 +27,12 @@ INDENT  := 2 spaces per level
 
 1. **Capabilities live on the node line.**
 2. **Implicit capabilities are omitted** - `focus`/`read` everywhere;
-   `double_click` on any control; `activate` on `BUTTON`, `set_text` on `INPUT`,
+   `context_menu` on any control; `activate` on `BUTTON`, `set_text` on `INPUT`,
    `toggle` on `CHECKBOX`, `select` on `LISTITEM`, `scroll` on containers. The
    system prompt carries this table. They are always available to the resolver
    regardless of printing.
 
-### Gesture semantics (`select` vs `activate` vs `double_click`)
+### Gesture semantics (`select` vs `activate` vs `context_menu`)
 
 These three are distinct, and conflating them is a real bug class:
 
@@ -40,7 +40,7 @@ These three are distinct, and conflating them is a real bug class:
 | --- | --- | --- |
 | `select` | SelectionItem | highlight/select - what a **single** click does |
 | `activate` | Invoke | the element's **default action** - what a **double** click does |
-| `double_click` | synthetic mouse | a literal double click at the element |
+| `context_menu` | `IUIAutomationElement3::ShowContextMenu` | open the element's context menu - what a **right** click does |
 
 `activate` is **not** a click. Invoke means "perform the single unambiguous
 action this control represents": press for a button, but **open** for a file or
@@ -50,6 +50,12 @@ list row. Measured in File Explorer, on the same file:
 CALL li11.select()    → highlights the file (selection only)
 CALL li11.activate()  → opens the file in its associated application
 ```
+
+A control whose Invoke is a decoration rather than an action (a chat list row
+that answers Invoke by highlighting and nothing else) is reached through
+`context_menu`: the menu it exposes carries the real command, and the menu items
+are ordinary UIA items whose `activate` works. `context_menu` is a semantic UIA
+call, not synthetic input - it moves no pointer and needs no foreground window.
 
 So a row that should only be *picked* must be driven with `select`; `activate`
 opens it. Applications differ - some answer Invoke by only highlighting - which

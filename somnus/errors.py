@@ -18,9 +18,6 @@ class ErrorCode:
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     ACTION_NOT_SUPPORTED = "ACTION_NOT_SUPPORTED"
     TARGET_DISABLED = "TARGET_DISABLED"
-    #: A coordinate-based action (double-click) found another window on top of
-    #: the target point. Recoverable: focus the window and retry.
-    TARGET_NOT_FOREGROUND = "TARGET_NOT_FOREGROUND"
     CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     NATIVE_EXECUTION_FAILED = "NATIVE_EXECUTION_FAILED"
@@ -39,7 +36,6 @@ HINTS: dict[str, str] = {
     ErrorCode.INVALID_ARGUMENT: "inspect",
     ErrorCode.ACTION_NOT_SUPPORTED: "report-user",
     ErrorCode.TARGET_DISABLED: "inspect",
-    ErrorCode.TARGET_NOT_FOREGROUND: "focus-window",
     ErrorCode.CONFIRMATION_REQUIRED: "ask-user",
     ErrorCode.PERMISSION_DENIED: "report-user",
     ErrorCode.NATIVE_EXECUTION_FAILED: "retry-once",

@@ -266,21 +266,29 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     if node.name or node.value:
         caps.setdefault("read", _cap("read"))
 
-    # A control can be double-clicked. This is offered as its own capability on
-    # every control rather than folded into some notion of "open": choosing a
-    # gesture is the caller's decision, and an application that only reacts to a
-    # double-click (QQ's conversation list) must not force a special case on
-    # every other one. A double-click is synthetic input, so it is granted only
-    # where there is a real target to hit - an interactive element with an area -
-    # and never to a plain text label or an inert container.
-    if _is_control(node):
+    # Every operable control offers the context menu. It is the only gesture
+    # that reaches an application refusing everything else: QQ's conversation
+    # rows answer Invoke by merely highlighting, so neither `activate` nor
+    # `select` opens a chat - but the context menu they expose carries "open
+    # this chat" as an ordinary UIA menu item, and invoking that item works.
+    #
+    # It is a semantic UIA call (IUIAutomationElement3::ShowContextMenu), not
+    # synthetic input: it moves no pointer, sends no keystroke and does not
+    # require the window to be foreground, so it is offered at `safe` risk.
+    # What the menu then offers is a separate decision for whoever calls it.
+    #
+    # A menu item and a menu are excluded: they have no context menu of their
+    # own, and advertising one would invite an action that cannot do anything.
+    # A menu is what `context_menu` produces, so offering "open a menu on the
+    # menu" is meaningless.
+    if _is_control(node) and node.role not in ("menuitem", "menu"):
         caps.setdefault(
-            "double_click",
+            "context_menu",
             Capability(
-                name="double_click",
+                name="context_menu",
                 level="primitive",
-                via=[PrimitiveStep(primitive="double_click", target="$self")],
-                risk="normal",
+                via=[PrimitiveStep(primitive="context_menu", target="$self")],
+                risk="safe",
             ),
         )
 

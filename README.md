@@ -47,19 +47,20 @@ somnus --demo bench --runs 100
 
 # Against a real Windows app (requires the [windows] extra):
 pip install -e ".[windows]"
-somnus windows
-somnus observe w1
+somnus windows                     # list windows
+somnus observe                     # what the target window offers
+somnus observe w1                  # one window
 somnus call 'CALL b1.activate()'
+somnus --no-pack repl              # multi-step session, no App Pack
 somnus record w1 -o fixture.json
-somnus mcp           # MCP server (stdio), 4 tools
+somnus mcp                         # MCP server (stdio), 4 tools
 ```
 
 ## What the LLM sees
 
 One real window, four tool calls. Nothing else is ever shown to the model.
 
-**① `observe`** - the current screen as capabilities (304 tokens for a
-Windows folder-properties dialog):
+**① `observe`** - the current screen as capabilities:
 
 ```
 @rev 1
@@ -112,6 +113,38 @@ ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 The model never sees a handle, a coordinate, an `AutomationId`, a process id,
 a COM pointer, a raw `control_type`, or the stacks of unnamed `Pane` wrappers a
 UIA dump contains. Full walkthrough: [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md).
+
+## Generic mode
+
+A pack is an optimisation, not a requirement. With `--no-pack` (or a window
+that simply has no pack) the compiler derives everything from structure and
+native patterns, so an application the runtime has never seen is still usable:
+
+- **Controls** are defined by the platform - an element that exposes an
+  interaction pattern (`invoke`, `selectionitem`, `toggle`, `value`, …). An
+  inert label or container is offered nothing.
+- **`set_text`** is derived for every text-entry surface, routed at execution
+  time: a plain field writes through its Value pattern, a rich-text or
+  document editor is typed into. A self-drawn editor (Chromium/Electron) is
+  writable without any pack.
+- **`context_menu`** is offered on every control, alongside `activate`. It is
+  the escape hatch for an application that ignores the native patterns: the
+  menu is opened through UIA itself (`ShowContextMenu`), so the pointer never
+  moves and no keystroke is sent, and the menu's own items are ordinary menu
+  items whose `activate` works. An application whose default action only
+  highlights a row (a chat list) is driven this way, without synthetic input.
+- **Entities** are detected structurally: a titled row with a verb button, or
+  three or more titled rows under one container (a list, a toolbar, a
+  navigation pane).
+
+```bash
+somnus --no-pack repl          # drive anything
+somnus --no-pack observe w4
+```
+
+Packs remain useful for encoding a domain vocabulary the generic path cannot
+guess (`PRODUCT p1 +add`, `+submit!`), but they are never needed just to reach
+and operate a control.
 
 ## Providers
 
@@ -203,12 +236,13 @@ somnus/
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── packs/         generic.py restaurant_demo.py (v0.1)
-│                  notepad / explorer / windows_settings .pack.yaml (v0.2)
-├── protocol/      tools.py mcp_server.py jsonrpc.py
+│                  notepad / explorer / qq / windows_settings .pack.yaml (v0.2)
+├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 docs/
   packs.md              how to write an App Pack
+  interactive-usage.md  REPL vs one-shot CLI vs script
   what-the-llm-sees.md  one window, four tools, with real output
 examples/               agent loop, contract check, task evaluation
 bench/                  metrics harness + LLM control demos
@@ -221,30 +255,6 @@ tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
 Dependency direction (enforced in CI): `providers → compiler → projection →
 serialization → protocol`; `runtime` depends on all of them; nothing imports an
 LLM.
-
-## App API channel
-
-A capability's `via` step can name an `app_api` action instead of a native
-primitive, and the runtime routes it to the application's own interface (COM,
-CLI, script) rather than driving its controls. The LLM surface is unchanged: it
-still calls `CALL x.do()`, and does not know which channel was used.
-
-```yaml
-caps:
-  list_files:
-    via: [{ primitive: app_api, target: list, value: { path: "$path" } }]
-```
-
-```
-CALL l1.list_files(path=".")
-→ OK_UNVERIFIED rev=2
-  = [".git", "apps", "bench", "docs", "somnus", "tests"]   ← the app's data
-```
-
-This matters because a spreadsheet has a data model: reading its cells is both
-cheaper and more reliable than clicking copy and scraping the clipboard, and
-some operations (rename a sheet, set a document's author, run a CLI) have no
-control at all (dev doc section 20).
 
 ## App Packs
 
@@ -266,9 +276,12 @@ entities:
         params: { text: { type: string, required: true } }
 ```
 
-Shipped packs: `notepad` and `explorer` (both verified against the live Windows
-11 apps), plus the v0.1 `restaurant-demo` Python pack. Full authoring guide:
+Shipped packs: `notepad`, `explorer`, `windows-settings` and `qq`, plus the
+v0.1 `restaurant-demo` Python pack. Full authoring guide:
 [`docs/packs.md`](docs/packs.md).
+
+Packs are optional. A window with no matching pack is compiled generically -
+see [Generic mode](#generic-mode).
 
 ## Testing
 
@@ -284,17 +297,17 @@ are all exercised without a desktop.
 
 ## Metrics (v0.1)
 
-| Metric | Target | Demo result |
-| --- | --- | --- |
-| Zero Vision | 0 vision/coordinate calls | 0 |
-| Information isolation | 0 native ids in LLM context | 0 |
-| Overview tokens (L0) | ≤ 200 | 176 |
-| Compression ratio | ≥ 10× | 41× |
-| Action success | ≥ 99% | 100% |
-| Task success | ≥ 90% | 100% |
-| Unconfirmed critical actions | 0 | 0 |
+| Metric | Target |
+| --- | --- |
+| Zero Vision | 0 vision/coordinate calls |
+| Information isolation | 0 native ids in LLM context |
+| Overview tokens (L0) | ≤ 200 |
+| Compression ratio | ≥ 10× |
+| Action success | ≥ 99% |
+| Task success | ≥ 90% |
+| Unconfirmed critical actions | 0 |
 
-Reproduce with `somnus --demo bench --runs 100`.
+Run with `somnus --demo bench --runs 100`.
 
 ## Driving the runtime with a real model
 
@@ -315,18 +328,6 @@ python examples/agent.py --provider uia --allow restaurantdemo.exe \
 python examples/check_contract.py --runs 5
 python examples/eval_agent.py --runs 3
 ```
-
-Measured against `hy3` (reasoning model, native tool calls):
-
-| Check | Result |
-| --- | --- |
-| Tool contract (`add_product`, `open_cart`) | 10/10 |
-| Task success (`one_big_mac`, `big_mac_and_fries`, `three_colas`) | 9/9 |
-| Live WPF app, full acceptance transcript | completed in 3 tool calls |
-
-On the live WPF app the model ran `observe` → `p1.add()` → `p2.add()` →
-`c1.open()`, each producing the expected delta (`~ c1 count 0→1 total 0→5.99`,
-then `1→2`, then a real `+ WINDOW "Cart"`), and reported completion on its own.
 
 ## License
 

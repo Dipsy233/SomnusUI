@@ -24,6 +24,8 @@ Global options::
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 
 from somnus.errors import SomnusError
@@ -63,7 +65,12 @@ def build_session(args: argparse.Namespace) -> Session:
         allow_processes=tuple(args.allow or ()),
         confirmed=bool(args.confirmed),
     )
-    return Session(provider, pack_id=args.pack, policy=policy)
+    return Session(
+        provider,
+        pack_id=args.pack,
+        policy=policy,
+        allow_packs=not getattr(args, "no_pack", False),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +165,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fixture", action="append", default=None)
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--pack", default=None)
+    parser.add_argument(
+        "--no-pack",
+        action="store_true",
+        help=(
+            "compile every window generically; never apply an App Pack. Use this "
+            "to drive an application the runtime has no pack for."
+        ),
+    )
     parser.add_argument("--allow", action="append", default=None)
     parser.add_argument("--confirmed", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -188,7 +203,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_logging() -> None:
+    """Turn on diagnostics when asked for, and only then.
+
+    The runtime is normally silent: the four tools return SUI-Text and nothing
+    else, so stray log lines would land in the model's context. ``SOMNUS_LOG``
+    is the general switch; ``SOMNUS_TRACE_STATES`` implies it, because tracing
+    state decisions is useless without a handler to print them.
+    """
+    level_name = os.environ.get("SOMNUS_LOG", "").strip()
+    trace = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
+    if not level_name and not trace:
+        return
+    level = getattr(logging, level_name.upper(), logging.INFO) if level_name else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

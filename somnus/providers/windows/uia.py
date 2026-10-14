@@ -20,6 +20,7 @@ host is safe; constructing :class:`UiaProvider` will raise ``RuntimeError``.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -33,6 +34,11 @@ from somnus.providers.windows.events import EventCounter
 from somnus.providers.windows.executor import PATTERN_FOR_PRIMITIVE, run_primitive
 
 log = logging.getLogger("somnus.uia")
+
+#: Set SOMNUS_TRACE_STATES=1 to log how each node's `enabled` was decided.
+#: Used to debug self-drawn (Chromium/Electron) controls whose UIA `IsEnabled`
+#: can disagree with what is rendered - e.g. QQ's 发送 button.
+_TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
 
 # ---------------------------------------------------------------------------
 # UIA constants we need (avoids importing the generated comtypes modules at
@@ -359,6 +365,66 @@ class UiaProvider:
     ) -> RawTree:
         return self._run(lambda: self._snapshot_sync(window_id, scope, max_depth))
 
+    def popup_menu_snapshot(self, max_depth: int = 8) -> tuple[str, RawTree] | None:
+        """Snapshot the context menu currently on screen, if it is a popup window.
+
+        Two entirely different things are called "a context menu":
+
+        * a popup *inside* the application's own window - Chromium draws QQ's
+          menu into the page, so it appears as a `menu` node in that window's
+          tree and there is nothing to look for here;
+        * a separate top-level popup window - the classic Win32 Shell menu, which
+          File Explorer opens as a window of class ``#32768``. It is nobody's
+          child, so it never shows up in the owning window's tree and the agent
+          would see "menu opened" with no menu.
+
+        This finds the second kind. The popup is registered as a window under a
+        synthetic id so the normal snapshot path can read it, which keeps the
+        menu's rendering identical to any other tree.
+        """
+        return self._run(lambda: self._popup_menu_snapshot_sync(max_depth))
+
+    def _popup_menu_snapshot_sync(
+        self, max_depth: int
+    ) -> tuple[str, RawTree] | None:
+        UIA = self._UIA
+        auto = self._auto
+        root = auto.GetRootElement()
+        walker = auto.ControlViewWalker
+        child = walker.GetFirstChildElement(root)
+        while child is not None:
+            nxt = None
+            try:
+                nxt = walker.GetNextSiblingElement(child)
+            except Exception:
+                pass
+            try:
+                cls = child.CurrentClassName or ""
+                # The Win32 menu class. A popup may also be a plain child window
+                # of the app, in which case the app's own tree already contains
+                # it and this method must not double-report it.
+                if cls == "#32768":
+                    hwnd = int(child.CurrentNativeWindowHandle or 0)
+                    if not hwnd:
+                        child = nxt
+                        continue
+                    window_id = f"popup{hwnd}"
+                    el = auto.ElementFromHandle(hwnd)
+                    self._windows[window_id] = el
+                    info = WindowInfo(
+                        window_id=window_id,
+                        pid=int(el.CurrentProcessId),
+                        process=_process_name(int(el.CurrentProcessId)),
+                        title=el.CurrentName or "",
+                        active=False,
+                    )
+                    tree = self._snapshot_sync(window_id, None, max_depth)
+                    return window_id, tree
+            except Exception:
+                pass
+            child = nxt
+        return None
+
     def _snapshot_sync(
         self,
         window_id: str,
@@ -435,8 +501,54 @@ class UiaProvider:
         patterns = self._available_patterns(cached, UIA)
 
         states: set[str] = set()
-        if not _getattr(cached, "CachedIsEnabled", True):
+        # `_getattr` cannot tell "the cached property said enabled" from "the
+        # property could not be read at all", so probe for the member first and
+        # only then decide. The default stays True (unreadable -> assume usable)
+        # because a self-drawn control can legitimately report no IsEnabled and
+        # must not be hidden from the agent; the trace records which case it was
+        # so a control that is reported enabled=False can be told apart from one
+        # that never answered.
+        try:
+            enabled_raw: Any = cached.CachedIsEnabled
+            enabled_read = True
+        except Exception:
+            enabled_raw = None
+            enabled_read = False
+        if not (enabled_raw if enabled_read else True):
             states.add("disabled")
+            if _TRACE_STATES:
+                # Direction 3 probe: the cached value says disabled. Ask the
+                # element again, live, to see whether the cache is simply stale
+                # (Chromium re-lays out the DOM but the cached IsEnabled keeps
+                # the old value) or the control really is disabled right now.
+                try:
+                    live_enabled: Any = el.CurrentIsEnabled
+                except Exception as exc:  # noqa: BLE001 - diagnostic only
+                    live_enabled = f"<raised {type(exc).__name__}>"
+                try:
+                    live_offscreen: Any = el.CurrentIsOffscreen
+                except Exception as exc:  # noqa: BLE001 - diagnostic only
+                    live_offscreen = f"<raised {type(exc).__name__}>"
+                log.info(
+                    "STALE-CHECK role=%s name=%r class=%r cached=%r live_enabled=%r "
+                    "live_offscreen=%r",
+                    role,
+                    (cached.CachedName or "")[:40],
+                    cached.CachedClassName or "",
+                    enabled_raw,
+                    live_enabled,
+                    live_offscreen,
+                )
+        if _TRACE_STATES:
+            log.info(
+                "state role=%s name=%r class=%r enabled_read=%s enabled_raw=%r ->%s",
+                role,
+                (cached.CachedName or "")[:40],
+                cached.CachedClassName or "",
+                enabled_read,
+                enabled_raw,
+                "disabled" if "disabled" in states else "enabled",
+            )
         if _getattr(cached, "CachedIsOffscreen", False):
             states.add("offscreen")
         if _getattr(cached, "CachedHasKeyboardFocus", False):
@@ -561,7 +673,7 @@ class UiaProvider:
             "read",
             "type_text",
             "scroll_into_view",
-            "double_click",
+            "context_menu",
         ):
             return ExecResult(ok=False, error="ACTION_NOT_SUPPORTED")
         return run_primitive(el, primitive, value, self._UIA)
@@ -777,7 +889,13 @@ def _stringify_value(value: Any) -> str | None:
 
 
 def _getattr(obj: Any, name: str, default: Any = None) -> Any:
-    """Safe attribute access for comtypes interfaces with optional members."""
+    """Safe attribute access for comtypes interfaces with optional members.
+
+    Note the trap this helper hides: a missing member and a member that raises
+    are both reported as ``default``. A caller that passes ``True`` therefore
+    cannot tell "the property says enabled" from "the property could not be
+    read at all". Prefer passing ``None`` and comparing explicitly.
+    """
     try:
         return getattr(obj, name)
     except Exception:
