@@ -1,9 +1,41 @@
 # SomnusUI
 
+**Do language models dream of pixels?**
+
 [English](README.md) | 中文
 
 **Compile a native GUI into a pure-text, no-vision, low-token Semantic API** so
 an LLM can operate software by *capability calls* instead of *pixel clicks*.
+
+## Why SomnusUI
+
+The mainstream GUI agent path is "see, then click": take a screenshot, have a
+vision model locate the button's coordinates, synthesize a mouse click. It
+works, and every layer of it costs you - screenshots burn tokens, coordinates
+are guesses about layout, synthetic clicks steal the user's pointer, and what
+a model understands from a bitmap is a shadow of what it could read from the
+semantic structure the app already publishes.
+
+SomnusUI asks the opposite question: **what if the model didn't look at the
+interface, but read it?**
+
+Every modern application describes itself completely in the accessibility
+tree - what each button is, what it can do, what state it is in right now.
+That information is native, precise and updated with every layout pass, and
+most agents bypass it because the raw tree is a noise-sea of thousands of
+unnamed `Pane` wrappers. SomnusUI is that translation: compiling the noise-sea
+into a typed, capability-bearing, delta-reporting semantic document, so
+`CALL p1.add()` replaces `click(312, 528)`.
+
+The Somnus in the name (the Roman god of sleep) is half of the bet: the agent
+works while the user is away, and the user never watches it move their mouse.
+The other half is determinism - there is no LLM anywhere in the compiler or
+the runtime; the same window always compiles to the same semantic tree. The
+large model does the planning; the translation out of language belongs to
+code.
+
+As for the opening question - no, it does not need to dream of pixels.
+Everything it needs, the application already said.
 
 ```
 User Intent
@@ -318,5 +350,4 @@ Run with `somnus --demo bench --runs 100`.
 
 ## License
 
-MIT. Design borrows from `desktop-cli` (GPL-3.0 – **design only, no code**),
-`Touchpoint` (MIT) and `agent-desktop`.
+MIT.
