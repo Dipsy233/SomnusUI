@@ -178,6 +178,39 @@ projection and runtime are identical for all of them.
 somnus --provider uia windows          # native windows
 ```
 
+## Background workspace (non-intrusive operation)
+
+The agent's work does not require the window to be foreground and never
+steals the user's focus. Verified live:
+
+- A **visible but covered** window exposes its full tree and accepts every
+  UIA primitive - being foreground is not a requirement of anything the
+  runtime does;
+- a **minimized** window lays nothing out (CEF apps such as Steam/QQ/Chrome
+  collapse to a bare shell) and is the one state that actually blocks
+  operation;
+- a window on **another virtual desktop** (not minimized) is usually fully
+  usable.
+
+So the provider automatically does two things before snapshotting or acting
+(`workspace.py`):
+
+1. a minimized window is shown with `SW_SHOWNOACTIVATE` - **never
+   activating**, so whatever the user is typing into keeps its focus;
+2. a window on another virtual desktop is moved to the current one through
+   the official `IVirtualDesktopManager` (same process, no second login:
+   QQ signs in once on the user's desktop).
+
+The window's prior state is recorded, and provider `close()` **restores
+it** (re-minimizes what was minimized) - agent work never leaves the user's
+desktop rearranged.
+
+Known limitation: a no-activate show cannot fully hide the window (its
+taskbar icon appears; if it was topmost it is briefly visible on screen,
+fully covered windows are unnoticeable). That is inherent to the
+no-activation path and still less intrusive than any focus-based approach,
+synthetic input included.
+
 ## The four tools
 
 | Tool | Purpose | Returns |
@@ -221,7 +254,7 @@ Full grammar: [`somnus/sui/grammar.md`](somnus/sui/grammar.md).
 somnus/
 ├── ir/            node / capability / action value objects (platform free)
 ├── providers/     base.py  mock.py
-│                  windows/{uia,cache,executor,events,keyboard}.py
+│                  windows/{uia,cache,executor,events,keyboard,workspace}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md

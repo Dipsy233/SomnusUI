@@ -169,6 +169,30 @@ pack 仍适合编码通用路径无法推断的领域词汇（`PRODUCT p1 +add`�
 somnus --provider uia windows          # 原生窗口
 ```
 
+## 后台工作区（无干扰操作）
+
+agent 的工作不要求窗口在前台，也不抢占用户焦点。实测事实：
+
+- **可见但被遮挡**的窗口：快照完整、所有 UIA 原语可用——前台不是任何操作的前提；
+- **最小化**窗口：CEF 应用（Steam/QQ/Chrome）渲染挂起、树萎缩到壳，是唯一
+  真正阻断操作的状态；
+- **其他虚拟桌面**（未最小化）的窗口：通常依然完整可用。
+
+因此 provider 在快照/操作前自动做两件事（`workspace.py`）：
+
+1. 最小化的窗口用 `SW_SHOWNOACTIVATE` 展开——**绝不抢焦点**，用户正在
+   输入的内容不受影响；
+2. 位于其他虚拟桌面的窗口用官方 `IVirtualDesktopManager` 移到当前桌面
+   （同一进程无需重新登录：QQ 在主桌面登录一次即可）。
+
+窗口被接触前的状态会被记录，provider `close()` 时**自动恢复原状**
+（原来最小化的重新最小化），agent 的工作永远不给用户留下桌面被重新布置
+的痕迹。
+
+已知限制：无激活展开无法完全隐藏窗口（任务栏图标可见；若它原来处于顶层
+z-order 会短暂出现在屏幕上，被完全遮挡则无感）。这是无激活路径的固有限制，
+但已比任何需要 focus 的方案（含合成输入类）干扰都小。
+
 ## 四个工具
 
 | 工具 | 用途 | 返回 |
@@ -211,7 +235,7 @@ CALL b5.submit()         →  ERR CONFIRMATION_REQUIRED b5 hint=ask-user
 somnus/
 ├── ir/            节点 / 能力 / 动作值对象（平台无关）
 ├── providers/     base.py  mock.py
-│                  windows/{uia,cache,executor,events,keyboard}.py
+│                  windows/{uia,cache,executor,events,keyboard,workspace}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
