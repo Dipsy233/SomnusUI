@@ -32,7 +32,7 @@ class AccessibilityProvider(Protocol):
         self,
         window_id: str,
         scope: NativeRef | None = None,
-        max_depth: int = 12,
+        max_depth: int = 20,
     ) -> RawTree: ...
 
     def execute(

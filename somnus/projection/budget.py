@@ -61,7 +61,7 @@ class ObservationBudget:
             )
         if level == 1:
             return ObservationBudget(
-                max_nodes=120, max_depth=4, max_tokens=1500, hard_tokens=1500
+                max_nodes=120, max_depth=6, max_tokens=1500, hard_tokens=1500
             )
         return ObservationBudget(
             max_nodes=200, max_depth=12, max_tokens=500, hard_tokens=500

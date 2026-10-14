@@ -140,7 +140,7 @@ class Compiler:
         self,
         *,
         use_heuristics: bool = True,
-        max_depth: int = 12,
+        max_depth: int = 24,
         allocator: RefAllocator | None = None,
     ) -> None:
         self.use_heuristics = use_heuristics

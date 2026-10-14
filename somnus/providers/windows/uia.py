@@ -136,7 +136,7 @@ class UiaProvider:
 
     name = "uia"
 
-    def __init__(self, max_depth: int = 12, allow_list: list[str] | None = None, **_: Any) -> None:
+    def __init__(self, max_depth: int = 20, allow_list: list[str] | None = None, **_: Any) -> None:
         if not sys.platform.startswith("win"):
             raise RuntimeError("UiaProvider is only available on Windows")
         self.max_depth = max_depth
@@ -361,7 +361,7 @@ class UiaProvider:
         self,
         window_id: str,
         scope: NativeRef | None = None,
-        max_depth: int = 12,
+        max_depth: int = 20,
     ) -> RawTree:
         return self._run(lambda: self._snapshot_sync(window_id, scope, max_depth))
 

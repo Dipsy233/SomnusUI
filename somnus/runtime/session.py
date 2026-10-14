@@ -952,7 +952,8 @@ class Session:
         # delta rather than an alarming UNVERIFIED, which makes agents retry
         # actions that already succeeded.
         status = verify.status
-        if status == "OK_UNVERIFIED" and settle_result.settled and delta.empty:
+        no_effect = settle_result.settled and delta.empty
+        if status == "OK_UNVERIFIED" and no_effect:
             status = "OK"
 
         text = f"{status} rev={self.rev}"
@@ -980,6 +981,20 @@ class Session:
                 "~ context_menu produced no menu "
                 '(this element likely opens with activate; try CALL '
                 f"{action.ref}.activate())"
+            )
+        elif (
+            action.capability in ("activate", "open", "select")
+            and no_effect
+            and "context_menu" in _node_caps(self.result, action.ref)
+        ):
+            # activate ran, settled, and changed nothing - on a row that also
+            # exposes context_menu. This is the QQ conversation-row shape: the
+            # Invoke only highlights and the real command lives in the menu.
+            # Say it once, here, so the agent does not conclude the row is
+            # inert and give up.
+            body = (body + "\n" if body else "") + (
+                f"~ no effect; {action.ref} exposes context_menu - "
+                f'the command may be in the menu: CALL {action.ref}.context_menu()'
             )
         if body:
             text += "\n" + body
@@ -1135,6 +1150,11 @@ class Session:
 def result_root(session: "Session") -> SemanticNode:
     assert session.result is not None
     return session.result.root
+
+
+def _node_caps(result: "CompileResult", ref: str) -> set[str]:
+    node = result.find(ref) if result else None
+    return node.cap_names() if node else set()
 
 
 def _find_parent(root: SemanticNode, target: SemanticNode) -> SemanticNode | None:
