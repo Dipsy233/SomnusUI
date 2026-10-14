@@ -20,7 +20,7 @@ Semantic Graph
    ↑
 Semantic Compiler (deterministic: normalize → infer → match → project → compress)
    ↑
-AccessibilityProvider (Windows UIA; AX / AT-SPI / CDP later)
+AccessibilityProvider (Windows UIA; AX / AT-SPI later)
 ```
 
 The LLM never sees pixels, coordinates, screenshots, handles, `AutomationId`s or
@@ -148,42 +148,16 @@ and operate a control.
 
 ## Providers
 
-The runtime talks to one `AccessibilityProvider`. Three exist, and the compiler,
+The runtime talks to one `AccessibilityProvider`. Two exist, and the compiler,
 projection and runtime are identical for all of them.
 
 | Provider | Source | Status |
 | --- | --- | --- |
 | `uia` | Windows UI Automation (Win32 / WPF / UWP) | v0.1 |
-| `cdp` | Chrome DevTools Protocol accessibility tree (Edge / Chrome) | v0.3 |
 | `mock` | recorded `RawTree` fixtures (any platform) | v0.1 |
 
 ```bash
 somnus --provider uia windows          # native windows
-somnus --provider cdp windows          # browser tabs
-somnus --provider cdp observe          # a page, as SUI-Text
-```
-
-### Browsers (CDP)
-
-The browser provider reads the page's own accessibility tree
-(`Accessibility.getFullAXTree`) - never a screenshot, never DOM scraping - and
-drives it through the DOM node the tree names (`Runtime.callFunctionOn`), so the
-page's real event handlers run instead of synthetic input at coordinates. It
-attaches to any page reachable on the loopback debug endpoint, including
-browsers launched with `--remote-debugging-port=0` (found via their
-`DevToolsActivePort` file). Requires the `[cdp]` extra.
-
-A web form, read with no pack at all:
-
-```
-WINDOW w1 "SomnusUI CDP 测试页" active
-  GROUP g1 +scroll(...)
-    TEXT tx2 "用户名"
-    INPUT q1 "用户名"
-    TEXT tx4 "密码"
-    INPUT q2 "密码"
-    CHECKBOX cb1 " 记住我" unchecked
-    BUTTON b1 "登录"
 ```
 
 ## The four tools
@@ -228,7 +202,7 @@ Full grammar: [`somnus/sui/grammar.md`](somnus/sui/grammar.md).
 ```
 somnus/
 ├── ir/            node / capability / action value objects (platform free)
-├── providers/     base.py  mock.py  cdp.py
+├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 │                  yaml_pack.py (v0.2 YAML pack loader)

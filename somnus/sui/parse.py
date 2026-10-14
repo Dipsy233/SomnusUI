@@ -39,9 +39,10 @@ _BARE_CALL_RE = re.compile(
 
 _FIND_RE = re.compile(
     r"""^FIND\s+
-        (?:(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+)?
+        (?:(?P<scope>[a-z]{1,3}[0-9]+)\s+)?        # scope first: ref-shaped
+        (?:(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+)?   # then optional type
         (?P<query>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')
-        (?:\s+in\s+(?P<scope>[a-z]{1,3}[0-9]+))?
+        (?:\s+in\s+(?P<scope2>[a-z]{1,3}[0-9]+))?
         \s*$""",
     re.VERBOSE | re.IGNORECASE,
 )
@@ -57,9 +58,9 @@ _INSPECT_RE = re.compile(
 _UNKNOWN_RE = re.compile(r'^UNKNOWN\s+(?P<reason>".*"|\S+)\s*$', re.IGNORECASE)
 
 _OBSERVE_RE = re.compile(
-    r"^OBSERVE(?P<rest>\s+(?:windows|all|desktop))?"
-    r"(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?"
-    r"(?:\s+(?P<also>all|desktop))?\s*$",
+    r"^OBSERVE(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?"
+    r"(?:\s+(?P<rest>windows|all|desktop|full))?"
+    r"(?:\s+expand\s+(?P<expand>[a-z]{1,3}[0-9]+))?\s*$",
     re.IGNORECASE,
 )
 
@@ -118,15 +119,23 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     m = _OBSERVE_RE.match(raw)
     if m:
         rest = (m.group("rest") or "").strip().lower()
-        also = (m.group("also") or "").strip().lower()
         # ``OBSERVE all`` / ``OBSERVE w3 all`` also lists the other windows; a
         # bare OBSERVE (with or without a window) is that window alone.
-        desktop = rest in ("all", "desktop") or also in ("all", "desktop")
+        desktop = rest in ("all", "desktop")
+        # ``OBSERVE w5 full`` (or OBSERVE full) renders the window's ENTIRE
+        # tree: no folding, no budget. ``all`` means "this window plus the
+        # desktop list"; ``full`` is the escape hatch for a projection that
+        # hid something the agent needs.
+        full = rest == "full"
+        expand = m.group("expand")
         return Action(
             kind="observe",
             window=m.group("window"),
-            query=rest or None,  # "windows" = list windows only
-            scope="desktop" if desktop else "window",
+            scope="desktop" if desktop else ("full" if full else "window"),
+            # With an expand ref, ``query`` carries the ref to unfold; otherwise
+            # it only means "windows" (list-windows-only).
+            depth=1 if expand else None,
+            query=expand or ("windows" if rest == "windows" else None),
             raw=raw,
         )
 
@@ -176,7 +185,11 @@ def _parse_find(m: re.Match[str], raw: str) -> Action:
         kind="find",
         query_type=(m.group("type") or "").lower() or None,
         query=query,
-        scope=m.group("scope"),
+        # Both spellings resolve the same way: ``FIND w5 "库"`` and
+        # ``FIND "库" in w5``. A leading ref is a *scope*, not a type -
+        # ``FIND l1 "..."`` and ``FIND link "..."`` read ambiguously, so the
+        # ref-shaped token always means "search inside this node/window".
+        scope=m.group("scope") or m.group("scope2"),
         raw=raw,
     )
 

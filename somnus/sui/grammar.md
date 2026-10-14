@@ -95,20 +95,28 @@ parse time with `PARSE_ERROR`.
 ```
 action  := "CALL" REF "." CAP "(" [args] ")"
 args    := VALUE | KEY "=" VALUE ("," KEY "=" VALUE)*
-query   := "FIND" [TYPE] STRING ["in" REF]
+query   := "FIND" [REF] [TYPE] STRING ["in" REF]
 inspect := "INSPECT" REF ["depth=" INT] ["range=" INT ":" INT]
 abort   := "UNKNOWN" STRING
-observe := "OBSERVE" [REF]
+observe := "OBSERVE" [REF] ["windows" | "all" | "full"] ["expand" REF]
 ```
 
 ```
 FIND product "Big Mac"
+FIND w5 "库"              # scope: search inside window w5 (same as ... in w5)
 CALL p1.add()
 CALL p1.customize(size="large")
 CALL q1.set_text("Big Mac")
 INSPECT l1 depth=1
 INSPECT t1 range=0:2000
+OBSERVE w5 full           # the whole window tree, no folding, no budget
+OBSERVE w5 expand g3      # unfold one collapsed node, keep the rest folded
 ```
+
+FIND is a full-text search over every *named* node in the window (all roles),
+deduplicated to one hit per element with the parent row preferred. Results are
+rendered with their full capability line, so the actionable gesture is always
+visible.
 
 The resolver maps `p1.add` to the entity's `product.add` rule using the ref's
 entity type; the LLM never writes `product.add(target=p1)`.

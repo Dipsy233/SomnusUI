@@ -425,6 +425,31 @@ class UiaProvider:
             child = nxt
         return None
 
+    @staticmethod
+    def _ensure_visible(el: Any) -> None:
+        """Restore a minimized window before snapshotting it.
+
+        A minimized Chromium window (Steam, Chrome, Electron apps) exposes an
+        empty or near-empty accessibility tree: the renderer does not lay out
+        invisible content. An agent observing a minimized window would see one
+        bare WINDOW line and wrongly conclude the app is inaccessible, when the
+        only thing missing is that the window is not shown. Restoring before
+        the snapshot is the same thing a human does when they look at a
+        minimized window, and it needs no coordinates or synthetic input.
+        """
+        try:
+            import ctypes
+
+            hwnd = int(el.CurrentNativeWindowHandle or 0)
+            if not hwnd:
+                return
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            if not user32.IsWindowVisible(hwnd):
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+        except Exception:
+            return
+
     def _snapshot_sync(
         self,
         window_id: str,
@@ -467,6 +492,10 @@ class UiaProvider:
         root_el = el
         if scope is not None:
             root_el = self._find_by_native(el, scope) or el
+        # A minimized window has no laid-out content; restore it first or the
+        # agent would see a bare window shell instead of the app (found live:
+        # minimized Steam observed as one empty WINDOW line).
+        self._ensure_visible(el)
 
         # Nodes built from this snapshot must carry the window they belong to,
         # otherwise execute() later locates them under the wrong root (histori-

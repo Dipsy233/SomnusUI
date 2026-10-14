@@ -31,19 +31,12 @@ _TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "fals
 
 @dataclass(slots=True)
 class ResolvedStep:
-    """One concrete action: either a native call or an application-API call.
+    """One concrete native action."""
 
-    ``native`` is None for an ``app_api`` step, which is routed to the app's own
-    interface instead of being driven through a UI element (dev doc section 20).
-    """
-
-    native: NativeRef | None
+    native: NativeRef
     primitive: str
     value: Any = None
     label: str = ""
-    #: Set for ``app_api`` steps: the action name and its resolved parameters.
-    app_action: str | None = None
-    app_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -160,17 +153,6 @@ class Resolver:
 
         steps: list[ResolvedStep] = []
         for step in cap.via:
-            if step.primitive == "app_api":
-                steps.append(
-                    ResolvedStep(
-                        native=None,
-                        primitive="app_api",
-                        app_action=step.target,
-                        app_params=_resolve_params(step.value, args),
-                        label=step.label or f"app_api:{step.target}",
-                    )
-                )
-                continue
             native = self._resolve_target(node, step, members)
             # Runtime pattern gate. A cap may carry several alternative `via`
             # paths (e.g. set_text by Value pattern *or* by keyboard) and the
@@ -235,19 +217,6 @@ class Resolver:
         if source is None:
             raise stale_target(target)
         return source.native
-
-
-def _resolve_params(spec: Any, args: dict[str, Any]) -> dict[str, Any]:
-    """Resolve an ``app_api`` parameter map, forwarding ``$name`` placeholders."""
-    if not isinstance(spec, dict):
-        return {}
-    out: dict[str, Any] = {}
-    for key, value in spec.items():
-        if isinstance(value, str) and value.startswith("$"):
-            out[key] = args.get(value[1:].strip())
-        else:
-            out[key] = value
-    return out
 
 
 def _first_positional(args: dict[str, Any]) -> Any:

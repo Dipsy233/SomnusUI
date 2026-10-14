@@ -31,9 +31,6 @@ somnus --pack notepad repl
 
 # 演示数据（不需要 Windows）
 somnus --demo repl
-
-# 浏览器
-somnus --provider cdp repl
 ```
 
 启动后进入 `sui>` 提示符，输入 `quit` / `exit` / `:q` 退出。

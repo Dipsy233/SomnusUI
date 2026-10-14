@@ -36,10 +36,6 @@ class ExecResult:
     message: str | None = None
     #: True when the call may still be in flight (e.g. modal dialog opened).
     undetermined: bool = False
-    #: Structured data returned by an ``app_api`` step (list, dict, scalar).
-    #: Lets a capability report the app's own data instead of making the caller
-    #: scrape it back out of the UI (dev doc section 20).
-    value: Any = None
 
 
 @dataclass(slots=True, frozen=True)

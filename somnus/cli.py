@@ -115,7 +115,10 @@ def cmd_call(args: argparse.Namespace) -> int:
 
 def cmd_repl(args: argparse.Namespace) -> int:
     session = build_session(args)
-    print(session.observe().text)
+    # Start from the desktop: the window list is the entry point of every
+    # workflow (pick a window, then observe it), so the REPL opens on that
+    # instead of whatever window happens to have focus.
+    print(session.observe(windows_only=True).text)
     try:
         while True:
             line = input("sui> ").strip()
@@ -159,8 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         default="auto",
-        choices=["auto", "uia", "cdp", "mock"],
-        help="accessibility source: uia (Windows), cdp (browser), mock (fixtures)",
+        choices=["auto", "uia", "mock"],
+        help="accessibility source: uia (Windows), mock (fixtures)",
     )
     parser.add_argument("--fixture", action="append", default=None)
     parser.add_argument("--demo", action="store_true")

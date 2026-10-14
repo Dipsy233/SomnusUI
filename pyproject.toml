@@ -20,10 +20,6 @@ windows = [
     "comtypes>=1.2",
     "pywinauto>=0.6.8",
 ]
-# Browser access over the Chrome DevTools Protocol (v0.3).
-cdp = [
-    "websocket-client>=1.6",
-]
 mcp = [
     "mcp>=1.0",
 ]

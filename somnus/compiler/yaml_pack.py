@@ -154,7 +154,7 @@ def validate_pack(pack: Pack) -> list[str]:
                     step.get("primitive") if isinstance(step, dict) else str(step).rsplit('.', 1)[-1]
                     for step in cap.via
                 }
-                if primitives & {"set_text", "type_text", "app_api"}:
+                if primitives & {"set_text", "type_text"}:
                     continue
                 problems.append(
                     f"{pack.id}.{entity.name}.{cap.name}: parameter '{param}' is "

@@ -23,7 +23,7 @@ from somnus.ir.node import RawNode
 
 #: Roles considered structural containers. An unnamed, valueless node of one
 #: of these roles carries no semantics and is folded into its child, which both
-#: UIA and CDP produce in quantity (wrapper panes, ``paragraph > StaticText``).
+#: UIA produces in quantity (wrapper panes).
 CONTAINER_ROLES = frozenset({"group", "pane", "unknown", "text"})
 
 #: Minimum number of same-role siblings that triggers automatic collapse.
@@ -101,7 +101,7 @@ def _simplify_child(node: RawNode) -> RawNode | None:
 
     # A node that carries a child text which merely repeats its own name is an
     # accessibility artifact (WPF exposes a button's caption as a child
-    # TextBlock; CDP wraps a heading's text in a StaticText). Drop it so the
+    # TextBlock). Drop it so the
     # tree has one line per concept.
     if node.children and node.name and node.role in (
         "button",

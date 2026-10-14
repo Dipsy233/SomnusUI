@@ -57,17 +57,35 @@ class ProjectionEngine:
         *,
         focus: SemanticNode | None = None,
         depth_limit: int | None = None,
+        full: bool = False,
+        expanded: set[int] | None = None,
     ) -> RenderPlan:
+        """Build the render plan.
+
+        ``full`` disables every budget/collapse: the whole tree is rendered
+        (``OBSERVE w5 full``). ``expanded`` is the set of ids the agent asked
+        to expand this round, overriding both the projection's collapse rule
+        and the auto-collapse heuristic for those nodes only.
+        """
         projection = projection or Projection()
-        max_depth = depth_limit if depth_limit is not None else self.budget.max_depth
+        expanded = expanded or set()
+        max_depth = depth_limit if depth_limit is not None else (
+            None if full else self.budget.max_depth
+        )
         plan = RenderPlan()
         counter = {"nodes": 0, "tokens": 0}
-        self._walk(root, 0, max_depth, projection, plan, counter, top=True)
+        self._walk(
+            root, 0, max_depth, projection, plan, counter,
+            top=True, full=full, expanded=expanded,
+        )
 
         # Depth/entity focus: if a focus node is given, also plan its subtree
         # (used by INSPECT which bypasses the L0 collapse).
         if focus is not None and focus is not root:
-            self._walk(focus, 0, max_depth, projection, plan, counter, top=True)
+            self._walk(
+                focus, 0, max_depth, projection, plan, counter,
+                top=True, full=full, expanded=expanded,
+            )
         plan.tokens = counter["tokens"]
         if plan.truncated and plan.hidden_total:
             plan.lines.append(
@@ -86,14 +104,18 @@ class ProjectionEngine:
         self,
         node: SemanticNode,
         depth: int,
-        max_depth: int,
+        max_depth: int | None,
         projection: Projection,
         plan: RenderPlan,
         counter: dict[str, int],
         *,
         top: bool = False,
+        full: bool = False,
+        expanded: set[int] | None = None,
     ) -> None:
-        if counter["nodes"] >= self.budget.max_nodes:
+        expanded = expanded or set()
+        # In full mode the budget does not apply.
+        if not full and counter["nodes"] >= self.budget.max_nodes:
             plan.truncated = True
             plan.hidden_total += 1
             return
@@ -102,35 +124,50 @@ class ProjectionEngine:
             return
         if rule is Rule.FLATTEN:
             for child in node.children:
-                self._walk(child, depth, max_depth, projection, plan, counter)
+                self._walk(
+                    child, depth, max_depth, projection, plan, counter,
+                    full=full, expanded=expanded,
+                )
             return
 
         # Budget by depth.
-        if depth > max_depth:
+        if max_depth is not None and depth > max_depth:
             plan.truncated = True
             plan.hidden_total += self._count(node)
             return
 
-        collapsed = rule is Rule.COLLAPSE or self._auto_collapse(node)
+        if full or id(node) in expanded:
+            collapsed = False
+        else:
+            collapsed = rule is Rule.COLLAPSE or self._auto_collapse(node)
         line = Line(node=node, depth=depth, collapsed=collapsed)
         if collapsed:
             line.hidden_count = self._count(node)
 
-        if not self._emit(line, plan, counter):
+        if not self._emit(line, plan, counter, full=full):
             return
 
         if collapsed:
             return
         for child in node.children:
-            self._walk(child, depth + 1, max_depth, projection, plan, counter)
+            self._walk(
+                child, depth + 1, max_depth, projection, plan, counter,
+                full=full, expanded=expanded,
+            )
 
-    def _emit(self, line: Line, plan: RenderPlan, counter: dict[str, int]) -> bool:
+    def _emit(
+        self, line: Line, plan: RenderPlan, counter: dict[str, int], *, full: bool = False
+    ) -> bool:
         # Pre-render through the shared formatter to measure tokens.
         from somnus.sui.serialize import render_line
 
         text = render_line(line)
         cost = count_tokens(text)
-        if counter["tokens"] + cost > self.budget.max_tokens and counter["nodes"] > 0:
+        if (
+            not full
+            and counter["tokens"] + cost > self.budget.max_tokens
+            and counter["nodes"] > 0
+        ):
             plan.truncated = True
             plan.hidden_total += 1
             return False

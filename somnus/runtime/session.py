@@ -438,6 +438,8 @@ class Session:
         level: int = 0,
         windows_only: bool = False,
         include_other_windows: bool = False,
+        full: bool = False,
+        expanded: set[int] | None = None,
     ) -> Observation:
         """Observe one window's content, or just the window list.
 
@@ -455,6 +457,11 @@ class Session:
         ``windows_only`` answers "what is on my desktop right now" without
         dumping any tree, which is what a cross-window workflow needs before it
         decides where to go (dev doc section 5).
+
+        ``full`` (``OBSERVE w5 full``) renders the whole window tree without
+        any collapse or budget. ``expanded`` is the set of node ids the agent
+        unfolded this round (``OBSERVE w5 expand g3``); only those nodes are
+        opened, the rest keeps its folded rendering.
         """
         self.refresh_windows()
         if window:
@@ -510,7 +517,12 @@ class Session:
         )
         engine = ProjectionEngine(body_budget)
         projection = apply_projection(result.root, self._pack_projection())
-        plan = engine.plan(result.root, projection)
+        plan = engine.plan(
+            result.root,
+            projection,
+            full=full,
+            expanded=expanded,
+        )
 
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
         return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
@@ -629,7 +641,7 @@ class Session:
 
     # ------------------------------------------------------------------ find
 
-    def find(self, action: Action, *, limit: int = 20) -> str:
+    def find(self, action: Action, *, limit: int = 50) -> str:
         if self.result is None:
             self._recompile()
         assert self.result is not None
@@ -641,13 +653,26 @@ class Session:
         if scope:
             scope_node = self.result.find(scope)
             if scope_node is None:
-                raise target_not_found(scope)
-            scope_ids = {n.ref for n in scope_node.walk()}
+                # ``FIND w5 "text"`` - a window ref scopes the search to that
+                # window. If the ref is not a node in the current compilation,
+                # switch the target window instead (the searched window may not
+                # be the one being observed).
+                win = self._window_by_ref(scope)
+                if win is not None:
+                    if win.window_id != self.target_window:
+                        self.target_window = win.window_id
+                        self._recompile()
+                        nodes = list(self.result.root.walk())  # type: ignore[union-attr]
+                    else:
+                        scope_ids = None  # whole target window
+                else:
+                    raise target_not_found(scope)
+            else:
+                scope_ids = {n.ref for n in scope_node.walk()}
 
-        matches: list[_FindHit] = []
+        matches: list[SemanticNode] = []
+        seen_fingerprints: set[str] = set()
         query = action.query
-        # Refs of nodes already covered by a matched entity.
-        covered: set[str] = set()
         for node in nodes:
             if scope_ids is not None and node.ref not in scope_ids:
                 continue
@@ -662,25 +687,40 @@ class Session:
                 continue
             if not _node_matches(node, query):
                 continue
-            # Without an explicit type, a matched entity hides its own text
-            # children so the agent sees one line per entity, not the label
-            # inside it (dev doc section 6.4).
-            if node.entity is None and entity_filter is None:
-                if node.role not in ("button", "input", "link", "menuitem") and not (
-                    node.layer in ("screen", "dialog")
-                ):
-                    continue
-            matches.append(_FindHit(node, is_entity=node.entity is not None))
-            if node.entity is not None:
-                covered.update(c.ref for c in node.children)
-        matches = [m for m in matches if m.node.ref not in covered]
+            # Full-text search: the query may name a text label, so anonymous
+            # structural nodes are skipped, but a named node of ANY role is a
+            # valid hit - restricting to a handful of roles made "FIND \"库\""
+            # miss a TEXT navigation tab that was right there (found live:
+            # Steam's library tab is a TEXT node, FIND returned 0).
+            if node.entity is None and not node.name:
+                continue
+            # The same element can appear as an entity row AND as a named
+            # child (a game row and its title text both contain the name);
+            # one hit per identity, parents preferred.
+            if node.fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(node.fingerprint)
+            matches.append(node)
+        # Drop nodes whose parent is also a match: the row line already carries
+        # the name, so reporting both is noise, not information.
+        by_fp = {n.fingerprint: n for n in nodes}
+        parent_fps: set[str] = set()
+        for node in matches:
+            parent = _find_parent(result_root(self), node)
+            if parent is not None and parent.fingerprint in seen_fingerprints:
+                parent_fps.add(node.fingerprint)
+        matches = [m for m in matches if m.fingerprint not in parent_fps]
 
         if not matches:
             return "FOUND 0"
         out = [f"FOUND {len(matches)}"]
-        opts = RenderOptions(include_default_caps=False)
+        # Full capability line: with default caps omitted (the grammars' implicit
+        # table), a bare `+context_menu`-only line made the agent believe
+        # activate was unavailable (found live: the Steam game row showed only
+        # context_menu and the agent right-clicked instead of opening).
+        opts = RenderOptions(include_default_caps=True, show_relations=False)
         for hit in matches[:limit]:
-            out.append(render_node_line(hit.node, opts))
+            out.append(render_node_line(hit, opts))
         if len(matches) > limit:
             out.append(f"… +{len(matches) - limit} more")
         return "\n".join(out)
@@ -778,12 +818,8 @@ class Session:
             )
 
         # Execute steps in order, with a per-step timeout.
-        app_api_values: list[Any] = []
         for step in resolution.steps:
-            if step.primitive == "app_api":
-                exec_result = self._invoke_app_api(step)
-            else:
-                exec_result = self.provider.execute(step.native, step.primitive, step.value)
+            exec_result = self.provider.execute(step.native, step.primitive, step.value)
             self._audit_action(action, step, exec_result)
             if not exec_result.ok and not exec_result.undetermined:
                 code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
@@ -802,10 +838,6 @@ class Session:
             if exec_result.undetermined:
                 # A modal dialog may be opening; settle will capture it.
                 break
-            if step.primitive == "app_api" and exec_result.value is not None:
-                # Keep the structured result so it can be reported back instead
-                # of being scraped out of the UI (dev doc section 20).
-                app_api_values.append(exec_result.value)
 
         # Settle, recompile, compute delta, verify. Refresh the window list
         # first: an action may have opened a dialog or replaced the target
@@ -890,16 +922,6 @@ class Session:
         text = f"{verify.status} rev={self.rev}"
         if not settle_result.settled:
             text += " settled=false"
-        # An app-API step can return structured data; report it directly rather
-        # than making the caller scrape it back out of the UI.
-        if app_api_values:
-            import json as _json
-
-            for value in app_api_values:
-                rendered = _json.dumps(value, ensure_ascii=False)
-                if len(rendered) > 2000:
-                    rendered = rendered[:2000] + "…"
-                text += f"\n= {rendered}"
         body = self._window_delta()
         tree_body = self.delta_text(delta)
         if popup_text:
@@ -909,6 +931,20 @@ class Session:
             tree_body = f"{tree_body}\n{popup_text}" if tree_body else popup_text
         if tree_body:
             body = f"{body}\n{tree_body}" if body else tree_body
+        if (
+            any(s.primitive == "context_menu" for s in resolution.steps)
+            and not popup_text
+            and not any(n.role == "menu" for n in result.root.walk())
+        ):
+            # The menu gesture succeeded but nothing appeared: this element
+            # has no context menu, or the app only opens one on a real press.
+            # Say so and point at the gestures that can still work, instead of
+            # letting the agent right-click its way into a dead end.
+            body = (body + "\n" if body else "") + (
+                "~ context_menu produced no menu "
+                '(this element likely opens with activate; try CALL '
+                f"{action.ref}.activate())"
+            )
         if body:
             text += "\n" + body
         return CallOutcome(
@@ -941,25 +977,6 @@ class Session:
                         f"try one of: {', '.join(holders)}"
                     )
             raise
-
-    def _invoke_app_api(self, step) -> "Any":
-        """Route an ``app_api`` step to the target application's own interface.
-
-        Resolution is by the session's process, so the same capability works
-        whether the app is driven through its UI or its API; the LLM never sees
-        which path was taken (dev doc section 20).
-        """
-        from somnus.appapi import REGISTRY
-        from somnus.ir.action import ExecResult
-
-        handler = REGISTRY.for_process(self._target_process())
-        if handler is None:
-            return ExecResult(
-                ok=False,
-                error="ACTION_NOT_SUPPORTED",
-                message=f"no app api for {self._target_process() or 'unknown'}",
-            )
-        return handler.invoke(step.app_action or "", dict(step.app_params))
 
     def _capability_holders(self, capability: str, *, limit: int = 3) -> list[str]:
         """Refs (with names) of nodes that expose ``capability``."""
@@ -1037,10 +1054,24 @@ class Session:
     def run(self, action: Action, *, confirmed: bool | None = None) -> str:
         try:
             if action.kind == "observe":
+                # ``OBSERVE w5 full`` - the window's whole tree, no folding.
+                # ``OBSERVE w5 expand g3`` - unfold one collapsed node this
+                # round, everything else stays folded (tokens stay bounded
+                # while still revealing exactly what the agent asked for).
+                expanded: set[int] | None = None
+                full = action.scope == "full"
+                if action.depth is not None and action.depth:
+                    expanded = set()
+                    result = self._recompile() if self.result is None else self.result
+                    node = result.find(action.query or "")
+                    if node is not None:
+                        expanded.add(id(node))
                 return self.observe(
                     action.window,
                     windows_only=(action.query == "windows"),
                     include_other_windows=(action.scope == "desktop"),
+                    full=full,
+                    expanded=expanded,
                 ).text
             if action.kind == "find":
                 return self.find(action)
@@ -1063,6 +1094,23 @@ class Session:
 # ---------------------------------------------------------------------------
 # module helpers
 # ---------------------------------------------------------------------------
+
+
+def result_root(session: "Session") -> SemanticNode:
+    assert session.result is not None
+    return session.result.root
+
+
+def _find_parent(root: SemanticNode, target: SemanticNode) -> SemanticNode | None:
+    """The parent of ``target`` in ``root``'s tree, or None for the root."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        for child in node.children:
+            if child is target:
+                return node
+            stack.append(child)
+    return None
 
 
 def _node_matches(node: SemanticNode, query: str) -> bool:

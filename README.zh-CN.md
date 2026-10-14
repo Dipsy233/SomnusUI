@@ -20,7 +20,7 @@ Somnus 运行时 ─ observe / find / inspect / call
    ↑
 语义编译器（确定性：normalize → infer → match → project → compress）
    ↑
-AccessibilityProvider（Windows UIA；后续支持 AX / AT-SPI / CDP）
+AccessibilityProvider（Windows UIA；后续支持 AX / AT-SPI）
 ```
 
 LLM 永远不会看到像素、坐标、截图、句柄、`AutomationId` 或 COM 指针。
@@ -141,41 +141,16 @@ pack 仍适合编码通用路径无法推断的领域词汇（`PRODUCT p1 +add`�
 
 ## 提供者（Providers）
 
-运行时通过唯一的 `AccessibilityProvider` 接口与外界通信。目前有三个实现，
+运行时通过唯一的 `AccessibilityProvider` 接口与外界通信。目前有两个实现，
 而编译器、投影和运行时对所有提供者完全一致。
 
 | 提供者 | 数据来源 | 状态 |
 | --- | --- | --- |
 | `uia` | Windows UI Automation（Win32 / WPF / UWP） | v0.1 |
-| `cdp` | Chrome DevTools Protocol 无障碍树（Edge / Chrome） | v0.3 |
 | `mock` | 回放录制的 `RawTree` 固件（任意平台） | v0.1 |
 
 ```bash
 somnus --provider uia windows          # 原生窗口
-somnus --provider cdp windows          # 浏览器标签页
-somnus --provider cdp observe          # 一个页面，以 SUI-Text 呈现
-```
-
-### 浏览器（CDP）
-
-浏览器提供者读取页面自身的无障碍树（`Accessibility.getFullAXTree`）——
-绝不使用截图，绝不抓取 DOM——并通过树中指名的 DOM 节点驱动操作
-（`Runtime.callFunctionOn`），因此触发的是页面真实的事件处理器，而非在
-坐标上注入合成输入。它可以附加到回环调试端点上可达的任何页面，包括以
-`--remote-debugging-port=0` 启动的浏览器（通过其 `DevToolsActivePort`
-文件发现）。需要 `[cdp]` 扩展。
-
-一个完全不加载 pack 读取的网页表单：
-
-```
-WINDOW w1 "SomnusUI CDP 测试页" active
-  GROUP g1 +scroll(...)
-    TEXT tx2 "用户名"
-    INPUT q1 "用户名"
-    TEXT tx4 "密码"
-    INPUT q2 "密码"
-    CHECKBOX cb1 " 记住我" unchecked
-    BUTTON b1 "登录"
 ```
 
 ## 四个工具
@@ -219,7 +194,7 @@ CALL b5.submit()         →  ERR CONFIRMATION_REQUIRED b5 hint=ask-user
 ```
 somnus/
 ├── ir/            节点 / 能力 / 动作值对象（平台无关）
-├── providers/     base.py  mock.py  cdp.py
+├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 │                  yaml_pack.py（v0.2 YAML pack 加载器）
@@ -244,28 +219,6 @@ tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
 
 依赖方向（CI 中强制约束）：`providers → compiler → projection →
 serialization → protocol`；`runtime` 依赖以上全部；任何地方都不导入 LLM。
-
-## App API 通道
-
-能力的 `via` 步骤可以指向 `app_api` 动作而非原生原语，运行时会将其路由到
-应用自身的接口（COM、CLI、脚本），而不是驱动其控件。对 LLM 的暴露完全
-不变：它仍然调用 `CALL x.do()`，且不知道使用了哪条通道。
-
-```yaml
-caps:
-  list_files:
-    via: [{ primitive: app_api, target: list, value: { path: "$path" } }]
-```
-
-```
-CALL l1.list_files(path=".")
-→ OK_UNVERIFIED rev=2
-  = [".git", "apps", "bench", "docs", "somnus", "tests"]   ← 应用自己的数据
-```
-
-这一点很重要：电子表格有数据模型，直接读取单元格比点击复制再抓取剪贴板
-更便宜也更可靠；而且有些操作（重命名工作表、设置文档作者、运行 CLI）
-根本没有对应的控件（开发文档第 20 节）。
 
 ## App Packs
 
