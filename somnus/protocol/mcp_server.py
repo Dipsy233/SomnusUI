@@ -26,6 +26,7 @@ def make_mcp_server(session: Session):
     """Create an MCP ``Server`` bound to ``session`` (requires ``mcp``)."""
     try:
         from mcp.server import Server
+        from mcp.server.lowlevel import NotificationOptions
         from mcp.server.models import InitializationOptions
         from mcp.types import TextContent, Tool
     except Exception as exc:  # pragma: no cover - optional dependency
@@ -53,11 +54,21 @@ def make_mcp_server(session: Session):
 
 
 async def _run_stdio(session: Session) -> None:  # pragma: no cover - runtime
+    import mcp
+    from mcp.server.lowlevel import NotificationOptions
+    from mcp.server.models import InitializationOptions
     from mcp.server.stdio import stdio_server
 
     server = make_mcp_server(session)
     async with stdio_server() as (read, write):
-        init_options = None
+        init_options = InitializationOptions(
+            server_name="somnusui",
+            server_version=getattr(mcp, "__version__", "0.0.0"),
+            capabilities=server.get_capabilities(
+                notification_options=NotificationOptions(),
+                experimental_capabilities={},
+            ),
+        )
         await server.run(read, write, init_options)
 
 
