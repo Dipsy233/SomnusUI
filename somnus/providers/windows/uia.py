@@ -151,6 +151,12 @@ class UiaProvider:
         self._lock = threading.Lock()
         #: runtime_id -> live UIA element, refreshed on every snapshot.
         self._element_cache: dict[tuple[int, ...], Any] = {}
+        from somnus.providers.windows.workspace import Workspace
+
+        #: Windows this provider made visible/moved for background operation.
+        #: `close()` restores each one, so agent work never leaves the user's
+        #: desktop rearranged.
+        self._workspace = Workspace()
 
     # -- COM lifecycle ------------------------------------------------------
 
@@ -187,6 +193,10 @@ class UiaProvider:
         return build_cache_request(self._auto, self._UIA)
 
     def close(self) -> None:  # pragma: no cover - platform
+        # Put every window the agent touched back the way the user had it
+        # (re-minimize what was minimized) before the process goes away.
+        if self._workspace is not None:
+            self._workspace.release_all()
         self._executor.shutdown(wait=False)
 
     # -- window discovery ---------------------------------------------------
@@ -426,16 +436,26 @@ class UiaProvider:
         return None
 
     @staticmethod
-    def _ensure_visible(el: Any) -> None:
-        """Restore a minimized window before snapshotting it.
+    def _ensure_visible(el: Any, workspace=None) -> None:
+        """Make a window operable without stealing the user's screen.
 
         A minimized Chromium window (Steam, Chrome, Electron apps) exposes an
         empty or near-empty accessibility tree: the renderer does not lay out
         invisible content. An agent observing a minimized window would see one
         bare WINDOW line and wrongly conclude the app is inaccessible, when the
-        only thing missing is that the window is not shown. Restoring before
-        the snapshot is the same thing a human does when they look at a
-        minimized window, and it needs no coordinates or synthetic input.
+        only thing missing is that the window is not shown.
+
+        Two properties matter beyond plain visibility:
+
+        * the restore must not *activate* - the user may be typing elsewhere,
+          and stealing focus is exactly the interference this feature exists
+          to avoid (``SW_SHOWNOACTIVATE``);
+        * a window on another virtual desktop is usually laid out but moving
+          it to the current desktop makes background operation reliable, so
+          the workspace moves it when it can (never fatal when it cannot).
+
+        With ``workspace``, the prior state is recorded so ``release`` can
+        put the window back (re-minimize, move home) when the session ends.
         """
         try:
             import ctypes
@@ -443,10 +463,16 @@ class UiaProvider:
             hwnd = int(el.CurrentNativeWindowHandle or 0)
             if not hwnd:
                 return
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            if not user32.IsWindowVisible(hwnd):
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                user32.SetForegroundWindow(hwnd)
+            user32 = ctypes.windll.user32
+            # IsWindowVisible stays True for a minimized window; the layout
+            # question is IsIconic. A minimized CEF app lays out nothing, so
+            # iconic is the state that needs fixing.
+            if not user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+                return
+            if workspace is not None:
+                workspace.acquire(hwnd)
+            else:
+                Workspace.show_no_activate(hwnd)
         except Exception:
             return
 
@@ -495,7 +521,7 @@ class UiaProvider:
         # A minimized window has no laid-out content; restore it first or the
         # agent would see a bare window shell instead of the app (found live:
         # minimized Steam observed as one empty WINDOW line).
-        self._ensure_visible(el)
+        self._ensure_visible(el, self._workspace)
 
         # Nodes built from this snapshot must carry the window they belong to,
         # otherwise execute() later locates them under the wrong root (histori-
