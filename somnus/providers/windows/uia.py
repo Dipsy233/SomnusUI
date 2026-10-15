@@ -401,6 +401,8 @@ class UiaProvider:
         auto = self._auto
         root = auto.GetRootElement()
         walker = auto.ControlViewWalker
+        # Pass 1: the classic Win32 shell menu class. Highest confidence -
+        # nothing else creates a #32768 window.
         child = walker.GetFirstChildElement(root)
         while child is not None:
             nxt = None
@@ -410,9 +412,6 @@ class UiaProvider:
                 pass
             try:
                 cls = child.CurrentClassName or ""
-                # The Win32 menu class. A popup may also be a plain child window
-                # of the app, in which case the app's own tree already contains
-                # it and this method must not double-report it.
                 if cls == "#32768":
                     hwnd = int(child.CurrentNativeWindowHandle or 0)
                     if not hwnd:
@@ -433,6 +432,93 @@ class UiaProvider:
             except Exception:
                 pass
             child = nxt
+        # Pass 2: shell/XAML flyouts (Windows 11 Win+X menu, tray menus and
+        # the tray overflow panel). Enumerating them via the UIA root walker
+        # breaks on the overflow island (NULL COM pointer mid-walk), so find
+        # candidates by Win32 class name instead - deterministic and safe.
+        import ctypes
+        import ctypes.wintypes as _wt
+        user32 = ctypes.WinDLL("user32")
+        candidates: list[int] = []
+        _BUF = ctypes.create_unicode_buffer(256)
+        _CB = ctypes.WINFUNCTYPE(ctypes.c_bool, _wt.HWND, _wt.LPARAM)
+
+        def _on_window(h: int, _l: int) -> bool:
+            user32.GetClassNameW(h, _BUF, 256)
+            if _BUF.value in (
+                "Xaml_WindowedPopupClass",
+                "Windows.UI.Core.CoreWindow",
+                "XamlExplorerHostIslandWindow",
+                "TopLevelWindowForOverflowXamlIsland",
+                "Shell_TrayFlyout",
+            ):
+                candidates.append(int(h))
+            return True
+
+        try:
+            user32.EnumWindows(_CB(_on_window), 0)
+        except Exception:
+            pass
+        # Tray overflow icons are NOT captured here at all: they are always
+        # interactive, so _attach_tray_overflow folds them into the taskbar
+        # tree at snapshot time. The island's bridge content is cached forever
+        # (buttons persist after the panel closes), which made this popup hook
+        # return stale panel content and shadow real menus (found live: QQ's
+        # tray menu answered with the closed overflow panel's buttons).
+        _trust = {
+            "Xaml_WindowedPopupClass": 0,   # Win+X / shell menus: transient
+            "Shell_TrayFlyout": 1,
+            "Windows.UI.Core.CoreWindow": 2,
+            "XamlExplorerHostIslandWindow": 2,
+        }
+        def _trust_of(h: int) -> int:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(h, buf, 256)
+            return _trust.get(buf.value, 5)
+        candidates.sort(key=_trust_of)
+        for hwnd in candidates:
+            import ctypes as _ct
+            buf = _ct.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, buf, 256)
+            if buf.value == "TopLevelWindowForOverflowXamlIsland":
+                continue
+                # XAML islands (tray overflow panel) are UIA-opaque at the top:
+                # their walkers and FindAll return nothing. The content lives
+                # under a DesktopWindowContentBridge child hwnd, which exposes
+                # a normal tree. Resolve the snapshot root there when present.
+                root_hwnd = _content_bridge(hwnd)
+                window_id = f"popup{hwnd}"
+                try:
+                    el = auto.ElementFromHandle(root_hwnd or hwnd)
+                except Exception:
+                    continue
+                # Register BEFORE snapshotting: _snapshot_sync looks the
+                # element up by window_id and the bridge/island hwnd pair must
+                # both resolve (execution later locates elements under the
+                # same id).
+                self._windows[window_id] = el
+                info = WindowInfo(
+                    window_id=window_id,
+                    pid=int(el.CurrentProcessId),
+                    process=_process_name(int(el.CurrentProcessId)),
+                    title=el.CurrentName or "",
+                    active=False,
+                )
+                tree = self._snapshot_sync(window_id, None, max_depth)
+                # Accept windows whose tree shows menu-like content. This is
+                # what separates an open flyout/overflow panel from the search
+                # host, touch keyboard and other permanent CoreWindows. The
+                # tray overflow island keeps its hwnd forever but only ever
+                # carries buttons when the panel is actually open, so the
+                # content check alone is enough - no one-shot bookkeeping.
+                roles = {n.role for n in tree.root.walk()}
+                interesting = roles & {"menu", "menuitem", "button", "list", "listitem"}
+                if not interesting:
+                    continue
+                # Panels opened by activate (tray overflow) and menus opened by
+                # context_menu are both surfaced here; the runtime renders the
+                # result under the node the gesture was made on.
+                return window_id, tree
         return None
 
     @staticmethod
@@ -531,6 +617,12 @@ class UiaProvider:
         try:
             self._element_cache.clear()
             root = self._build_node(root_el, depth=0, max_depth=max_depth, path=())
+            # Taskbar: surface the tray overflow icons inline. The overflow
+            # panel is *always* interactive (ShowContextMenu works on those
+            # buttons without opening the panel), so the icons belong in the
+            # tree, folded under the chevron button - the user's mental model,
+            # not the desktop's window hierarchy.
+            self._attach_tray_overflow(root, max_depth)
         finally:
             self._current_window_id = None
         return RawTree(window=win_info, root=root, raw_revision=0)
@@ -679,6 +771,53 @@ class UiaProvider:
             truncated=truncated,
             virtual_count=virtual_count,
         )
+
+    def _attach_tray_overflow(self, root: RawNode, max_depth: int) -> None:
+        """Fold tray overflow icons under the chevron button (taskbar only).
+
+        The overflow panel's XAML content lives in a bridge child window and
+        stays in the bridge tree even when the panel is closed - but the icons
+        are *always* operable (ShowContextMenu/Invoke work on them without the
+        panel being visible), so they are part of the taskbar's semantic
+        surface. Mounting them under the "显示隐藏的图标" chevron makes
+        `find`/`call` reach them directly; no open-the-panel step.
+        """
+        import ctypes
+        chevron = next(
+            (c for c in root.walk() if c.name and "显示隐藏" in c.name),
+            None,
+        )
+        if chevron is None:
+            return
+        user32 = ctypes.WinDLL("user32")
+        hwnd = user32.FindWindowW("TopLevelWindowForOverflowXamlIsland", None)
+        if not hwnd:
+            return
+        bridge = _content_bridge(hwnd)
+        if not bridge:
+            return
+        try:
+            el = self._auto.ElementFromHandle(bridge)
+        except Exception:
+            return
+        try:
+            cond = self._auto.CreateTrueCondition()
+            found = el.FindAll(self._UIA.TreeScope_Children, cond)
+        except Exception:
+            return
+        for i in range(found.Length):
+            child_el = found.GetElement(i)
+            try:
+                # depth=3 keeps the icon subtree shallow; path (99, idx) never
+                # collides with real taskbar paths and stays deterministic.
+                node = self._build_node(
+                    child_el, depth=3, max_depth=max_depth, path=(99, i)
+                )
+            except Exception:
+                continue
+            # Drop non-interactive wrappers: keep buttons (icons) only.
+            if node.role == "button" or node.children:
+                chevron.children.append(node)
 
     def _available_patterns(self, el: Any, UIA: Any) -> set[str]:
         out: set[str] = set()
@@ -910,6 +1049,35 @@ def _is_shell_chrome(el: Any) -> bool:
         return (el.CurrentClassName or "") == "Windows.UI.Core.CoreWindow"
     except Exception:
         return False
+
+
+def _content_bridge(hwnd: int) -> int | None:
+    """Find the DesktopWindowContentBridge child hwnd of a XAML island.
+
+    The tray overflow panel (TopLevelWindowForOverflowXamlIsland) is UIA-opaque
+    at the top level, but its content is hosted in a child bridge window that
+    exposes a normal accessibility tree. Returns None when there is no bridge
+    (ordinary popups), in which case the island hwnd itself is used.
+    """
+    import ctypes
+    import ctypes.wintypes as wt
+    user32 = ctypes.WinDLL("user32")
+    found: list[int] = []
+    CB = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    buf = ctypes.create_unicode_buffer(256)
+
+    def on_child(h: int, _l: int) -> bool:
+        user32.GetClassNameW(h, buf, 256)
+        if buf.value == "Windows.UI.Composition.DesktopWindowContentBridge":
+            found.append(int(h))
+            return False
+        return True
+
+    try:
+        user32.EnumChildWindows(hwnd, CB(on_child), 0)
+    except Exception:
+        return None
+    return found[0] if found else None
 
 
 def _process_name(pid: int) -> str:

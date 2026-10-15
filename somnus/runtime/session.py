@@ -116,6 +116,8 @@ class Session:
         #: level. Cleared automatically once the menu disappears (see
         #: :meth:`_reattach_open_menu`).
         self._menu_owner: dict[str, str] = {}
+        #: Window list snapshot taken right before each call executes.
+        self._windows_before_action: list = []
         #: semantic projection digest; `rev` only moves when this changes.
         self._last_signature: tuple | None = None
         #: session ref -> native window_id, and reverse, for CALL w?.focus().
@@ -290,13 +292,18 @@ class Session:
 
     # ---------------------------------------------------------- popup (shell)
 
-    def _render_popup_menu(self, owner_ref: str | None) -> str:
-        """Render a shell-owned popup menu as if it hung under ``owner_ref``.
+    def _mount_popup_content(self, owner_ref: str | None) -> str:
+        """Capture a shell-owned popup (menu or tray panel) and mount it.
 
-        Returns SUI-Text for the menu, indented under the owning node, so an
-        agent sees where the menu came from. Empty string when no popup is
-        present (the common case: the menu was drawn in-process and is already in
-        the window's own tree).
+        Returns SUI-Text for the popup, indented under the owning node, so an
+        agent sees where it came from. Empty string when no popup is present
+        (the common case: the menu was drawn in-process and is already in the
+        window's own tree).
+
+        The popup's nodes are folded into the live result even when there is no
+        clean ``menu`` node to hang (the tray overflow panel is a list of
+        buttons), so find/inspect/call keep working on the popup's refs after
+        this call - not just in this one response.
         """
         getter = getattr(self.provider, "popup_menu_snapshot", None)
         if getter is None:
@@ -322,12 +329,20 @@ class Session:
         if owner_ref and self.result is not None:
             owner = self.result.find(owner_ref)
         if owner is not None:
+            # Fold the popup's refs/sources into the live result so the
+            # resolver can find them - regardless of shape. Menus are then
+            # additionally re-parented under the owner; the tray panel's
+            # buttons are reachable through their folded refs alone.
+            popup_roots: list = []
             menu_nodes = [n for n in compiled.root.walk() if n.role == "menu"]
             if menu_nodes:
-                menu = menu_nodes[0]
-                # Fold the popup's refs/sources into the live result so the
-                # resolver can find them.
-                for node in compiled.root.walk():
+                popup_roots.append(menu_nodes[0])
+            else:
+                # No menu node: mount the whole popup subtree under the owner
+                # so the delta/observe shows a coherent structure.
+                popup_roots.extend(c for c in compiled.root.children)
+            for top in popup_roots:
+                for node in top.walk():
                     src = compiled.sources.get(node.ref)
                     if src is not None:
                         self.result.sources[node.ref] = src
@@ -339,7 +354,7 @@ class Session:
                     raw = compiled.raw_by_ref.get(node.ref)
                     if raw is not None:
                         self.result.raw_by_ref[node.ref] = raw
-                owner.children.append(menu)
+                owner.children.append(top)
 
         lines: list[str] = []
         for node in compiled.root.walk():
@@ -813,6 +828,10 @@ class Session:
 
         resolver = Resolver(self.result)
         before_index = index_by_fingerprint(self.result.root)
+        #: Window list before the action: a context_menu may open its menu as
+        #: a separate top-level window, and comparing the two lists is the only
+        #: reliable way to see that (the in-window delta cannot).
+        self._windows_before_action = list(self.windows)
 
         resolution = self._resolve_with_hint(resolver, action)
         self.policy.check_process(self._target_process())
@@ -933,7 +952,7 @@ class Session:
                 # tree. The classic Win32 Shell menu is a separate top-level
                 # popup window (#32768), which would otherwise leave the agent
                 # with "context_menu succeeded" and nothing to act on.
-                popup_text = self._render_popup_menu(action.ref)
+                popup_text = self._mount_popup_content(action.ref)
 
         after_index = index_by_fingerprint(result.root)
         delta = diff_trees(before_index, after_index)
@@ -968,34 +987,76 @@ class Session:
             tree_body = f"{tree_body}\n{popup_text}" if tree_body else popup_text
         if tree_body:
             body = f"{body}\n{tree_body}" if body else tree_body
+        # A context_menu on a tray icon may open its menu as a *separate
+        # top-level window* (QQ's CEF tray menu), invisible to the in-window
+        # delta. Compare the window list captured after the action against
+        # the one before it: a new window whose process matches the target
+        # means the gesture DID open something reachable via the windows list.
+        menu_opened_as_window = False
+        if any(s.primitive == "context_menu" for s in resolution.steps):
+            before_keys = {w.window_id for w in self._windows_before_action} if self._windows_before_action else set()
+            target_proc = self._target_process()
+            for w in self.windows:
+                if (
+                    w.window_id not in before_keys
+                    and w.window_id != self.target_window
+                    and (
+                        w.process == target_proc
+                        # The owning process may be a shell host (explorer
+                        # owns the taskbar while QQ hosts the menu window), so
+                        # also accept a window whose *title* matches a window
+                        # that vanished... none did: accept any new window
+                        # when the target lives in a shell process.
+                        or (target_proc in ("explorer.exe",)
+                            and w.process not in ("explorer.exe", "ApplicationFrameHost.exe"))
+                    )
+                ):
+                    menu_opened_as_window = True
+                    break
         if (
             any(s.primitive == "context_menu" for s in resolution.steps)
             and not popup_text
             and not any(n.role == "menu" for n in result.root.walk())
         ):
-            # The menu gesture succeeded but nothing appeared: this element
-            # has no context menu, or the app only opens one on a real press.
-            # Say so and point at the gestures that can still work, instead of
-            # letting the agent right-click its way into a dead end.
-            body = (body + "\n" if body else "") + (
-                "~ context_menu produced no menu "
-                '(this element likely opens with activate; try CALL '
-                f"{action.ref}.activate())"
-            )
+            # The menu gesture succeeded but no menu appeared in this window's
+            # tree. Two sub-cases matter:
+            # - a new top-level window appeared (QQ's tray menu is a separate
+            #   CEF window): the gesture DID open something the agent can
+            #   reach - say so instead of implying failure;
+            # - truly nothing: point at the gestures that can still work.
+            if menu_opened_as_window:
+                body = (body + "\n" if body else "") + (
+                    "~ context_menu opened a new window above; "
+                    "observe it (windows list) for the menu items"
+                )
+            else:
+                body = (body + "\n" if body else "") + (
+                    "~ context_menu produced no menu "
+                    '(this element likely opens with activate; try CALL '
+                    f"{action.ref}.activate())"
+                )
         elif (
             action.capability in ("activate", "open", "select")
             and no_effect
-            and "context_menu" in _node_caps(self.result, action.ref)
+            and not popup_text
         ):
-            # activate ran, settled, and changed nothing - on a row that also
-            # exposes context_menu. This is the QQ conversation-row shape: the
-            # Invoke only highlights and the real command lives in the menu.
-            # Say it once, here, so the agent does not conclude the row is
-            # inert and give up.
-            body = (body + "\n" if body else "") + (
-                f"~ no effect; {action.ref} exposes context_menu - "
-                f'the command may be in the menu: CALL {action.ref}.context_menu()'
-            )
+            # activate ran, settled, and the window tree did not change. The
+            # gesture may have opened a shell panel (tray overflow) that lives
+            # outside the window - probe the popup hook once before giving up.
+            popup_text = self._mount_popup_content(action.ref)
+            if popup_text:
+                tree_body = popup_text
+                body = f"{body}\n{tree_body}" if body else tree_body
+            elif "context_menu" in _node_caps(self.result, action.ref):
+                # activate ran, settled, and changed nothing - on a row that
+                # also exposes context_menu. This is the QQ conversation-row
+                # shape: the Invoke only highlights and the real command lives
+                # in the menu. Say it once, here, so the agent does not
+                # conclude the row is inert and give up.
+                body = (body + "\n" if body else "") + (
+                    f"~ no effect; {action.ref} exposes context_menu - "
+                    f'the command may be in the menu: CALL {action.ref}.context_menu()'
+                )
         if body:
             text += "\n" + body
         return CallOutcome(

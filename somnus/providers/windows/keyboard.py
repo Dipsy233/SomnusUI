@@ -26,6 +26,8 @@ from somnus.ir.action import ExecResult
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
+VK_SHIFT = 0x10
+VK_F10 = 0x79
 
 
 class _KEYBDINPUT(ctypes.Structure):
@@ -70,6 +72,37 @@ class _INPUTUNION(ctypes.Union):
 
 class _INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
+
+
+def send_vk(vk: int, *, shift: bool = False) -> None:
+    """Send one virtual key (optionally with Shift held).
+
+    Used only by the context-menu keyboard fallback (Shift+F10): the standard
+    accessibility gesture for "open this element's context menu". Focus is
+    performed by the caller.
+    """
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    downs: list[_INPUT] = []
+    ups: list[_INPUT] = []
+    if shift:
+        downs.append(_mk_key(VK_SHIFT, 0))
+    downs.append(_mk_key(vk, 0))
+    ups.append(_mk_key(vk, KEYEVENTF_KEYUP))
+    if shift:
+        ups.append(_mk_key(VK_SHIFT, KEYEVENTF_KEYUP))
+    for batch in (downs, ups):
+        arr = (_INPUT * len(batch))(*batch)
+        sent = user32.SendInput(len(arr), ctypes.byref(arr), ctypes.sizeof(_INPUT))
+        if sent != len(batch):
+            raise OSError(f"SendInput sent {sent}/{len(batch)} (err {ctypes.get_last_error()})")
+        time.sleep(0.01)
+
+
+def _mk_key(vk: int, flags: int) -> _INPUT:
+    inp = _INPUT()
+    inp.type = INPUT_KEYBOARD
+    inp.u.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=None)
+    return inp
 
 
 def send_unicode_text(text: str) -> ExecResult:

@@ -399,6 +399,12 @@ class Compiler:
         # make each other ambiguous; only those get a disambiguating index, so
         # uniquely-named nodes stay position independent (dev doc section 8).
         dup_key = _duplicate_keys(raw.children)
+        # Same for children sharing a *stable identity* (automation id / class
+        # name): a tray area hands every button the same automation id
+        # ("SystemTrayIcon") and class while the names differ (network, volume,
+        # clock). Names there are volatile telemetry, so siblings are told
+        # apart by index, not by name.
+        dup_identity = _duplicate_identities(raw.children)
         role_counts: dict[str, int] = {}
         for child in raw.children:
             if depth + 1 > self.max_depth:
@@ -406,6 +412,10 @@ class Compiler:
                 break
             idx = role_counts.get(child.role, 0)
             role_counts[child.role] = idx + 1
+            needs_index = (
+                (child.role, _name_key(child)) in dup_key
+                or (child.native.automation_id or "") in dup_identity
+            )
             self._build(
                 child,
                 parent=node,
@@ -414,7 +424,7 @@ class Compiler:
                 ancestors=new_ancestors,
                 depth=depth + 1,
                 ancestor_path=child_path,
-                role_index=idx if (child.role, _name_key(child)) in dup_key else None,
+                role_index=idx if needs_index else None,
                 position=idx,
             )
 
@@ -519,6 +529,27 @@ _VOLATILE_CLASS_TOKENS = frozenset(
     }
 )
 
+#: Framework item-type class names: they identify the widget class shared by
+#: every sibling (all menu items, all list rows), never the individual element.
+#: A shared item class must not count as stable identity - it would exclude the
+#: element's own name from the fingerprint and collapse all siblings into one.
+_GENERIC_ITEM_CLASSES = frozenset(
+    {
+        "menuflyoutitem",
+        "menuitem",
+        "listviewitem",
+        "gridviewitem",
+        "comboboxitem",
+        "treeviewitem",
+        "tabviewitem",
+        "pivotitem",
+        "navigationviewitem",
+        "listboxitem",
+        "datagridrow",
+        "togglemenuflyoutitem",
+    }
+)
+
 
 def _identity_class(class_name: str | None) -> str | None:
     """Derive a stable identity from a class name, or None.
@@ -535,11 +566,22 @@ def _identity_class(class_name: str | None) -> str | None:
     """
     if not class_name:
         return None
+    # Toolkit *item type* names name the widget class, not the element: a
+    # WinUI menu hands every item class "MenuFlyoutItem", a list every row
+    # "ListViewItem". They cannot distinguish siblings, and treating them as
+    # identity would wrongly make each item's volatile name excluded evidence,
+    # collapsing the whole list to one fingerprint. Siblings that share such a
+    # class are told apart by name/index instead (the parent loop detects the
+    # shared class and adds the role index).
+    if class_name.casefold() in _GENERIC_ITEM_CLASSES:
+        return None
     kept: list[str] = []
     for token in class_name.split():
         low = token.casefold()
         if low in _VOLATILE_CLASS_TOKENS:
             continue
+        if low in _GENERIC_ITEM_CLASSES:
+            return None
         # BEM state modifiers (`q-button--primary`) and framework state suffixes
         # are markup for a state, not a name.
         if "--" in token:
@@ -557,6 +599,21 @@ def _duplicate_keys(children: list[RawNode]) -> set[tuple[str, str]]:
         key = (child.role, _name_key(child))
         seen[key] = seen.get(key, 0) + 1
     return {key for key, count in seen.items() if count > 1}
+
+
+def _duplicate_identities(children: list[RawNode]) -> set[str]:
+    """Automation ids shared by more than one child of the same parent.
+
+    Such ids cannot distinguish siblings (Windows tray area, repeated item
+    templates), so those children need the role-relative index in their
+    fingerprint to stay addressable.
+    """
+    counts: dict[str, int] = {}
+    for child in children:
+        aid = child.native.automation_id or ""
+        if aid:
+            counts[aid] = counts.get(aid, 0) + 1
+    return {aid for aid, count in counts.items() if count > 1}
 
 
 def _clip(text: str | None, limit: int = 80) -> str | None:

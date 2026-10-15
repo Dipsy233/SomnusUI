@@ -5,12 +5,21 @@ invalidated everything. Here refs are bound to *fingerprints*:
 
 1. After each compilation, new nodes are matched to existing refs by fingerprint.
 2. A unique fingerprint match keeps the ref (RuntimeId is a fast path only).
-3. Zero matches -> STALE_TARGET; multiple matches -> TARGET_AMBIGUOUS.
+3. Zero matches -> STALE_TARGET; multiple *live* matches -> TARGET_AMBIGUOUS.
 4. Refs are never recycled within a session.
+
+A subtlety this class must survive: a fingerprint can legitimately be
+allocated several refs (the element appeared twice in one tree - e.g. a
+tray flyout holding a hidden copy of a taskbar button - and later closed).
+When that happens the duplicated fingerprint must collapse back to one
+ref as soon as only one live node carries it, otherwise the stale
+duplicates poison ``by_fingerprint`` forever and every subsequent call on
+a perfectly unambiguous node fails with TARGET_AMBIGUOUS.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 from somnus.compiler.compile import CompileResult, RefAllocator
@@ -28,6 +37,8 @@ class RefRecord:
     name: str | None
     #: Number of times this fingerprint has been observed (for ambiguity).
     seen: int = 1
+    #: Last reconcile pass in which this record matched a live node.
+    last_seen: int = 0
 
 
 @dataclass(slots=True)
@@ -46,6 +57,8 @@ class SessionRegistry:
         self.records: dict[str, RefRecord] = {}
         self.by_fingerprint: dict[str, list[str]] = {}
         self._reconcile_counter = 0
+        #: Refs that resolved to a live node in the last reconcile pass.
+        self._live_refs: set[str] = set()
 
     # -- reconciliation -----------------------------------------------------
 
@@ -59,6 +72,19 @@ class SessionRegistry:
         """
         self._reconcile_counter += 1
         report = ReconcileReport()
+        # Drop refs that died in an earlier pass: they must not participate
+        # in uniqueness decisions, or a fingerprint whose element vanished
+        # and returned (tray flyout, minimized window) stays ambiguous forever.
+        if self._live_refs:
+            for fp in list(self.by_fingerprint):
+                refs = [r for r in self.by_fingerprint[fp] if r in self._live_refs]
+                if refs:
+                    self.by_fingerprint[fp] = refs
+                else:
+                    del self.by_fingerprint[fp]
+        # How many nodes in the *current* tree carry each fingerprint. Only a
+        # fingerprint with >1 live node is genuinely ambiguous.
+        fp_counts = Counter(node.fingerprint for node in result.root.walk())
         rewritten: dict[str, str] = {}
         #: refs already claimed during *this* reconcile pass. A fingerprint may
         #: legitimately repeat (anonymous panes), so a ref can be reused by only
@@ -69,21 +95,43 @@ class SessionRegistry:
             old_ref = node.ref
             fp = node.fingerprint
             known = self.by_fingerprint.get(fp, [])
+            if len(known) > 1 and fp_counts[fp] == 1:
+                # False ambiguity: earlier passes allocated several refs for
+                # this fingerprint (a node present twice in one tree, e.g. a
+                # tray flyout that has since closed) but the current tree
+                # holds exactly one node with it. Collapse the duplicates to
+                # the record seen most recently instead of failing forever.
+                candidates = [self.records[r] for r in known if r in self.records]
+                if candidates:
+                    record = max(candidates, key=lambda rec: rec.last_seen)
+                    if record.entity == node.entity and record.role == node.role:
+                        ref = record.ref
+                        record.seen += 1
+                        record.name = node.name
+                        record.last_seen = self._reconcile_counter
+                        claimed.add(ref)
+                        report.kept.append(ref)
+                        self.by_fingerprint[fp] = [ref]
+                        if ref != old_ref:
+                            rewritten[old_ref] = ref
+                            self._rewrite_ref(node, old_ref, ref, result)
+                        continue
             if len(known) == 1 and known[0] not in claimed:
                 ref = known[0]
                 record = self.records[ref]
                 if record.entity == node.entity and record.role == node.role:
                     record.seen += 1
                     record.name = node.name
+                    record.last_seen = self._reconcile_counter
                     claimed.add(ref)
                     report.kept.append(ref)
                     if ref != old_ref:
                         rewritten[old_ref] = ref
                         self._rewrite_ref(node, old_ref, ref, result)
                     continue
-            if len(known) > 1:
-                # Ambiguous fingerprint; do NOT silently rebind. Allocate a new
-                # ref and flag it for the caller.
+            if len(known) > 1 and fp_counts[fp] > 1:
+                # Genuinely ambiguous: more than one live node shares this
+                # fingerprint; do NOT silently rebind. Flag it for the caller.
                 report.ambiguous.append(fp)
             # Adopt the compiler-allocated ref when it is unused; otherwise
             # allocate a fresh one (refs are never recycled within a session).
@@ -101,9 +149,13 @@ class SessionRegistry:
                 entity=node.entity,
                 role=node.role,
                 name=node.name,
+                last_seen=self._reconcile_counter,
             )
             self.by_fingerprint.setdefault(fp, []).append(new_ref)
             report.new.append(new_ref)
+
+        # Remember which refs are live so the next pass can prune dead ones.
+        self._live_refs = set(claimed)
 
         # Stale = records not seen this round (their refs stay reserved forever).
         seen_refs = {

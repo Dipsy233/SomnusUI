@@ -14,7 +14,7 @@ from ctypes import wintypes
 from typing import Any
 
 from somnus.ir.action import ExecResult
-from somnus.providers.windows.keyboard import send_unicode_text
+from somnus.providers.windows.keyboard import send_unicode_text, send_vk
 
 #: Pattern id per primitive capability (resolved lazily from the UIA module).
 PATTERN_FOR_PRIMITIVE = {
@@ -127,6 +127,18 @@ def run_primitive(
                         message="ShowContextMenu needs IUIAutomationElement3 (Windows 8.1+)",
                     )
                 raise
+            # ShowContextMenu ran but the element's handler may ignore it (some
+            # shell/XAML hosts only react to a real keyboard menu gesture).
+            # The standard keyboard gesture for "open this element's context
+            # menu" is Shift+F10 (the Apps key without keyboard apps key).
+            # This is the accessibility verb, not pointer simulation: no
+            # coordinates, no cursor movement - the menu opens wherever the
+            # element decides. It requires focus, so focus first.
+            try:
+                element.SetFocus()
+                send_vk(0x2D, shift=True)  # VK_APPS-equivalent via Shift+F10
+            except Exception:  # noqa: BLE001 - the first path already ran
+                pass
         elif primitive == "close":
             _pattern(
                 element, UIA.UIA_WindowPatternId, UIA.IUIAutomationWindowPattern
