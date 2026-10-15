@@ -13,7 +13,7 @@ Commands::
 
 Global options::
 
-    --provider {auto,uia,mock}   select the accessibility provider
+    --provider {auto,uia,cdp,mock} select the accessibility provider
     --fixture PATH               load a recorded fixture into the mock provider
     --demo                       use the built-in restaurant demo fixtures
     --pack ID                    force an app pack
@@ -162,8 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         default="auto",
-        choices=["auto", "uia", "mock"],
-        help="accessibility source: uia (Windows), mock (fixtures)",
+        choices=["auto", "uia", "cdp", "mock"],
+        help=(
+            "accessibility source: uia (Windows), cdp (a browser page), "
+            "mock (fixtures)"
+        ),
     )
     parser.add_argument("--fixture", action="append", default=None)
     parser.add_argument("--demo", action="store_true")

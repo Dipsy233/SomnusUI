@@ -23,7 +23,7 @@ Somnus 运行时 ─ observe / find / inspect / call
    ↑
 语义编译器（确定性：normalize → infer → match → project → compress）
    ↑
-AccessibilityProvider（Windows UIA；后续支持 AX / AT-SPI）
+AccessibilityProvider（Windows UIA；CDP 作为写入通道；后续支持 AX / AT-SPI）
 ```
 
 LLM 永远不会看到像素、坐标、截图、句柄、`AutomationId` 或 COM 指针。
@@ -145,10 +145,17 @@ pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来
   `activate`（`Invoke` 模式，或执行器回退用的 `LegacyIAccessible`）。只暴露
   `ExpandCollapse` 的按钮显示 `+expand +collapse` 而没有 `activate`，因此行上写的
   就是能用的手势；什么都没暴露的控件不会得到一个注定失败的能力。
-- **`set_text`** 为每个可输入表面推导，路径由控件自身的接口决定、绝不看类名：
-  有 Value 模式的一律通过它写入（应用自己的写入接口，原子且不依赖键盘焦点），
-  只有完全没有的（自绘 Chromium/Electron 编辑器、终端）才用键盘输入。
-  因此记事本走原生写入，而 QQ 的 ProseMirror 输入框无需 pack 依然可写。
+- **`set_text`** 为每个可输入表面推导，路径由控件自身的接口决定、绝不看类名。
+  三条路径，按优先级：
+  1. **Chromium 页面内的编辑器**——自绘输入框（QQ、VS Code、Steam）通过
+     DevTools Protocol 写入，那是页面自己的文本插入，编辑器框架收到的和真实输入
+     完全一致。这是唯一能让这类编辑器模型保持同步的路径：UIA 的 `SetValue` 虽然
+     把文字放进了 DOM，却不会触发页面任何处理器；
+  2. **有 Value 模式的原生控件**——通过它写入（应用自己的写入接口，原子且不依赖
+     键盘焦点）；
+  3. **其余情况**——聚焦后用键盘输入，它始终是最后手段。
+  因此记事本走原生写入，QQ 的 ProseMirror 输入框走页面写入，两者都无需 pack、
+  也不产生合成输入。
 - **`context_menu`** 在“可能有菜单”的控件上提供（即暴露了可操作内容的元素）。
   它是面对"忽略原生模式的应用"时的出口：菜单通过 UIA 自身打开
   （`ShowContextMenu`），指针不会移动、不发送任何按键，而菜单项本身是标准菜单项，
@@ -168,17 +175,34 @@ pack 仍适合编码通用路径无法推断的领域词汇（`PRODUCT p1 +add`�
 
 ## 提供者（Providers）
 
-运行时通过唯一的 `AccessibilityProvider` 接口与外界通信。目前有两个实现，
+运行时通过唯一的 `AccessibilityProvider` 接口与外界通信，
 而编译器、投影和运行时对所有提供者完全一致。
 
 | 提供者 | 数据来源 | 状态 |
 | --- | --- | --- |
 | `uia` | Windows UI Automation（Win32 / WPF / UWP） | 可用 |
+| `cdp` | Chrome DevTools Protocol（浏览器页面，或 Electron 应用的写入通道） | 可选（`[cdp]`） |
 | `mock` | 回放录制的 `RawTree` 固件（任意平台） | 可用 |
 
 ```bash
 somnus --provider uia windows          # 原生窗口
+somnus --provider cdp observe          # 直接驱动浏览器页面
 ```
+
+### 写入自绘编辑器（CDP）
+
+Electron 应用（QQ、VS Code、Steam）的输入框是自绘的 `contenteditable`，
+UIA 无法真正写进去：对它可以调用 `SetValue`，文字也确实进了 DOM，
+但页面自身的处理器一个都不会运行，编辑器的内部模型（ProseMirror 等）
+因此不知道内容变了，应用最后会发出错误的东西——这种静默失同步比失败更糟。
+装上 `[cdp]` 扩展、且应用在回环调试端口上可达时，`set_text` 改走页面自己的
+文本插入（`Input.insertText`），与页面内真实敲键盘走的是同一条路径。
+指针不移动、不向窗口发送任何按键，也不要求窗口在前台。
+
+探测是自动的：常规端口、浏览器 `DevToolsActivePort` 文件里记录的端口，
+以及 `SOMNUS_CDP_PORTS` 中指定的端口。其余一切不变——观察仍然来自 UIA，
+页面通道只在**页面内容**的写入上被咨询，绝不用在浏览器自身的外壳控件上
+（那些有自己的原生接口）。
 
 ## 后台工作区（无干扰操作）
 
@@ -245,7 +269,7 @@ CALL b5.submit()         →  ERR CONFIRMATION_REQUIRED b5 hint=ask-user
 ```
 somnus/
 ├── ir/            节点 / 能力 / 动作值对象（平台无关）
-├── providers/     base.py  mock.py
+├── providers/     base.py  mock.py  cdp.py
 │                  windows/{uia,cache,executor,events,keyboard,workspace}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 ├── projection/    rules.py budget.py engine.py
