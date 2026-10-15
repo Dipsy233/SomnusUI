@@ -27,10 +27,19 @@ INDENT  := 2 spaces per level
 
 1. **Capabilities live on the node line.**
 2. **Implicit capabilities are omitted** - `focus`/`read` everywhere;
-   `context_menu` on any control; `activate` on `BUTTON`, `set_text` on `INPUT`,
-   `toggle` on `CHECKBOX`, `select` on `LISTITEM`, `scroll` on containers. The
-   system prompt carries this table. They are always available to the resolver
-   regardless of printing.
+   `context_menu` on any control; `activate` on `BUTTON`, `toggle` on
+   `CHECKBOX`, `select` on `LISTITEM`, `scroll` on containers. The system prompt
+   carries this table. They are always available to the resolver regardless of
+   printing.
+
+   A capability is only implicit when it is unconditionally true of its role, so
+   the omitted set and the always-present set are the same thing. `set_text` is
+   therefore **never** implicit: a field is an `INPUT` whether or not it accepts
+   text, so hiding the capability would render a writable field and a read-only
+   one identically. It is printed on every input that has it, and its absence on
+   an `INPUT` means exactly what it says - the field cannot be written (it is
+   `readonly`/`disabled`). The same rule applies to any capability whose absence
+   is itself a signal (see `NEVER_IMPLICIT_CAPS` in `serialize.py`).
 
 ### Gesture semantics (`select` vs `activate` vs `context_menu`)
 
@@ -41,6 +50,24 @@ These three are distinct, and conflating them is a real bug class:
 | `select` | SelectionItem | highlight/select - what a **single** click does |
 | `activate` | Invoke | the element's **default action** - what a **double** click does |
 | `context_menu` | `IUIAutomationElement3::ShowContextMenu` | open the element's context menu - what a **right** click does |
+
+A capability is printed only when the platform offers it. `activate` is derived
+from a real `Invoke` pattern (or the `LegacyIAccessible` fallback the executor
+uses), **never** from the role: a `role=button` element that exposes no default
+action would otherwise be handed a capability whose only possible outcome is
+`ACTION_NOT_SUPPORTED`, while the gesture that does work (`expand`/`collapse`)
+goes unmentioned. `link` and `menuitem` are the exceptions, because the
+accessibility layer itself activates them.
+
+`context_menu` is the one capability that cannot be proven up front: UIA exposes
+no "has a context menu" query, and `ShowContextMenu` is callable on any element
+while silently doing nothing when the application registered no menu. It is
+therefore an **offer**, and the runtime reports the outcome honestly instead -
+a call that produced no menu is `OK_UNVERIFIED` with a body naming the gesture
+that does exist, not a plain `OK`. A menu counts as produced only when it was
+not in the tree before the call, so a window with a permanent `MENU` node (File
+Explorer's system menu, Notepad's `MENU "File"`) does not make every
+`context_menu` look successful.
 
 `activate` is **not** a click. Invoke means "perform the single unambiguous
 action this control represents": press for a button, but **open** for a file or

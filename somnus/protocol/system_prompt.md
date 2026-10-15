@@ -47,10 +47,22 @@ These exist on every applicable node even when not printed:
 * every node: `focus`, `read`
 * every control (an element the app marks as operable): `context_menu`
 * `BUTTON`/`LINK`/`MENUITEM`: `activate`
-* `INPUT`: `set_text(text="…")`
 * `CHECKBOX`/`SWITCH`: `toggle`
 * `LISTITEM`/`TAB`/`RADIO`: `select`
 * `LIST`/`TREE`/`TABLE`/`PANE`: `scroll(to=up|down|top|bottom)`
+
+`set_text` is **not** implicit. It is printed on every `INPUT` that accepts
+text, so the line tells you whether the field is writable:
+
+```
+INPUT q1 "Search" +set_text(text)        ← writable: CALL q1.set_text("…")
+INPUT q2 "Path" readonly                ← no set_text: it cannot be written
+```
+
+An `INPUT` without `+set_text` is read-only: do not try to write it. Anything
+whose presence varies between nodes of the same role is always printed, so
+absence is meaningful; a capability is only omitted when it is unavoidably
+true of the role.
 
 An entity's capabilities (`+add`, `+open`, `+submit`) are always printed
 explicitly.
@@ -67,6 +79,30 @@ the application's behaviour, not a runtime bug.
 | `select` | highlights/selects the item (SelectionItem) | a single click |
 | `activate` | runs the element's **default action** (Invoke) | a **double** click |
 | `context_menu` | opens the element's context menu (UIA `ShowContextMenu`) | a **right** click |
+
+### What is printed is what the platform proved
+
+A capability is only printed when the platform offers it. `activate` means the
+control really exposes a default action; a control that has none is not given
+one, and the gesture it *does* have is what you see instead:
+
+```
+BUTTON b3 "最大化" +expand +collapse     ← no +activate: it has no default action
+BUTTON b4 "关闭"                          ← nothing provable: no gesture to offer
+```
+
+`context_menu` is the one offer that cannot be verified up front: UIA has no
+way to ask "does this element have a menu". So after the call, read the
+status honestly:
+
+```
+OK                ← a menu really appeared (printed under the node below)
+OK_UNVERIFIED     ← no menu appeared; the body says so and names the gesture
+                    that does exist, e.g. "try CALL b3.activate()"
+```
+
+Do not treat `OK` on a `context_menu` as proof a menu is open unless the
+response shows the menu lines.
 
 **`activate` is not a click.** It asks the control to perform its single
 unambiguous action, which for a button is "press" but for a file or list row is

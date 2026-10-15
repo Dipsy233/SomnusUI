@@ -15,6 +15,8 @@ from somnus.compiler.normalize import normalize
 from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
 from somnus.providers.mock import MockProvider
 from somnus.runtime.session import Session
+from somnus.sui.serialize import RenderOptions, render_node_line
+from tests.fixtures.builders import notepad_tree
 
 
 def _n(
@@ -123,6 +125,55 @@ def test_static_label_never_becomes_an_input():
     res = _compile_packless(tree)
     label = res.find("tx1")
     assert label is not None and "set_text" not in label.cap_names()
+
+
+# --------------------------------------------------------------------------
+# an input must be *identifiable* as a text box from the observation alone
+# --------------------------------------------------------------------------
+
+
+def test_writable_and_readonly_inputs_render_differently():
+    """An agent must be able to tell a text box from a read-only field by
+    reading the line.
+
+    Regression: `set_text` used to be hidden as the default capability of the
+    `input` role, so a writable field rendered as `INPUT q1 "Name"` and a
+    read-only one as `INPUT q2 "Path" readonly` - the *first* showed no
+    `set_text` at all either, which made the capability impossible to discover
+    and the read-only case indistinguishable from the normal one (the agent
+    either tried to write a field that refuses text, or never realised a text
+    box was a text box)."""
+    tree = _packless_tree(
+        [
+            _n("edit", "Name", patterns=_VALUE, runtime_id=1),
+            _n("edit", "Path", patterns=_VALUE, states=frozenset({"readonly"}),
+               runtime_id=2),
+        ]
+    )
+    res = _compile_packless(tree)
+    opts = RenderOptions()
+    writable = render_node_line(res.find("q1"), opts)
+    readonly = render_node_line(res.find("q2"), opts)
+
+    # The writable field advertises set_text...
+    assert "+set_text" in writable
+    # ...and the read-only one does not, which is the signal.
+    assert "+set_text" not in readonly
+    assert writable != readonly
+    # A bare `INPUT` line therefore always means "this field can be written".
+    assert "readonly" not in writable
+
+
+def test_observe_shows_set_text_on_a_text_box():
+    """End to end: the L0 overview an agent actually receives names the
+    capability, so the text box is usable without an extra INSPECT."""
+    session = Session(MockProvider(fixtures=[notepad_tree("hello")]), allow_packs=False)
+    text = session.observe().text
+    line = next(l for l in text.splitlines() if l.strip().startswith("INPUT"))
+    assert "+set_text" in line
+    # And the capability recorded on the node is the one that was printed.
+    node = session.result.find("q1")
+    assert node is not None and "set_text" in node.cap_names()
 
 
 # --------------------------------------------------------------------------
@@ -252,6 +303,157 @@ def test_context_menu_is_offered_on_a_control_but_not_on_a_label():
         n for n in res.root.walk() if n.role == "text" and n.name == "Just a label"
     )
     assert "context_menu" not in text_node.cap_names()
+
+
+def test_context_menu_stays_alongside_activate_on_a_row():
+    """The two gestures are offered *together*, not one instead of the other.
+
+    QQ's conversation rows advertise a real `Invoke` that only highlights the
+    row, and the command that opens the chat lives in their context menu. The
+    runtime cannot know which of the two the application honours, so both must
+    survive - withholding the menu because `activate` looked available would
+    have made the chat unreachable."""
+    row = _n(
+        "group",
+        patterns=frozenset({"invoke", "selectionitem"}),
+        cls="recent-contact-item",
+        children=[_n("text", "我的手机", patterns=_TEXT, runtime_id=2)],
+    )
+    tree = _packless_tree([row])
+    res = _compile_packless(tree)
+    node = res.find("g1")
+    assert node is not None
+    assert "activate" in node.cap_names()
+    assert "context_menu" in node.cap_names()
+
+
+# --------------------------------------------------------------------------
+# a capability must be proven by the platform, never guessed from the role
+# --------------------------------------------------------------------------
+
+
+def test_role_button_without_invoke_gets_no_activate():
+    """`activate` is the element's default action, so it exists only when the
+    platform offers one.
+
+    Regression: the role alone used to grant it (`role == "button"`), so a
+    title-bar button exposing no `Invoke` advertised `activate` and the call
+    could only ever fail with ACTION_NOT_SUPPORTED - while the gesture that
+    actually worked (`expand`/`collapse`) was buried next to it and usually not
+    tried (observed live on Notepad's title-bar buttons)."""
+    # Only ExpandCollapse: the real gesture is expand/collapse, not activate.
+    expandable = _n("button", "最大化", patterns=frozenset({"expandcollapse"}), runtime_id=1)
+    # No interaction pattern at all: nothing is actionable.
+    inert = _n("button", "关闭", runtime_id=2)
+    # Only a text interface: it is a label wearing a button role.
+    fake = _n("button", "假按钮", patterns=_TEXT, runtime_id=3)
+    tree = _packless_tree([expandable, inert, fake])
+    res = _compile_packless(tree)
+
+    for ref in ("b1", "b2", "b3"):
+        node = res.find(ref)
+        assert node is not None
+        assert "activate" not in node.cap_names(), f"{ref} ({node.name}) guessed activate"
+
+    # The gesture that really exists is still offered.
+    assert "expand" in res.find("b1").cap_names()
+    assert "collapse" in res.find("b1").cap_names()
+
+
+def test_invoke_still_grants_activate():
+    """The platform-provided Invoke is untouched by the stricter rule."""
+    tree = _packless_tree([_n("button", "确定", patterns=_BUTTON)])
+    res = _compile_packless(tree)
+    node = res.find("b1")
+    assert node is not None and "activate" in node.cap_names()
+
+
+def test_context_menu_without_a_menu_is_not_reported_as_ok():
+    """A context_menu that produces no menu must not come back `OK`.
+
+    The platform offers no way to ask "does this element have a menu":
+    `ShowContextMenu` is callable everywhere and silently does nothing when the
+    application registered none. Reporting the empty delta as a plain `OK` told
+    the agent it had opened a menu that does not exist (observed live: the
+    Notepad title-bar buttons). It is `OK_UNVERIFIED`, and the body names the
+    gesture that is really there."""
+    session = Session(MockProvider(fixtures=[notepad_tree()]), allow_packs=False)
+    session.observe()
+    # The mock executes context_menu successfully but never mutates the tree -
+    # exactly what a control with no menu does on a real desktop.
+    out = session.dispatch("CALL q1.context_menu()")
+    assert out.startswith("OK_UNVERIFIED"), out
+    assert "no menu" in out
+
+
+def test_context_menu_that_opens_a_menu_is_ok():
+    """The other half of the rule: when a menu really appears, it is `OK`.
+
+    The menu arrives as a shell popup (a separate top-level window with no
+    structural link to the control), so the in-window delta alone cannot
+    confirm it - the popup hook is what proves the gesture worked.
+    """
+    row = _n(
+        "group",
+        patterns=frozenset({"invoke", "selectionitem"}),
+        children=[_n("text", "我的手机", patterns=_TEXT, runtime_id=2)],
+        runtime_id=1,
+    )
+    window = _packless_tree([row], title="QQ")
+    window.window.process = "qq.exe"
+    menu = RawTree(
+        window=WindowInfo(
+            window_id="popup1", title="menu", process="qq.exe", pid=1
+        ),
+        root=_n(
+            "menu",
+            children=[
+                _n("menuitem", "打开独立聊天窗口", patterns=_BUTTON, runtime_id=101)
+            ],
+            runtime_id=100,
+        ),
+    )
+
+    class _PopupProvider(MockProvider):
+        def popup_menu_snapshot(self):
+            return ("popup1", menu)
+
+    session = Session(_PopupProvider(fixtures=[window]), allow_packs=False)
+    session.observe()
+    out = session.dispatch("CALL g1.context_menu()")
+    assert out.startswith("OK "), out
+    assert not out.startswith("OK_UNVERIFIED"), out
+    # And the menu is mounted under the node that opened it.
+    assert "打开独立聊天窗口" in out
+
+
+def test_activate_without_a_visible_change_is_still_ok():
+    """The honesty rule is specific to context_menu.
+
+    An `activate` that ran on a settled UI with no tree change really did run -
+    flattening it to UNVERIFIED would make agents retry actions that already
+    succeeded, which is the reason the OK collapse exists in the first place.
+    """
+    tree = _packless_tree([_n("button", "OK", patterns=_BUTTON)])
+    session = Session(MockProvider(fixtures=[tree]), allow_packs=False)
+    session.observe()
+    out = session.dispatch("CALL b1.activate()")
+    assert out.startswith("OK"), out
+    assert not out.startswith("OK_UNVERIFIED"), out
+
+
+def test_link_and_menuitem_keep_their_implicit_default_action():
+    """A hyperlink and a menu row are activated by the accessibility layer
+    itself, so they keep `activate` without an explicit Invoke pattern."""
+    tree = _packless_tree(
+        [
+            _n("hyperlink", "网络和共享中心", runtime_id=1),
+            _n("menuitem", "文件", patterns=frozenset({"expandcollapse"}), runtime_id=2),
+        ]
+    )
+    res = _compile_packless(tree)
+    assert "activate" in res.find("lnk1").cap_names()
+    assert "activate" in res.find("mi1").cap_names()
 
 
 def test_inert_node_gets_no_action_capabilities():

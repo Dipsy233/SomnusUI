@@ -16,7 +16,7 @@ WINDOW w1 "agent 属性" +scroll_into_view
   TEXT tx1 "agent"
   TEXT tx2 "不共享"
   TEXT tx3 "网络路径(N):"
-  INPUT q1 "网络路径(N):" readonly
+  INPUT q1 "网络路径(N):" +set_text(text)
   BUTTON b1 "共享(S)..."
   SCREEN s2 "高级共享"
   TEXT tx4 "设置自定义权限，创建多个共享，并设置其他高级共享选项。"
@@ -45,10 +45,10 @@ WINDOW w1 "agent 属性" +scroll_into_view
 |---|---|
 | 界面是否就绪、目标窗口是否就位 | `WINDOW` 行（`+scroll_into_view` 表示已就绪） |
 | 界面的语义分区 | `SCREEN s1 "网络文件和文件夹共享"` 等 |
-| 哪些是输入框 | `INPUT q1`（`readonly` 明确标注不可编辑） |
+| 哪些是输入框 | `INPUT q1`（`+set_text(text)` 表示可写；只读字段会显示 `readonly` 且**不带** `+set_text`） |
 | 哪些能点 | `BUTTON b1 "共享(S)..."` |
 | 哪个按钮当前不可用 | `BUTTON b5 "应用(A)" disabled` |
-| 可用的操作 | 行内 `+activate`（省略时按角色隐含）、`+set_text(text)`、`+select` |
+| 可用的操作 | 行内 `+set_text(text)`、`+select`（`+activate` 按角色隐含） |
 | 折叠的集合 | 无（这个窗口的 tab 全展开） |
 | 长文本被截断 | `…` 表示超 80 字被裁剪 |
 
@@ -63,7 +63,7 @@ WINDOW w1 "agent 属性" +scroll_into_view
 FIND "共享"
 → FOUND 7
 SCREEN s1 "网络文件和文件夹共享"
-INPUT q1 "网络路径(N):" readonly
+INPUT q1 "网络路径(N):" +set_text(text)
 BUTTON b1 "共享(S)..."
 SCREEN s2 "高级共享"
 BUTTON b2 "高级共享(D)..."

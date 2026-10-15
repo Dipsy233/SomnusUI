@@ -16,7 +16,9 @@ Grammar::
 Key savings:
 
 * capabilities live on the same line as the node;
-* default capabilities are omitted (the system prompt carries the table);
+* default capabilities are omitted (the system prompt carries the table), but
+  only those that are unconditionally true of their role, so the omitted set is
+  the same as the always-present set;
 * ``enabled`` and default states are never emitted.
 """
 
@@ -30,6 +32,16 @@ from somnus.ir.node import SemanticNode
 INDENT = "  "
 
 #: Role -> default capability that need not be printed.
+#:
+#: A role may only appear here when the capability is *unconditionally* true of
+#: that role, so that "printed" and "absent" carry the same meaning either way.
+#: `input` is deliberately **not** listed: writability is not a property of the
+#: role. A field is an input whether or not it accepts text, and a read-only or
+#: disabled field is exactly the case an agent must be able to see - hiding
+#: `set_text` behind the role made a writable field and a read-only one render
+#: identically (`INPUT q2 "Path" readonly`), so neither could be told apart and
+#: a text box was unidentifiable as one (dev doc section 7.1). `set_text` is
+#: therefore printed on every input that has it.
 DEFAULT_CAP = {
     "button": "activate",
     "link": "activate",
@@ -37,10 +49,15 @@ DEFAULT_CAP = {
     "checkbox": "toggle",
     "switch": "toggle",
     "radio": "select",
-    "input": "set_text",
     "listitem": "select",
     "tab": "select",
 }
+
+#: Capabilities whose *absence* is itself the signal, so they are never treated
+#: as implied by the role even when the role would normally carry them. An
+#: `input` without `set_text` is a read-only field the agent must not try to
+#: write; suppressing the capability would erase the distinction.
+NEVER_IMPLICIT_CAPS = frozenset({"set_text"})
 
 #: Generic capabilities that are implied for every node and never printed
 #: unless the node is inspected directly (L2). This is the biggest token win.
@@ -297,12 +314,17 @@ def _ordered_caps(node: SemanticNode) -> list[Any]:
 def _is_implicit(node: SemanticNode, cap: Any) -> bool:
     """True when a capability is implied by the role and may be omitted.
 
-    Semantic (entity) capabilities are always printed. Primitive capabilities
-    that follow from the role (activate on a button, set_text on an input) plus
-    the ubiquitous focus/read pair are hidden; the system prompt carries the
-    table so the LLM still knows they exist.
+    Semantic (entity) capabilities are always printed, as is anything in
+    :data:`NEVER_IMPLICIT_CAPS` - capabilities whose absence is meaningful, so
+    hiding them would make two different states of a node render the same.
+
+    Primitive capabilities that unconditionally follow from the role (activate
+    on a button) plus the ubiquitous focus/read pair are hidden; the system
+    prompt carries the table so the LLM still knows they exist.
     """
     if cap.level == "semantic":
+        return False
+    if cap.name in NEVER_IMPLICIT_CAPS:
         return False
     if cap.name in UBIQUITOUS_CAPS:
         return True

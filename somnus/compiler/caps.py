@@ -70,6 +70,52 @@ _INTERACTIVE_PATTERNS: frozenset[str] = frozenset(
 )
 
 
+#: Patterns that prove the element has a **default action** the platform can
+#: perform: ``Invoke`` is the real one, and ``LegacyIAccessible`` is the
+#: fallback bridge the executor uses (`DoDefaultAction`) for older or
+#: self-drawn controls that never implemented Invoke. A control with neither
+#: has no default action to run, no matter what its role says.
+_ACTIVATION_PATTERNS: frozenset[str] = frozenset({"invoke", "legacyiaccessible"})
+
+#: Patterns that prove the element has something to *operate* - a verb, a
+#: value, a selection, an expansion. Used to decide whether a context menu is
+#: even conceivable. Note this is deliberately narrower than "any interaction
+#: pattern": `scrollitem`/`scroll` mean the element can be scrolled to or
+#: scrolled, which says nothing about it answering a right click.
+_CONTEXT_MENU_PATTERNS: frozenset[str] = frozenset(
+    {
+        "invoke",
+        "legacyiaccessible",
+        "toggle",
+        "selectionitem",
+        "griditem",
+        "value",
+        "rangevalue",
+        "expandcollapse",
+    }
+)
+
+
+def _has_default_action(node: RawNode) -> bool:
+    """Whether the platform offers a **default action** for ``node``.
+
+    This is the only honest source for ``activate``. Deriving it from the role
+    (`role == "button"`) is a guess: a Win32 title-bar button, a `PANE`
+    pretending to be one, or a control that only exposes `ExpandCollapse` all
+    report `role=button` while exposing no `Invoke` at all. Advertising
+    `activate` there sends the agent into a call that the provider refuses with
+    `ACTION_NOT_SUPPORTED` - and worse, it hides the gesture that *does* work
+    (`expand`/`collapse`).
+
+    The check is on patterns the provider read from the platform, so a control
+    whose Invoke exists but is not honoured (QQ's conversation rows) still
+    advertises `activate`: the platform does offer the action, and whether the
+    application reacts is the application's business, reported through the
+    delta - that is the caller's decision, not the compiler's.
+    """
+    return bool(node.patterns & _ACTIVATION_PATTERNS)
+
+
 def _is_control(node: RawNode) -> bool:
     """Whether ``node`` is an operable control rather than inert content.
 
@@ -162,7 +208,18 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     patterns = node.patterns
     role = node.role
 
-    if "invoke" in patterns or role in ("button", "link", "menuitem"):
+    # `activate` runs the element's default action, so it exists exactly when
+    # the platform offers one: an `Invoke` pattern, or the `LegacyIAccessible`
+    # bridge the executor falls back to. The role is *not* evidence - a
+    # `role=button` element with no Invoke (a title-bar button, a self-drawn
+    # fake, a control that only exposes ExpandCollapse) would otherwise be
+    # handed a capability whose only possible outcome is ACTION_NOT_SUPPORTED,
+    # while the gesture that really works went unmentioned.
+    #
+    # `link` and `menuitem` keep an implicit default action: a hyperlink and a
+    # menu row are activated by the accessibility layer itself even without an
+    # explicit Invoke, which is what makes them navigable at all.
+    if _has_default_action(node) or role in ("link", "menuitem"):
         caps.setdefault("activate", _cap("activate"))
 
     # set_text is granted to *every* text-entry surface. The route it takes is
@@ -266,22 +323,37 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     if node.name or node.value:
         caps.setdefault("read", _cap("read"))
 
-    # Every operable control offers the context menu. It is the only gesture
-    # that reaches an application refusing everything else: QQ's conversation
-    # rows answer Invoke by merely highlighting, so neither `activate` nor
-    # `select` opens a chat - but the context menu they expose carries "open
-    # this chat" as an ordinary UIA menu item, and invoking that item works.
+    # A context menu is offered where one is *plausible*: the element exposes
+    # something to operate on (`invoke` / a value / a selection / an expansion)
+    # and is not itself a menu. It is the gesture that reaches an application
+    # refusing everything else - QQ's conversation rows answer Invoke by merely
+    # highlighting, so neither `activate` nor `select` opens a chat, but the
+    # context menu they expose carries "open this chat" as an ordinary UIA menu
+    # item and invoking that item works. That row *does* advertise `activate`
+    # (the platform really offers Invoke), so the menu must be offered
+    # alongside it rather than instead of it: the runtime cannot know which of
+    # the two the application honours, and that choice is the caller's.
     #
-    # It is a semantic UIA call (IUIAutomationElement3::ShowContextMenu), not
-    # synthetic input: it moves no pointer, sends no keystroke and does not
-    # require the window to be foreground, so it is offered at `safe` risk.
-    # What the menu then offers is a separate decision for whoever calls it.
+    # The platform exposes **no** query for "does this element have a context
+    # menu": `ShowContextMenu` is callable on any element and simply does
+    # nothing when the application registered no menu. So this can only be an
+    # *offer*, never a promise. What it did is reported honestly instead: a
+    # call that produces no menu comes back `OK_UNVERIFIED` with a body that
+    # says the element registers none, rather than a bare `OK` that leaves the
+    # agent believing a menu is open somewhere (observed live: the Notepad
+    # title-bar buttons).
     #
-    # A menu item and a menu are excluded: they have no context menu of their
-    # own, and advertising one would invite an action that cannot do anything.
-    # A menu is what `context_menu` produces, so offering "open a menu on the
-    # menu" is meaningless.
-    if _is_control(node) and node.role not in ("menuitem", "menu"):
+    # An element with no operable patterns at all is excluded, as is a menu
+    # item and a menu itself: there is nothing for a menu to act on, and a menu
+    # is what `context_menu` produces - offering "open a menu on the menu" is
+    # meaningless. `_is_control` keeps a disabled button (or a self-drawn
+    # control that reports no pattern) in scope, which is what lets the menu
+    # remain the escape hatch for exactly those elements.
+    if (
+        _is_control(node)
+        and node.patterns & _CONTEXT_MENU_PATTERNS
+        and node.role not in ("menuitem", "menu")
+    ):
         caps.setdefault(
             "context_menu",
             Capability(

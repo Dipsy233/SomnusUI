@@ -970,14 +970,22 @@ class Session:
         # against a UI that did not react - report plain OK with the (empty)
         # delta rather than an alarming UNVERIFIED, which makes agents retry
         # actions that already succeeded.
+        #
+        # `context_menu` is the one exception, and it exists because the
+        # platform cannot answer "does this element have a menu":
+        # `ShowContextMenu` is callable everywhere and silently does nothing
+        # when the app registered none. An empty delta therefore does *not*
+        # mean "ran, nothing changed" the way it does for activate - it means
+        # the gesture may well have been a no-op, and flattening that to `OK`
+        # told the agent it had opened a menu it never got (observed live: the
+        # Notepad title-bar buttons answered `OK` and produced nothing).
+        #
+        # The decision is deferred to the end of this method: whether a menu
+        # really appeared is only known once the in-window tree, the shell
+        # popup hook and the window list have all been consulted.
         status = verify.status
         no_effect = settle_result.settled and delta.empty
-        if status == "OK_UNVERIFIED" and no_effect:
-            status = "OK"
-
-        text = f"{status} rev={self.rev}"
-        if not settle_result.settled:
-            text += " settled=false"
+        is_context_menu = any(s.primitive == "context_menu" for s in resolution.steps)
         body = self._window_delta()
         tree_body = self.delta_text(delta)
         if popup_text:
@@ -1013,28 +1021,54 @@ class Session:
                 ):
                     menu_opened_as_window = True
                     break
-        if (
-            any(s.primitive == "context_menu" for s in resolution.steps)
-            and not popup_text
-            and not any(n.role == "menu" for n in result.root.walk())
-        ):
-            # The menu gesture succeeded but no menu appeared in this window's
-            # tree. Two sub-cases matter:
-            # - a new top-level window appeared (QQ's tray menu is a separate
-            #   CEF window): the gesture DID open something the agent can
-            #   reach - say so instead of implying failure;
-            # - truly nothing: point at the gestures that can still work.
-            if menu_opened_as_window:
-                body = (body + "\n" if body else "") + (
-                    "~ context_menu opened a new window above; "
-                    "observe it (windows list) for the menu items"
-                )
-            else:
-                body = (body + "\n" if body else "") + (
-                    "~ context_menu produced no menu "
-                    '(this element likely opens with activate; try CALL '
-                    f"{action.ref}.activate())"
-                )
+        # A menu counts as "produced" only when it was not there before this
+        # call. A window may already contain menus that have nothing to do with
+        # it - File Explorer's title bar exposes its system menu (`MENU "系统"`)
+        # permanently, and Notepad's tree carries a `MENU "File"` - so testing
+        # for *any* menu node made every context_menu look successful on those
+        # windows, which is the same lie the status check exists to remove.
+        menu_appeared = any(
+            n.role == "menu" and n.fingerprint not in before_index
+            for n in result.root.walk()
+        )
+        # Did the gesture really open a menu? Any of the three routes counts:
+        # the menu is in this window's tree, it was handed to the shell as a
+        # popup, or it became a separate top-level window.
+        menu_produced = bool(popup_text) or menu_appeared or menu_opened_as_window
+        if status == "OK_UNVERIFIED":
+            # For `context_menu` the outcome is decided by whether a menu
+            # actually appeared, not by whether the delta is empty: a menu that
+            # opened *is* the effect, and one that did not is not a success.
+            # Every other action keeps the rule that a settled no-op UI is a
+            # plain `OK`, which is what stops agents retrying work that already
+            # succeeded.
+            if not is_context_menu and no_effect:
+                status = "OK"
+            elif is_context_menu and menu_produced:
+                status = "OK"
+
+        if is_context_menu and not menu_produced:
+            # The menu gesture ran but produced nothing anywhere: not in this
+            # window's tree, not as a shell popup, not as a new window.
+            direct = sorted(
+                c
+                for c in _node_caps(self.result, action.ref)
+                if c in ("activate", "select", "toggle", "expand", "open")
+            )
+            hint = (
+                f"; {action.ref} does expose {'/'.join(direct)} - "
+                f"try CALL {action.ref}.{direct[0]}()"
+                if direct
+                else ""
+            )
+            # Say it plainly: a context_menu that produced no menu is not a
+            # success. The element registered no menu, which the platform
+            # cannot predict up front - so the agent is told here rather than
+            # left believing a menu is open somewhere.
+            body = (body + "\n" if body else "") + (
+                "~ context_menu produced no menu (this element registers "
+                f"none){hint}"
+            )
         elif (
             action.capability in ("activate", "open", "select")
             and no_effect
@@ -1057,13 +1091,13 @@ class Session:
                     f"~ no effect; {action.ref} exposes context_menu - "
                     f'the command may be in the menu: CALL {action.ref}.context_menu()'
                 )
-        if body:
-            text += "\n" + body
         return CallOutcome(
             status=status,
             rev=self.rev,
             delta=delta,
-            text=text,
+            text=f"{status} rev={self.rev}"
+            + ("" if settle_result.settled else " settled=false")
+            + ("\n" + body if body else ""),
             settled=settle_result.settled,
         )
 

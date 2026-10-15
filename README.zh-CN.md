@@ -87,7 +87,8 @@ Claude Desktop、Cursor、pi 等任何 MCP 客户端都可接入：
 WINDOW w1 "agent 属性" +scroll_into_view
   SCREEN s1 "网络文件和文件夹共享"
   TEXT tx3 "网络路径(N):"
-  INPUT q1 "网络路径(N):" readonly          ← 一个字段，且为只读
+  INPUT q1 "网络路径(N):" +set_text(text)    ← 文本框：可写入
+  INPUT q2 "只读路径" readonly               ← 同为 INPUT 但没有 +set_text：不可写入
   BUTTON b1 "共享(S)..."                      ← 可点击（activate 隐含）
   BUTTON b2 "高级共享(D)..."
   BUTTON b5 "应用(A)" disabled                ← 当前不可用
@@ -140,13 +141,19 @@ pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来
 
 - **控件**由平台定义——暴露交互模式（`invoke`、`selectionitem`、`toggle`、
   `value` 等）的元素。纯静态文本和布局容器不会获得任何操作。
+- **能力由平台证明，绝不靠角色猜测。** 只有平台真的提供默认动作时才出现
+  `activate`（`Invoke` 模式，或执行器回退用的 `LegacyIAccessible`）。只暴露
+  `ExpandCollapse` 的按钮显示 `+expand +collapse` 而没有 `activate`，因此行上写的
+  就是能用的手势；什么都没暴露的控件不会得到一个注定失败的能力。
 - **`set_text`** 为每个可输入表面推导，执行时才选择路径：普通字段走 Value
   模式，富文本/文档编辑器则用键盘输入。自绘编辑器（Chromium/Electron）
   无需 pack 即可写入。
-- **`context_menu`** 与 `activate` 并列提供给每个控件。它是面对"忽略原生模式
-  的应用"时的出口：菜单通过 UIA 自身打开（`ShowContextMenu`），指针不会移动、
-  不发送任何按键，而菜单项本身是标准菜单项，其 `activate` 可用。默认动作
-  只做高亮的应用（如聊天列表）正是这样被驱动的，且无需合成输入。
+- **`context_menu`** 在“可能有菜单”的控件上提供（即暴露了可操作内容的元素）。
+  它是面对"忽略原生模式的应用"时的出口：菜单通过 UIA 自身打开
+  （`ShowContextMenu`），指针不会移动、不发送任何按键，而菜单项本身是标准菜单项，
+  其 `activate` 可用。默认动作只做高亮的应用（如聊天列表）正是这样被驱动的，
+  且无需合成输入。UIA 无法查询元素“是否有菜单”，因此调用后会如实报告结果：
+  真的弹出了菜单返回 `OK`，未弹出返回 `OK_UNVERIFIED`，并指出真正可用的手势。
 - **实体**按结构识别：标题加动词按钮的行，或同一容器下三个以上的标题行
   （列表、工具栏、导航栏）。
 

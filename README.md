@@ -87,7 +87,8 @@ One real window, four tool calls. Nothing else is ever shown to the model.
 WINDOW w1 "agent 属性" +scroll_into_view
   SCREEN s1 "网络文件和文件夹共享"
   TEXT tx3 "网络路径(N):"
-  INPUT q1 "网络路径(N):" readonly          ← a field, and it is read-only
+  INPUT q1 "网络路径(N):" +set_text(text)    ← a text box: it can be written
+  INPUT q2 "只读路径" readonly               ← an input with no +set_text: not writable
   BUTTON b1 "共享(S)..."                      ← clickable (activate is implicit)
   BUTTON b2 "高级共享(D)..."
   BUTTON b5 "应用(A)" disabled                ← currently unavailable
@@ -143,16 +144,26 @@ native patterns, so an application the runtime has never seen is still usable:
 - **Controls** are defined by the platform - an element that exposes an
   interaction pattern (`invoke`, `selectionitem`, `toggle`, `value`, …). An
   inert label or container is offered nothing.
+- **Capabilities are proven, never guessed from the role.** `activate` appears
+  only when the platform really offers a default action (an `Invoke` pattern, or
+  the `LegacyIAccessible` fallback). A button exposing only `ExpandCollapse`
+  shows `+expand +collapse` and no `activate`, so the gesture that works is the
+  one on the line; a control exposing nothing gets no action at all instead of
+  one that can only fail.
 - **`set_text`** is derived for every text-entry surface, routed at execution
   time: a plain field writes through its Value pattern, a rich-text or
   document editor is typed into. A self-drawn editor (Chromium/Electron) is
   writable without any pack.
-- **`context_menu`** is offered on every control, alongside `activate`. It is
-  the escape hatch for an application that ignores the native patterns: the
-  menu is opened through UIA itself (`ShowContextMenu`), so the pointer never
-  moves and no keystroke is sent, and the menu's own items are ordinary menu
-  items whose `activate` works. An application whose default action only
-  highlights a row (a chat list) is driven this way, without synthetic input.
+- **`context_menu`** is offered where a menu is plausible (the element exposes
+  something to operate on). It is the escape hatch for an application that
+  ignores the native patterns: the menu is opened through UIA itself
+  (`ShowContextMenu`), so the pointer never moves and no keystroke is sent, and
+  the menu's own items are ordinary menu items whose `activate` works. An
+  application whose default action only highlights a row (a chat list) is
+  driven this way, without synthetic input. UIA cannot be asked whether an
+  element *has* a menu, so the call reports the truth afterwards: a menu that
+  appeared is `OK`, one that did not is `OK_UNVERIFIED` and the response names
+  the gesture that does work.
 - **Entities** are detected structurally: a titled row with a verb button, or
   three or more titled rows under one container (a list, a toolbar, a
   navigation pane).
