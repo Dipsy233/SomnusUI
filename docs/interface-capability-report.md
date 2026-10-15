@@ -25,6 +25,7 @@
 | **`IAccessibleEx` 桥接** | Provider 实现它 | — | — | ❌ `E_NOINTERFACE` |
 | **虚拟桌面隔离 + 键盘** | 能把窗口移走 | **是** | **是** | ❌ 移不动 + 切桌面更打扰 |
 | **`SendInput` 键盘** | 目标在前台 | **是** | **是** | ⚠️ 可写但 0/20 丢字 |
+| **`PostMessage(WM_CHAR)`** | 目标有渲染子 hwnd **且**读 `WM_CHAR` | 否 | **是** | ❌ 已实测否定（4.8）：消息发到了但无人读 |
 
 **判断顺序**（从上到下，第一个可用的即是答案）：
 
@@ -592,6 +593,62 @@ COMError (-2147024891, '拒绝访问')
 **加大间隔没有本质改善**。原因：`SendInput` 只把事件排进目标线程的输入队列就返回，
 字符是在目标的消息泵处理时被丢弃的，与发送速度无关。
 
+### 4.8 `PostMessage(WM_CHAR)` 直接投递消息队列（新增实测）
+
+这是与前七条**机制不同**的一条路，之前只是在报告中按类比推测，现已实测否定。
+动机：`SendInput` 要求目标在前台，而 `PostMessage` 直接向目标 hwnd 的队列投递，
+**原理上不需要焦点**。`QT4C-master`（`qt4c/keyboard.py` 的 `postKey`）正是这么做的，
+且业界广泛使用，所以值得实测而非推测。
+
+**实测一：QQ 连投递目标都没有。**
+
+前代 QQ 曾导出 `Chrome_RenderWidgetHostHWND`（报告 2.8 节记录过），
+**当前版本已经没有这个子窗口**：
+
+```
+w6 'QQ'       (QQ.exe)     root=0x27162A  1 child hwnd
+  classes: ['Intermediate D3D Window']
+  RENDERER HOST: NONE          ← 没有可投递的渲染窗口
+w5 '我的手机' (QQ.exe)     root=0x1B044A  1 child hwnd
+  classes: ['Intermediate D3D Window']
+  RENDERER HOST: NONE
+```
+
+即 Chromium 现在直接经 D3D 合成到顶层窗口，**不存在可供 `PostMessage` 的渲染子窗口**。
+向仅有的 `Intermediate D3D Window` 投递 `WM_CHAR`：
+
+```
+composer text before = '\n'
+（投递 'PostTest'）
+composer text after  = '\n'      ← 无变化
+```
+
+**实测二：有渲染宿主也不行。**
+
+Doubao **有** `Chrome_RenderWidgetHostHWND`，是公平的测试样本：
+
+```
+Doubao root = 0x4F0AF4
+renderer host = 0xc209ec          ← 存在！
+composer text BEFORE = '\n'
+（PostMessage WM_CHAR 'Hello豆' → 0xc209ec）
+composer text AFTER  = '\n'      ← 无变化
+（再试 WM_KEYDOWN/WM_KEYUP VK_H）
+composer text AFTER2 = '\n'      ← 仍无变化
+```
+
+**结论：`PostMessage` 也写不进去。** 原因在于 Chromium 的渲染进程有自己的
+输入处理管道（mojo IPC），不读宿主窗口的 `WM_CHAR`；消息进了 hwnd 队列，
+但没有任何东西把它转发给渲染器。
+
+> **与 4.1–4.7 的区别值得强调**：前七条是“接口取不到”或“需要焦点”；
+> 这条是**消息发出去了、窗口也收得到，但应用不读它**。因此它不能靠
+> “换个消息号”或“加个 `WM_KEYDOWN`”解决——管道本身不经过 hwnd。
+
+这同时修复了报告的一个隐含假设：原文（以及本项目早期的 `keyboard.py` 注释）
+多次提到“焦点 + 键盘”是最后手段，但从未说清 `PostMessage` 这条旁路；
+`QT4C` 的实现说明它是**真实且常用的技术**，只是对 Chromium 自绘控件无效。
+
 ---
 
 ## 五、键盘路径的固有问题
@@ -652,6 +709,10 @@ COMError (-2147024891, '拒绝访问')
           → 应用没有暴露写入能力。如实报 ACTION_NOT_SUPPORTED，
             不要用键盘偷偷改（除非显式 --allow-keyboard）
 ```
+
+> **不要试图用 `PostMessage(WM_CHAR)` 绕过第 4 步。** 它确实不需要焦点，
+> 但已实测对 Chromium 自绘控件无效（4.8），原因不是“消息选错了”，
+> 而是渲染输入管道（mojo IPC）根本不经过 hwnd 队列。
 
 > 已实测排除、**不必再试**的中间选项（详见 2.9）：`TextEditPattern` 在 Chromium 上
 > 虽然存在且取得到，但只用于输入法组合串上报，range 恒为 NULL 且无 `SetText`；
@@ -714,6 +775,37 @@ ControlType → ValuePattern(含 IsReadOnly) → 实际 SetValue 调用 → 读�
 四者皆无时，可选方案只剩下：**应用专用集成** 或 **合成输入**（有上述固有问题）。
 
 SomnusUI 的选择是：**如实报告这个事实**，而不是用合成输入掩盖它。
+
+### 参考项目评估（`E:\dao\ui\`）
+
+这两个项目被当作“看看它们怎么做”的样本，结论如下。
+
+**`QQSafeChat-main`**：一个 QQ 聊天机器人。其中 `uia/uia_actions.py` 的
+`try_input_text` 完整展示了本项目**拒绝**的那套做法：
+
+```python
+bring_to_foreground(hwnd)        # 抢焦点
+... vp.SetValue(text)            # 先试原生
+... SetFocus(); SendKeys(ctrl+a, del, text)   # 失败就抢焦点 + 键入
+... click_center(rect)           # 再失败就移动鼠标点击坐标
+```
+
+它的 `uia_picker.py` 用**屏幕几何 + 中文标签**打分选控件
+（如 `"搜索" in blob: score -= 480`、`bottom/root_h` 权重 900），
+这正是本项目“能力由平台证明，绝不靠角色/名字猜测”的反面。
+**对本项目的价值：作为对照，确认我们的取舍不是唯一选择，而是有意的。**
+它对本项目**没有可直接复用**的东西。
+
+**`QT4C-master`**：腾讯的 Qt/UIA 测试库，与本项目同为 comtypes + UIA 的
+`ValuePattern` 写法。有价值的只有一处：`qt4c/keyboard.py` 的 `postKey`
+揭示了 `PostMessage(WM_CHAR)` 这条真实且常用的旁路技术。
+**已据此完成 4.8 的实测并否定**——这是本轮唯一因参考项目而产生的新实验。
+它其余部分（`qpath` locator、`uiacontrols` 封装）对本项目无新增信息：
+同样是 `ValuePattern.SetValue`，且其 `Edit.input()` 也走 click + 键盘。
+
+**总结**：两个项目都**没有**提供本项目缺失的写入通道。它们的共同做法是
+“原生接口失败就退回合成输入”，而本项目的差异正是拒绝那一步。
+真正的收获是一份**反向确认**：连专门做 GUI 自动化的库也没有更干净的通用方法。
 
 ---
 
