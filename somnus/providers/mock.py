@@ -194,6 +194,32 @@ class MockProvider:
             raise KeyError(scope)
         return RawTree(window=tree.window, root=node, raw_revision=tree.raw_revision)
 
+    @staticmethod
+    def _supports(node: RawNode, primitive: str) -> bool:
+        """Whether the element exposes the interface a primitive needs.
+
+        Mirrors the provider contract: the mapping is pattern -> primitive, so
+        a fixture that omits a pattern really cannot run the primitive. A
+        scripted mutation still runs when the interface is there.
+        """
+        required = {
+            "activate": "invoke",
+            "set_text": "value",
+            "toggle": "toggle",
+            "select": "selectionitem",
+            "expand": "expandcollapse",
+            "collapse": "expandcollapse",
+            "scroll_into_view": "scrollitem",
+        }
+        # `context_menu` is deliberately absent: it needs no pattern of its own
+        # (ShowContextMenu is callable on any element and does nothing when the
+        # application registered no menu), so a fixture may exercise it
+        # wherever the capability was granted.
+        pattern = required.get(primitive)
+        if pattern is None:
+            return True  # focus / read / scroll / type_text need no pattern
+        return pattern in node.patterns
+
     def execute(
         self,
         ref: NativeRef,
@@ -208,6 +234,19 @@ class MockProvider:
         node = tree.root.find_native(ref)
         if node is None:
             return ExecResult(ok=False, error="STALE_TARGET")
+
+        # A primitive the element has no interface for is reported as
+        # unsupported, not as a failure, exactly as the real provider does.
+        # Without this the fallback chains a capability declares (write through
+        # the Value pattern, else type) could never be exercised by a test,
+        # because every step would appear to work.
+        if not self._supports(node, primitive):
+            return ExecResult(
+                ok=False,
+                error="ACTION_NOT_SUPPORTED",
+                message=f"{primitive} not available on this element",
+                unsupported=True,
+            )
 
         # Apply scripted mutation keyed by primitive (and by capability alias).
         mutated = False

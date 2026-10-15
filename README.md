@@ -31,6 +31,13 @@ COM pointers. It sees entities, states, relations, capabilities and values.
 ## Principles
 
 - **No Vision** – the accessibility tree is the only perception channel.
+- **No Synthetic Input** – an application is driven through the interfaces it
+  publishes, never by pretending to be a person at the keyboard. This is not a
+  preference but the reason the project exists: a keystroke or a click needs
+  the window focused, races the target's message pump, and cannot be verified.
+  An element that publishes no usable interface is **reported as such**, not
+  typed into; `--allow-keyboard` opts in when nothing else can work, and the
+  answer says so either way.
 - **Low Token** – observation is projected and budgeted: homogeneous lists
   preview three items, anonymous leaves fold into one summary line; L0
   typically costs tens to a few hundred tokens.
@@ -151,12 +158,25 @@ native patterns, so an application the runtime has never seen is still usable:
   one on the line; a control exposing nothing gets no action at all instead of
   one that can only fail.
 - **`set_text`** is derived for every text-entry surface, and its route is
-  chosen by the control's own interface, never by its class name: a control
-  with a Value pattern is written through it - the application's own write
-  interface, atomic and independent of keyboard focus - and only a control
-  with none (a self-drawn Chromium/Electron editor, a terminal) is typed into.
-  So Notepad is written natively, and QQ's ProseMirror box is still writable
-  without any pack.
+  chosen by the control's own interface, never by its class name or its role.
+  A control with a Value pattern is written through it: the application's own
+  write interface, atomic and independent of keyboard focus.
+
+  Which route works is decided **at execution time**, because no static
+  inspection can settle it - UIA reports interfaces an element then refuses
+  (measured: an editable advertises `value` and its setter is a no-op shell).
+  The declared routes are tried in order and the first that works wins:
+
+  ```
+  CALL q1.set_text("x")
+  ERR ACTION_NOT_SUPPORTED q1 hint=report-user
+      msg="the element offers no interface this runtime can use, and synthetic
+           keyboard input is disabled; enable it with --allow-keyboard"
+  ```
+
+  So Notepad is written natively and a field that publishes no interface is
+  **reported, not typed into**. Which route answered is remembered for the rest
+  of the session, so a repeated call on the same element does not re-probe it.
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself

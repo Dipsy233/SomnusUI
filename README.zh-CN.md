@@ -32,6 +32,11 @@ LLM 永远不会看到像素、坐标、截图、句柄、`AutomationId` 或 COM
 ## 设计原则
 
 - **无视觉（No Vision）** – 无障碍树是唯一的感知通道。
+- **不使用合成输入（No Synthetic Input）** – 通过应用自己发布的接口驱动它，
+  绝不假装有人在敲键盘。这不是偏好，而是这个项目存在的理由：一次按键或点击
+  要求窗口前台、与目标的消息泵竞争，而且无法验证。发布不出可用接口的元素会被
+  **明确报错**，而不是被偷偷输入；`--allow-keyboard` 用于确实别无他法时，
+  两种情况下回复都会说明。
 - **低 token（Low Token）** – 观察经过投影与预算控制；同名类列表只展示前
   3 个样例，匿名叶子折叠为一行汇总，L0 概览通常几十到三百 token。
 - **语义优先（Semantic First）** – LLM 调用 `CALL p1.add()`，而非 `click(312, 528)`。
@@ -145,10 +150,22 @@ pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来
   `activate`（`Invoke` 模式，或执行器回退用的 `LegacyIAccessible`）。只暴露
   `ExpandCollapse` 的按钮显示 `+expand +collapse` 而没有 `activate`，因此行上写的
   就是能用的手势；什么都没暴露的控件不会得到一个注定失败的能力。
-- **`set_text`** 为每个可输入表面推导，路径由控件自身的接口决定、绝不看类名：
-  有 Value 模式的一律通过它写入（应用自己的写入接口，原子且不依赖键盘焦点），
-  只有完全没有的（自绘 Chromium/Electron 编辑器、终端）才用键盘输入。
-  因此记事本走原生写入，而 QQ 的 ProseMirror 输入框无需 pack 依然可写。
+- **`set_text`** 为每个可输入表面推导，路径由控件自身的接口决定，绝不看类名或角色。
+  有 Value 模式的一律通过它写入（应用自己的写入接口，原子且不依赖键盘焦点）。
+
+  哪条路真的能用**在执行时**才能判定：静态检查不可能准确——UIA 会报告元素其实
+  拒绝的接口（实测：可编辑控件声称有 `value`，setter 却是空壳）。已声明的路径
+  依次尝试，第一个真正可用的胜出：
+
+  ```
+  CALL q1.set_text("x")
+  ERR ACTION_NOT_SUPPORTED q1 hint=report-user
+      msg="the element offers no interface this runtime can use, and synthetic
+           keyboard input is disabled; enable it with --allow-keyboard"
+  ```
+
+  因此记事本走原生写入，而发布不出接口的控件会被**如实报错，而不是被输入**。
+  哪条路奏效会被记住整个会话，重复调用同一元素不再重新探测。
 - **`context_menu`** 在“可能有菜单”的控件上提供（即暴露了可操作内容的元素）。
   它是面对"忽略原生模式的应用"时的出口：菜单通过 UIA 自身打开
   （`ShowContextMenu`），指针不会移动、不发送任何按键，而菜单项本身是标准菜单项，

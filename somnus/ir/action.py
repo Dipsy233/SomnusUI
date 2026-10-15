@@ -36,6 +36,14 @@ class ExecResult:
     message: str | None = None
     #: True when the call may still be in flight (e.g. modal dialog opened).
     undetermined: bool = False
+    #: True when the element simply does not offer this interface, as opposed to
+    #: offering it and failing. This is the difference between "try the next
+    #: route" and "stop and report": a capability may declare several `via`
+    #: steps (write through the Value pattern, else type), and only a missing
+    #: interface makes the next one the right thing to do. A pattern that
+    #: exists and raises (a disabled control, a UIPI denial) is a real answer
+    #: about this element and must be reported, not routed around.
+    unsupported: bool = False
 
 
 @dataclass(slots=True, frozen=True)

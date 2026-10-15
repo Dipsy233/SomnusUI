@@ -64,6 +64,10 @@ def build_session(args: argparse.Namespace) -> Session:
     policy = Policy(
         allow_processes=tuple(args.allow or ()),
         confirmed=bool(args.confirmed),
+        # Synthetic input is off unless asked for: the runtime drives the
+        # interfaces an application publishes, and an element offering none is
+        # reported rather than typed into.
+        allow_keyboard=bool(getattr(args, "allow_keyboard", False)),
     )
     return Session(
         provider,
@@ -178,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--allow", action="append", default=None)
     parser.add_argument("--confirmed", action="store_true")
+    parser.add_argument(
+        "--allow-keyboard",
+        action="store_true",
+        help=(
+            "permit synthetic keyboard input for elements that publish no "
+            "usable interface (off by default: such an element is reported "
+            "instead of typed into)"
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("windows").set_defaults(func=cmd_windows)

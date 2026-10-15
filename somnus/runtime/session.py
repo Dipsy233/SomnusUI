@@ -43,6 +43,13 @@ log = logging.getLogger("somnus.session")
 #: looked before and after the settle.
 _TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
 
+#: Primitives that prepare the element for the step after them. They are only
+#: preparatory when another step follows: `focus` then `type_text` means "focus
+#: it, then type", but a capability whose *last* step is `focus` (or
+#: `scroll_into_view`) really is doing that thing. Treating a successful
+#: preparation as completion reported success for an action that never ran.
+_PREPARATORY_PRIMITIVES = frozenset({"focus", "scroll_into_view"})
+
 
 @dataclass(slots=True)
 class Observation:
@@ -108,6 +115,12 @@ class Session:
         self._audit: list[dict] = []
         #: refs whose fingerprint is ambiguous in the current compilation.
         self._ambiguous_refs: set[str] = set()
+        #: fingerprint -> the primitive this element actually answered to.
+        #: Learned at execution time, because which native interface works is
+        #: not knowable from the patterns alone (UIA reports interfaces the
+        #: element then refuses). Kept for the session, so a repeated call on
+        #: the same element skips the interfaces it already declined.
+        self._route_memory: dict[str, str] = {}
         #: menu ref -> the ref of the node whose context menu it is. A context
         #: menu is a separate native popup with no structural link to the control
         #: that opened it, so the association has to be remembered here; the
@@ -863,27 +876,87 @@ class Session:
                        if self.result.find(action.ref or "") else []),
             )
 
-        # Execute steps in order, with a per-step timeout.
-        for step in resolution.steps:
+        # Execute the declared routes in order. A capability may carry several
+        # `via` steps (write through the Value pattern, *else* focus and type)
+        # and the resolver keeps the ones the node's patterns allow. Which one
+        # actually works is a fact about the live element that no amount of
+        # static inspection can settle - UIA reports patterns the element then
+        # refuses (measured: a Chromium editable advertises `value` and its
+        # setter is a no-op shell) - so the chain is walked here, at execution
+        # time, and the first route that *works* wins.
+        #
+        # Only a missing interface advances the chain. A pattern that exists
+        # and fails (disabled, UIPI, a raised COM error) is a real answer about
+        # this element and is reported instead: silently trying something else
+        # would be the runtime overruling what it was told to do.
+        exec_result = None
+        route = ""
+        ordered_steps = self._order_steps(action.ref or "", resolution.steps)
+        for index, step in enumerate(ordered_steps):
+            # Authorisation is per step: a capability may declare a native
+            # route plus a synthetic-input fallback, and only the fallback
+            # needs the host's consent.
+            self.policy.check_step(step.primitive)
             exec_result = self.provider.execute(step.native, step.primitive, step.value)
             self._audit_action(action, step, exec_result)
-            if not exec_result.ok and not exec_result.undetermined:
-                code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
-                self.policy.check_native_permission(code)
-                raise SomnusError(code, ref=action.ref, message=exec_result.message)
+            is_last = index == len(ordered_steps) - 1
             if _TRACE_STATES:
                 log.info(
-                    "step primitive=%s ok=%s undetermined=%s error=%s msg=%s value=%r",
+                    "step primitive=%s ok=%s unsupported=%s undetermined=%s "
+                    "error=%s msg=%s value=%r last=%s",
                     step.primitive,
                     exec_result.ok,
+                    exec_result.unsupported,
                     exec_result.undetermined,
                     exec_result.error,
                     (exec_result.message or "")[:120],
                     step.value,
+                    is_last,
                 )
             if exec_result.undetermined:
-                # A modal dialog may be opening; settle will capture it.
+                # The call may still be in flight (a modal dialog opening); no
+                # later step can be judged yet, so this is the end of the chain.
+                route = step.primitive
                 break
+            if exec_result.ok:
+                if step.primitive in _PREPARATORY_PRIMITIVES and not is_last:
+                    # Preparation for the step that follows: focus succeeded,
+                    # so now the actual action can run. Stopping here would
+                    # report success for an action that never took place.
+                    if _TRACE_STATES:
+                        log.info("preparatory step %s done, continuing", step.primitive)
+                    continue
+                route = step.primitive
+                self._remember_route(action.ref or "", step.primitive)
+                break
+            if exec_result.unsupported:
+                # This element does not offer this interface; try the next
+                # declared route rather than reporting a dead end.
+                continue
+            code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
+            self.policy.check_native_permission(code)
+            raise SomnusError(code, ref=action.ref, message=exec_result.message)
+        else:
+            # Every declared route was absent. That is the honest
+            # ACTION_NOT_SUPPORTED - the element offers none of them - and it
+            # carries the primitives that were tried so the failure is
+            # diagnosable.
+            if exec_result is not None and exec_result.unsupported:
+                tried = "/".join(s.primitive for s in ordered_steps)
+                raise SomnusError(
+                    ErrorCode.ACTION_NOT_SUPPORTED,
+                    ref=action.ref,
+                    message=f"no usable interface on this element (tried {tried})",
+                )
+            if exec_result is None:
+                raise SomnusError(ErrorCode.ACTION_NOT_SUPPORTED, ref=action.ref)
+            code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
+            self.policy.check_native_permission(code)
+            raise SomnusError(code, ref=action.ref, message=exec_result.message)
+
+        if exec_result is not None and exec_result.undetermined:
+            # A modal dialog may be opening; settle will capture it.
+            pass
 
         # Settle, recompile, compute delta, verify. Refresh the window list
         # first: an action may have opened a dialog or replaced the target
@@ -1161,8 +1234,48 @@ class Session:
                 "capability": action.capability,
                 "primitive": step.primitive,
                 "ok": exec_result.ok,
+                # Whether the element declined the interface, as opposed to
+                # offering it and failing. The two look the same in `ok` and
+                # mean very different things when reading a session back.
+                "unsupported": exec_result.unsupported,
             }
         )
+
+    # ---------------------------------------------------------- route memory
+
+    def _remember_route(self, ref: str, primitive: str) -> None:
+        """Record which interface actually worked for this element.
+
+        Keyed by fingerprint, not ref: a ref is reallocated when the tree is
+        recompiled, while the fingerprint names the element itself. The memory
+        lasts as long as the element does in this session, so the next call on
+        it skips the interfaces this session already saw it refuse.
+        """
+        node = self.result.find(ref) if self.result is not None else None
+        if node is None or not node.fingerprint:
+            return
+        self._route_memory[node.fingerprint] = primitive
+
+    def _preferred_route(self, ref: str) -> str | None:
+        """The interface this element answered to last time, if known."""
+        node = self.result.find(ref) if self.result is not None else None
+        if node is None or not node.fingerprint:
+            return None
+        return self._route_memory.get(node.fingerprint)
+
+    def _order_steps(self, ref: str, steps: list) -> list:
+        """Put the remembered route first, leaving the rest as fallbacks.
+
+        This is what makes repeated calls cheap on an element whose usable
+        interface is not the one its patterns suggest. The order is only a
+        preference: a remembered route that no longer applies simply fails and
+        the chain continues, so the memory can never make a call fail that
+        would otherwise have succeeded.
+        """
+        preferred = self._preferred_route(ref)
+        if not preferred:
+            return steps
+        return sorted(steps, key=lambda s: 0 if s.primitive == preferred else 1)
 
     def audit_log(self) -> list[dict]:
         return list(self._audit)

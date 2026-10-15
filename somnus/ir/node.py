@@ -90,10 +90,28 @@ class RawNode:
             yield from child.walk()
 
     def find_native(self, native: NativeRef) -> "RawNode | None":
+        """The node a native ref names, or None.
+
+        Identity is compared on the whole ref, which makes the *path* the
+        tie-breaker. That matters because a fixture routinely gives every node
+        the same runtime id (the compiler's refs are what distinguish them),
+        so matching on the runtime id alone would return the first node that
+        happens to share it - the root, typically - and a caller would act on
+        the wrong element. The most specific match wins.
+        """
+        best: RawNode | None = None
+        best_score = -1
         for node in self.walk():
-            if node.native == native:
-                return node
-        return None
+            if node.native != native:
+                continue
+            score = (
+                (1 if node.native.path == native.path else 0)
+                + (1 if node.native.automation_id == native.automation_id else 0)
+                + (1 if node.native.class_name == native.class_name else 0)
+            )
+            if score > best_score:
+                best, best_score = node, score
+        return best
 
 @dataclass(slots=True)
 class RawTree:

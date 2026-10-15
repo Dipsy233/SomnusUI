@@ -191,6 +191,7 @@ reacted without changing the tree: `INSPECT` the ref instead of retrying.
 | `TARGET_NOT_FOUND` / `STALE_TARGET` | `find` or `observe` |
 | `TARGET_AMBIGUOUS` | refine the `find` query |
 | `CAPABILITY_NOT_FOUND` / `INVALID_ARGUMENT` | `inspect` the ref |
+| `ACTION_NOT_SUPPORTED` | the element publishes no usable interface; report to the user, do not retry the same call |
 | `TARGET_DISABLED` | satisfy the precondition first |
 | `CONFIRMATION_REQUIRED` | ask the user |
 | `PERMISSION_DENIED` | report to the user; do not retry |

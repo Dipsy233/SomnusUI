@@ -175,15 +175,19 @@ def test_keyboard_fallback_selected_only_without_value_pattern():
 
 
 def test_keyboard_fallback_executes_through_the_resolver():
-    """A capability whose only step is type_text still runs end to end."""
+    """A capability whose only step is type_text runs end to end - but only
+    when the host has authorised synthetic input, which is off by default."""
     from somnus.providers.mock import MockProvider
+    from somnus.runtime.policy import Policy
     from somnus.runtime.resolver import Resolver
     from somnus.runtime.session import Session
     from somnus.sui.parse import parse_action
 
     pack = load_pack_dict(_KEYBOARD_PACK)
     tree = _editor_tree(has_value=False)
-    session = Session(MockProvider(fixtures=[tree]), pack=pack)
+    session = Session(
+        MockProvider(fixtures=[tree]), pack=pack, policy=Policy(allow_keyboard=True)
+    )
     session.observe()
 
     editor = next(n for n in session.result.root.walk() if n.entity == "editor")
@@ -194,6 +198,27 @@ def test_keyboard_fallback_executes_through_the_resolver():
     session.observe()
     editor = next(n for n in session.result.root.walk() if n.entity == "editor")
     assert editor.value and "hello" in editor.value
+
+
+def test_keyboard_fallback_is_refused_by_default():
+    """Without authorisation, a capability that can only type is refused.
+
+    Typing is the one route that reaches a control no native pattern reaches,
+    and it costs focus stealing, a race with the target's message pump, and an
+    unverifiable result. The runtime drives published interfaces, so an element
+    offering none is reported as such rather than typed into."""
+    from somnus.providers.mock import MockProvider
+    from somnus.runtime.session import Session
+
+    pack = load_pack_dict(_KEYBOARD_PACK)
+    tree = _editor_tree(has_value=False)
+    session = Session(MockProvider(fixtures=[tree]), pack=pack)
+    session.observe()
+
+    editor = next(n for n in session.result.root.walk() if n.entity == "editor")
+    out = session.dispatch(f'CALL {editor.ref}.set_text("hello")')
+    assert out.startswith("ERR"), out
+    assert "keyboard" in out.lower(), out
 
 
 def test_type_text_primitive_is_not_a_default_capability():

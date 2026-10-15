@@ -28,8 +28,17 @@ def _n(
     children: list[RawNode] | None = None,
     cls: str | None = None,
     aid: str | None = None,
-    runtime_id: int = 1,
+    runtime_id: int | None = None,
 ) -> RawNode:
+    """Build a fixture node with a unique native identity.
+
+    The runtime id defaults to a fresh value rather than a constant: a provider
+    always hands every element its own id, and a fixture that shares one between
+    a parent and its child cannot be resolved - the mock would find the wrong
+    node and the element under test would appear to lack the interface it has.
+    """
+    if runtime_id is None:
+        runtime_id = _next_runtime_id()
     return RawNode(
         native=NativeRef(
             window_id="w1", runtime_id=(runtime_id,), automation_id=aid, class_name=cls
@@ -40,6 +49,14 @@ def _n(
         patterns=patterns,
         children=children or [],
     )
+
+
+_runtime_counter = [0]
+
+
+def _next_runtime_id() -> int:
+    _runtime_counter[0] += 1
+    return _runtime_counter[0]
 
 
 class _Seq:

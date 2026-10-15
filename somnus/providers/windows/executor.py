@@ -150,6 +150,11 @@ def run_primitive(
                 UIA.UIA_LegacyIAccessiblePatternId,
                 UIA.IUIAutomationLegacyIAccessiblePattern,
             ).DoDefaultAction()
+    except _PatternMissing as exc:
+        # The element does not offer this interface. That is a fact about the
+        # control, not a failure of the call, so it is reported as unsupported
+        # and the caller may try its next declared route.
+        return ExecResult(ok=False, error="ACTION_NOT_SUPPORTED", message=str(exc), unsupported=True)
     except Exception as exc:  # noqa: BLE001 - converted to a code
         return _classify(exc)
     return ExecResult(ok=True)
@@ -160,9 +165,29 @@ def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
 
     ``GetCurrentPattern`` returns a bare ``IUnknown`` pointer; without the cast
     the pattern methods are not visible.
+
+    A pattern the element does not have raises :class:`_PatternMissing`, which
+    the caller turns into an honest "unsupported" answer. This matters because
+    UIA is unreliable about it: an element can report a pattern as available
+    (``IsPatternAvailable`` true, or a non-null pointer that querys into a
+    shell) and then fail when the method is called. Both shapes mean the same
+    thing to a caller - the interface is not usable here - so both are reported
+    the same way.
     """
-    raw = element.GetCurrentPattern(pattern_id)
-    return raw.QueryInterface(interface)
+    try:
+        raw = element.GetCurrentPattern(pattern_id)
+    except Exception as exc:  # noqa: BLE001 - converted to a routing signal
+        raise _PatternMissing(str(exc)) from exc
+    if raw is None:
+        raise _PatternMissing("pattern unavailable")
+    try:
+        return raw.QueryInterface(interface)
+    except Exception as exc:  # noqa: BLE001
+        raise _PatternMissing(str(exc)) from exc
+
+
+class _PatternMissing(Exception):
+    """The element does not offer the requested native interface."""
 
 
 def _scroll(pat: Any, value: Any, UIA: Any) -> None:

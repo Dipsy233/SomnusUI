@@ -32,6 +32,32 @@ class Policy:
     confirmed: bool = False
     #: Capabilities that need confirmation even if the pack did not mark them.
     extra_critical: frozenset[str] = field(default_factory=frozenset)
+    #: Whether synthesised keyboard input may be used at all. **Off by default,
+    #: and that is the point of the project**: an agent drives an application
+    #: through the interface the application publishes, not by pretending to be
+    #: a person at the keyboard. Typing reaches a control no native pattern can
+    #: reach, but it also steals focus, races the target's message pump, and
+    #: cannot be verified - all the things this runtime exists to avoid. An
+    #: element with no usable interface is therefore reported as such rather
+    #: than typed into, unless a host explicitly opts in.
+    allow_keyboard: bool = False
+
+    def check_step(self, primitive: str) -> None:
+        """Refuse a step the policy does not authorise.
+
+        Checked per step rather than per capability, because a capability may
+        declare a native route *and* a keyboard fallback; only the fallback
+        needs authorisation.
+        """
+        if primitive == "type_text" and not self.allow_keyboard:
+            raise SomnusError(
+                ErrorCode.ACTION_NOT_SUPPORTED,
+                message=(
+                    "the element offers no interface this runtime can use, and "
+                    "synthetic keyboard input is disabled; enable it with "
+                    "--allow-keyboard to type anyway"
+                ),
+            )
 
     def check_process(self, process: str) -> None:
         if not self.allow_processes:
