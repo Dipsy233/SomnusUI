@@ -214,8 +214,18 @@ def test_writes_exactly_with_the_window_in_the_background(notepad):
     for sent in cases:
         out = session.dispatch(f'CALL {node.ref}.set_text("{sent}")')
         assert out.startswith("OK"), out
-        time.sleep(0.3)
-        got = _text_of(hwnd)
+        # Poll for the result instead of sleeping a fixed amount. A fixed sleep
+        # is flaky by construction: the value has to travel back through UIA and
+        # the control has to finish applying it, and how long that takes is not
+        # a property of this test. Observed failing once exactly this way - the
+        # read returned the *previous* case's text.
+        got = ""
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            got = _text_of(hwnd)
+            if got == sent:
+                break
+            time.sleep(0.05)
         assert got == sent, f"round-trip mismatch: sent {sent!r} got {got!r}"
         if backgrounded:
             assert _foreground()[0] != np_root, "focus was stolen from the user"

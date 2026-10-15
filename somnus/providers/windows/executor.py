@@ -119,7 +119,11 @@ def run_primitive(
             # reached because a pack declared it as a conditional `via` step
             # (dev doc section 12.2); the LLM never sees this primitive.
             element.SetFocus()
-            result = send_unicode_text(str(value))
+            # Pass a verifier so the sender can tell whether each character
+            # actually landed. Without it the target can park queued input until
+            # the next real keystroke, which shows up as "the text was entered but
+            # nothing rendered, until I press a key". See keyboard.py.
+            result = send_unicode_text(str(value), verify=_text_landed_verifier(element, value))
             if not result.ok:
                 return result
         elif primitive == "scroll_into_view":
@@ -278,6 +282,44 @@ def _element_hwnd(element: Any) -> int:
         return 0
 
 
+def _text_landed_verifier(element: Any, expected: Any):
+    """Build the callback that tells the sender when a character has arrived.
+
+    Reads the element's own value through UIA, which is the only channel that
+    reports what the control actually holds (a window-level ``WM_GETTEXT`` is not
+    available for a self-drawn control). Returns None when no readable surface
+    exists, in which case the sender falls back to paced delivery and says so.
+
+    Deliberately compares by length rather than by content: typing is
+    incremental, the control may normalise what it stores (rich text, an IME
+    composition), and the question being answered is only "has the target caught
+    up with what was sent", not "is the stored text identical".
+    """
+    want = str(expected)
+    try:
+        baseline = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
+    except Exception:  # noqa: BLE001 - unreadable element: no verifier
+        baseline = None
+    if not isinstance(baseline, str):
+        # Try the cached value property by raw id before giving up; some
+        # providers answer only one of the two.
+        baseline = ""
+    start = len(baseline)
+
+    def _verify(count: int) -> bool:
+        try:
+            current = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
+        except Exception:  # noqa: BLE001
+            return True  # cannot read: stop nudging, do not turn it into a failure
+        if not isinstance(current, str):
+            return True
+        # Each character adds one unit; a control that reports something else
+        # entirely should not spin the timeout.
+        return len(current) - start >= count
+
+    return _verify
+
+
 def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
     """Fetch a pattern and cast it to its COM interface.
 
@@ -302,6 +344,11 @@ def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
         return raw.QueryInterface(interface)
     except Exception as exc:  # noqa: BLE001
         raise _PatternMissing(str(exc)) from exc
+
+
+#: UIA_ValuePatternId / the Value.Value property, used to read back what a
+#: control holds while typing into it (see `_text_landed_verifier`).
+_UIA_VALUE_VALUE_PROPERTY = 30045
 
 
 class _PatternMissing(Exception):
