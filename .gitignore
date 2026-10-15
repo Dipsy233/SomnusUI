@@ -34,6 +34,12 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
+# Tool-local state
+# `.pi/` is this agent harness's own working config (MCP server list, session
+# scratch). It points at the developer's machine, so it is not part of the
+# project - same reason `.vscode/` is not.
+.pi/
+
 # .NET / WPF demo app
 [Bb]in/
 [Oo]bj/
