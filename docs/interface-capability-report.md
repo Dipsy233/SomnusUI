@@ -393,23 +393,96 @@ QQ 输入框（hwnd=0，无 ValuePattern）
 
 ---
 
+### 2.11 同一应用内两类输入框：可写与不可写并存（新增实测）
+
+本节修正一个容易形成的错误泛化。看到“QQ 输入框写不进去”很容易得出
+“QQ 的输入框都写不进去”——**错**。同一个 QQ 进程内实测存在两类输入框：
+
+| | QQ 主窗口搜索框 | QQ 会话消息框 | Doubao 对话输入框 |
+|---|---|---|---|
+| **ClassName** | （空） | `ProseMirror is-empty ExEditor-qq-msg-editor` | `tiptap ProseMirror` |
+| **ControlType** | `Edit` | `Group` (50026) | `Group` (50026) |
+| **Patterns** | `text` + **`value`** | 仅 `text` | 仅 `text` |
+| **`set_text`** | ✅ **可用** | ❌ 不可用 | ❌ 不可用 |
+| **写入实测** | ✅ 成功且读回一致 | — | — |
+| **角色推导** | `input` | `input` | `input` |
+
+实测（QQ 主窗口搜索框，`role=input`、有 `value` 模式）：
+
+```
+set_text('somnus-test') -> OK_UNVERIFIED rev=2
+    focus_stolen=False
+    readback value='somnus-test'
+set_text('中文关键字')   -> OK_UNVERIFIED rev=4
+    focus_stolen=False
+    readback value='中文关键字'
+```
+
+**无焦点、走原生接口、读回一致**，且 delta 中出现了“清空”按钮与搜索结果列表，
+说明应用真的执行了搜索，不是只改了 DOM 字符串。
+
+进一步验证（QQ 窗口**置后台**，前景为其他窗口）：
+
+```
+foreground before = 'QA OSD'
+QQ is foreground? False
+  len=12   status=OK_UNVERIFIED  exact=True  focus_untouched=True
+  len=6    status=OK_UNVERIFIED  exact=True  focus_untouched=True
+  len=120  status=OK_UNVERIFIED  exact=True  focus_untouched=True
+```
+
+**3/3 精确写入，焦点未抢**，含 CJK 与 120 字符长串。
+即“自绘应用”并不意味着“不可写”——关键看该控件是否发布了 `ValuePattern`。
+
+#### 为什么这个对比值得单独记录
+
+它把结论从“应用级别”纠正到了“**控件级别**”：
+
+- **不可写不是“QQ 不行”，而是“这个 ProseMirror 控件不行”。** 同一个进程的另一个
+  输入框是标准可写的；
+- 因此**不能按进程/应用名做路由决策**，只能按控件实际发布的接口——这正是
+  `caps.py` 一直在做的事（“能力由平台证明，绝不靠角色猜测”），本节是该原则的
+  一个正面验证；
+- 对 agent 而言，两者在 L0 里长得一样（都是 `INPUT +set_text`），但只有前者真的能写。
+  这是**可接受的**：写入通道在执行时判定并如实报错，不会默默失败。
+
+#### Doubao 与 QQ 消息框完全同构
+
+Doubao 的对话输入框是 `class='tiptap ProseMirror'`（tiptap 基于 ProseMirror），
+探测结果与 QQ 消息框**逐项一致**：
+
+```
+Value    available=False   -> ValueError
+Text     available=True    -> FETCHED
+TextEdit available=True    -> FETCHED，两个 range 均无 SetText
+Legacy   available=True    -> FETCHED，SetValue -> E_NOTIMPL
+Invoke   available=False   -> ValueError
+```
+
+**两个不同公司、不同应用、不同编辑器封装（QQ 自研 vs tiptap）
+在同一个 UIA 层得出完全相同的结论。** 这就把 2.9 的结论从“QQ 的偶然现象”
+提升为“**Chromium contenteditable 的框架级属性**”——这正是它值得写进报告的原因。
+
+---
+
 ## 三、对照组：能写入的控件长什么样
 
-| | 记事本编辑器 | QQ 输入框 |
-|---|---|---|
-| **ClassName** | `RichEditD2DPT` | `ProseMirror ExEditor-qq-msg-editor` |
-| **ControlType** | `50030 Document` | `50026 Group` |
-| **Value pattern** | ✅ 可用 | ❌ 不存在 |
-| **IsReadOnly** | `0` | — |
-| **`SetValue` ** | **✅ 实测生效 20/20** | — |
-| **Text pattern** | 可用（只读） | 可用（只读） |
-| **TextEdit pattern** | — | ✅ 存在且可取到，但 range 为 NULL 且无 `SetText`（见 2.9） |
-| **元素级 HWND** | ✅ `RichEditD2DPT` | ❌ `0`（不是"进程里无 Edit 子窗口"） |
-| **可写入** | **是** | **否** |
+| | 记事本编辑器 | QQ 主窗口搜索框 | QQ 消息框 | Doubao 输入框 |
+|---|---|---|---|---|
+| **ClassName** | `RichEditD2DPT` | （空） | `ProseMirror ExEditor-qq-msg-editor` | `tiptap ProseMirror` |
+| **ControlType** | `50030 Document` | `Edit` | `50026 Group` | `50026 Group` |
+| **Value pattern** | ✅ 可用 | ✅ **可用** | ❌ 不存在 | ❌ 不存在 |
+| **IsReadOnly** | `0` | `0` | — | — |
+| **`SetValue`** | **✅ 实测 20/20** | **✅ 实测成功且读回一致** | — | — |
+| **Text pattern** | 可用（只读） | 可用（只读） | 可用（只读） | 可用（只读） |
+| **TextEdit pattern** | — | — | ✅ 可取到，但 range 为 NULL 且无 `SetText` | 同左（逐项一致） |
+| **元素级 HWND** | ✅ | ❌ `0` | ❌ `0` | ❌ `0` |
+| **可写入** | **是** | **是** | **否** | **否** |
 
 **决定性差别只有一行**：`ValuePattern` 存在与否。
-`Text` pattern 两者都有——它**不能**用来判断可写性。
-（`TextEdit` pattern 也同样不能：两列都取得到，但只有一列真的写得进去。）
+注意 QQ 的两列属于**同一个进程**——差异不在应用，而在**控件发布的接口**。
+`Text` pattern 四列都有——它**不能**用来判断可写性。
+（`TextEdit` pattern 也同样不能：有三列取得到，但只有一列真的写得进去。）
 
 ---
 
