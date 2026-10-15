@@ -157,114 +157,6 @@ class UiaProvider:
         #: `close()` restores each one, so agent work never leaves the user's
         #: desktop rearranged.
         self._workspace = Workspace()
-        #: The web write channel, used only where no native pattern can write
-        #: (an Electron app's self-drawn editor). Discovered lazily: most
-        #: applications are not debuggable and must not pay for the probe.
-        self._cdp = None
-        #: window_id -> process name, so a primitive can ask the bridge whether
-        #: the window it belongs to is debuggable without a fresh enumeration.
-        self._process_by_window: dict[str, str] = {}
-
-    # -- web write channel --------------------------------------------------
-
-    def _cdp_bridge(self):
-        """The lazily built CDP bridge, or None when unavailable.
-
-        Absence is normal: a Chromium application is only debuggable when it was
-        launched with a debug port, which nobody does by default. A failure to
-        import the optional dependency is treated the same way - the native
-        routes still work, and this channel is an enhancement, not a
-        requirement (dev doc section 12).
-        """
-        if self._cdp is None:
-            try:
-                from somnus.providers.cdp import CdpBridge
-
-                self._cdp = CdpBridge()
-            except Exception as exc:  # noqa: BLE001 - optional channel
-                log.debug("cdp bridge unavailable: %s", exc)
-                self._cdp = False
-        return self._cdp or None
-
-    def _process_for_window(self, window_id: str) -> str:
-        name = self._process_by_window.get(window_id)
-        if name:
-            return name
-        for w in self.list_windows():
-            if w.window_id == window_id:
-                return w.process
-        return ""
-
-    def _try_web_set_text(
-        self, ref: NativeRef, el: Any, value: Any
-    ) -> ExecResult | None:
-        """Write through the page's DOM when the element is web content.
-
-        Called before the native routes, so this is the difference between
-        "written so the application notices" and "written silently" (UIA
-        ``SetValue`` on a Chromium ``contenteditable`` puts the text in the DOM
-        but runs none of the page's handlers). Returns None when the channel
-        does not apply, so the caller keeps its own route.
-
-        The guard matters as much as the write. Only an element that is *inside
-        the page* may be routed this way: a browser's own chrome (the address
-        bar, a toolbar field) is a native control with its own working Value
-        pattern, and CDP's page lookup would find the web editor instead and
-        write into the wrong element entirely. So the element must sit under a
-        document/RootWebArea ancestor.
-        """
-        bridge = self._cdp_bridge()
-        if bridge is None:
-            return None
-        process = self._process_for_window(ref.window_id)
-        if not process:
-            return None
-        if not self._is_web_content(el):
-            return None
-        cls, name = _element_identity(el)
-        result = bridge.set_text(
-            process,
-            "" if value is None else str(value),
-            hint_class=cls,
-            hint_name=name,
-        )
-        if result.ok:
-            return result
-        # "No debuggable page" only means this application cannot be reached
-        # this way, not that the write was attempted and failed - report the
-        # miss so the caller falls back instead of surfacing a spurious error.
-        if result.error == "ACTION_NOT_SUPPORTED" and "no debuggable page" in (
-            result.message or ""
-        ):
-            return None
-        return result
-
-    def _is_web_content(self, el: Any) -> bool:
-        """Whether a UIA element lives inside the page rather than the chrome.
-
-        Chromium marks the page's root as a ``Document``/``RootWebArea``
-        control type under the browser frame. Walking the ancestors is the only
-        reliable test: class names differ per browser and per Electron app, but
-        the document boundary is what the accessibility layer itself uses.
-        """
-        walker = self._auto.ControlViewWalker
-        current = el
-        for _ in range(24):
-            try:
-                current = walker.GetParentElement(current)
-            except Exception:  # noqa: BLE001 - root reached or a dead pointer
-                return False
-            if current is None:
-                return False
-            try:
-                if int(current.CurrentControlType) in _WEB_DOCUMENT_CONTROL_TYPES:
-                    return True
-                # Stop at the window: past it the walk leaves the application.
-                if int(current.CurrentControlType) == _CT_WINDOW:
-                    return False
-            except Exception:  # noqa: BLE001
-                return False
-        return False
 
     # -- COM lifecycle ------------------------------------------------------
 
@@ -305,11 +197,6 @@ class UiaProvider:
         # (re-minimize what was minimized) before the process goes away.
         if self._workspace is not None:
             self._workspace.release_all()
-        if self._cdp:
-            try:
-                self._cdp.close()
-            except Exception:  # noqa: BLE001 - teardown must not raise
-                pass
         self._executor.shutdown(wait=False)
 
     # -- window discovery ---------------------------------------------------
@@ -381,10 +268,6 @@ class UiaProvider:
                     w.active = True
         except Exception:
             pass
-        # Remember which process each window belongs to, so a primitive that
-        # falls back to the web write channel can ask whether *that*
-        # application is debuggable without re-enumerating the desktop.
-        self._process_by_window = {w.window_id: w.process for w in out}
         return out
 
     def _uwp_content_pid(self, frame_el: Any) -> int | None:
@@ -979,21 +862,6 @@ class UiaProvider:
         el = self._locate(ref)
         if el is None:
             return ExecResult(ok=False, error="STALE_TARGET")
-        if primitive in ("set_text", "type_text"):
-            # Text entry into a self-drawn editor goes through the page's own
-            # editing pipeline when the application is debuggable. This is not
-            # an optimisation, it is a correctness requirement: measured on a
-            # Chromium `contenteditable`, UIA's `SetValue` *does* put the text
-            # in the DOM but runs none of the page's handlers, so the editor's
-            # own model (ProseMirror's, CodeMirror's) never sees it and the
-            # application sends the wrong thing. `Input.insertText` travels the
-            # same path a keystroke does, so the model stays in sync.
-            #
-            # When the application is not debuggable this returns None and the
-            # native routes below run unchanged.
-            web = self._try_web_set_text(ref, el, value)
-            if web is not None:
-                return web
         if primitive not in PATTERN_FOR_PRIMITIVE and primitive not in (
             "focus",
             "read",
@@ -1071,14 +939,6 @@ class UiaProvider:
 _CT_WINDOW = 50032
 _CT_PANE = 50033
 _TOPLEVEL_CONTROL_TYPES = (_CT_WINDOW, _CT_PANE)
-
-#: Control types Chromium uses for the *page* boundary. UIA does not define a
-#: ``Document`` control type constant in older SDKs, so the id is written out:
-#: ``Document`` (50030) is what Chromium reports for a page root. Being
-#: conservative is the point - a miss only means the native route is kept,
-#: which is always safe.
-_CT_DOCUMENT = 50030
-_WEB_DOCUMENT_CONTROL_TYPES = (_CT_DOCUMENT,)
 
 
 #: Shell surfaces that are Pane-typed but genuinely user-facing.
@@ -1239,27 +1099,6 @@ def _process_name(pid: int) -> str:
             kernel32.CloseHandle(h)
     except Exception:
         return ""
-
-
-def _element_identity(el: Any) -> tuple[str, str]:
-    """The (className, name) a UIA element exposes, for matching it in a page.
-
-    UIA and Chromium report the same ``class`` string for a web element (an
-    Electron editor shows up as ``ProseMirror ExEditor-qq-msg-editor`` on both
-    sides), so it is the strongest key for tying a UIA node to a DOM node. The
-    name is the weaker fallback and may be empty.
-    """
-    cls = ""
-    name = ""
-    try:
-        cls = str(el.CurrentClassName or "")
-    except Exception:  # noqa: BLE001 - a missing property is not fatal
-        pass
-    try:
-        name = str(el.CurrentName or "")
-    except Exception:  # noqa: BLE001
-        pass
-    return cls, name
 
 
 def _stringify_value(value: Any) -> str | None:

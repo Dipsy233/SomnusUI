@@ -22,7 +22,7 @@ Semantic Graph
    ↑
 Semantic Compiler (deterministic: normalize → infer → match → project → compress)
    ↑
-AccessibilityProvider (Windows UIA; CDP as a write channel; AX / AT-SPI later)
+AccessibilityProvider (Windows UIA; AX / AT-SPI later)
 ```
 
 The LLM never sees pixels, coordinates, screenshots, handles, `AutomationId`s or
@@ -151,19 +151,12 @@ native patterns, so an application the runtime has never seen is still usable:
   one on the line; a control exposing nothing gets no action at all instead of
   one that can only fail.
 - **`set_text`** is derived for every text-entry surface, and its route is
-  chosen by the control's own interface, never by its class name. Three routes,
-  in order:
-  1. **a Chromium page's editor** - a self-drawn box (QQ, VS Code, Steam) is
-     written through the DevTools Protocol, which is the page's own text
-     insertion: the editor's framework sees it exactly as typed input. This is
-     the only route that keeps such an editor's model in sync - UIA's
-     `SetValue` puts the text in the DOM but runs none of the page's handlers;
-  2. **a native control with a Value pattern** - written through it: the
-     application's own write interface, atomic and independent of focus;
-  3. **anything else** - focused and typed into, which is the last resort it
-     has always been.
-  So Notepad is written natively, and QQ's ProseMirror box is written through
-  the page, both without a pack and without synthetic input.
+  chosen by the control's own interface, never by its class name: a control
+  with a Value pattern is written through it - the application's own write
+  interface, atomic and independent of keyboard focus - and only a control
+  with none (a self-drawn Chromium/Electron editor, a terminal) is typed into.
+  So Notepad is written natively, and QQ's ProseMirror box is still writable
+  without any pack.
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself
@@ -195,31 +188,11 @@ projection and runtime are identical for all of them.
 | Provider | Source | Status |
 | --- | --- | --- |
 | `uia` | Windows UI Automation (Win32 / WPF / UWP) | available |
-| `cdp` | Chrome DevTools Protocol (a browser page, or the write channel for an Electron app) | optional (`[cdp]`) |
 | `mock` | recorded `RawTree` fixtures (any platform) | available |
 
 ```bash
 somnus --provider uia windows          # native windows
-somnus --provider cdp observe          # a browser page, driven directly
 ```
-
-### Writing into a self-drawn editor (CDP)
-
-An Electron application (QQ, VS Code, Steam) draws its own text box: a
-`contenteditable` that UIA cannot usefully write into. UIA's `SetValue` on one
-puts the text in the DOM but runs none of the page's handlers, so the editor's
-own model never sees it and the application sends the wrong thing - a silent
-desync, which is worse than a failure. With the `[cdp]` extra installed and the
-application reachable on a loopback debug port, `set_text` goes through the
-page's own text insertion instead (`Input.insertText`), the same path a
-keystroke takes inside the page. No pointer moves, no keystroke is posted to a
-window, and the window does not need to be foreground.
-
-Discovery is automatic: the conventional ports are probed, plus any recorded in
-a browser's `DevToolsActivePort` file, plus anything named in `SOMNUS_CDP_PORTS`.
-Nothing else changes - observation still comes from UIA, and the page channel is
-only consulted for elements inside page content, never for a browser's own
-chrome (which has its own working native interface).
 
 ## Background workspace (non-intrusive operation)
 
@@ -296,7 +269,7 @@ Full grammar: [`somnus/sui/grammar.md`](somnus/sui/grammar.md).
 ```
 somnus/
 ├── ir/            node / capability / action value objects (platform free)
-├── providers/     base.py  mock.py  cdp.py
+├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard,workspace}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 ├── projection/    rules.py budget.py engine.py

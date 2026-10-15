@@ -61,22 +61,10 @@ def get_provider(name: str = "auto", **kwargs: Any) -> AccessibilityProvider:
     """Factory resolving a provider by name.
 
     ``auto`` picks the Windows UIA provider when available, else the mock
-    provider (useful for CLI smoke tests on any platform). ``cdp`` forces the
-    browser provider, for driving a page directly when no native window is
-    wanted.
-
-    UIA is never silently replaced by CDP: an Electron application still
-    observes through UIA, and reaches the page only for the writes UIA cannot
-    perform (see :mod:`somnus.providers.cdp`). Choosing a provider is the
-    caller's decision, not a side effect of what happens to be reachable.
+    provider (useful for CLI smoke tests on any platform).
     """
 
     name = (name or "auto").lower()
-
-    if name in ("cdp", "browser", "chrome", "edge"):
-        from somnus.providers.cdp import CdpProvider
-
-        return CdpProvider(**kwargs)
 
     if name in ("auto", "uia", "windows"):
         try:
