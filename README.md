@@ -150,10 +150,13 @@ native patterns, so an application the runtime has never seen is still usable:
   shows `+expand +collapse` and no `activate`, so the gesture that works is the
   one on the line; a control exposing nothing gets no action at all instead of
   one that can only fail.
-- **`set_text`** is derived for every text-entry surface, routed at execution
-  time: a plain field writes through its Value pattern, a rich-text or
-  document editor is typed into. A self-drawn editor (Chromium/Electron) is
-  writable without any pack.
+- **`set_text`** is derived for every text-entry surface, and its route is
+  chosen by the control's own interface, never by its class name: a control
+  with a Value pattern is written through it - the application's own write
+  interface, atomic and independent of keyboard focus - and only a control
+  with none (a self-drawn Chromium/Electron editor, a terminal) is typed into.
+  So Notepad is written natively, and QQ's ProseMirror box is still writable
+  without any pack.
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself

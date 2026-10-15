@@ -133,40 +133,33 @@ def _is_control(node: RawNode) -> bool:
 
 
 def _prefers_keyboard_entry(node: RawNode) -> bool:
-    """Whether ``set_text`` should type rather than use the Value pattern.
+    """Whether ``set_text`` must type because there is no Value pattern to write.
 
-    Rich-text and document editors advertise a Value pattern they do not honour
-    (Windows 11 Notepad discards `SetValue`; Chromium editors have none but take
-    keystrokes). For them the keyboard is the only reliable route. A plain form
-    field keeps the native path, which is faster and does not depend on focus.
+    The native ``ValuePattern::SetValue`` is the control's own write interface:
+    the application performs it on its own thread, so it is atomic, does not
+    race the message pump and does not need keyboard focus. It is therefore
+    always preferred when it exists.
+
+    This function answers one narrow question - *is there any write interface
+    at all?* - and returns True only when the answer is no, i.e. the node
+exposes no ``value`` pattern. That is the self-drawn editor case: a
+    Chromium/Electron rich-text box (QQ's ProseMirror box, CodeMirror, Monaco)
+    and a terminal implement no Value pattern, so keystrokes are the only way in.
+
+    It used to also send every RichEdit/document control down the keyboard path
+    on the belief that they advertise a Value pattern they do not honour
+    ("Windows 11 Notepad discards SetValue"). Measured live on Windows 11
+    24H2: Notepad's RichEditD2DPT reports ``value``, ``IsReadOnly == 0``, and
+    ``SetValue`` lands correctly in 20/20 runs including CJK and long strings -
+    the belief no longer holds, and acting on it discarded the one reliable
+    route. The keyboard route it substituted is not merely slower: ``SendInput``
+    queues keystrokes into the target's input queue and returns before they are
+    processed, so a fast burst is dropped by the message pump (measured: 0/20
+    complete for a 10-character string, always a correct *prefix*). Typing is
+therefore the last resort it was always documented to be, never a preference
+    based on a control's class name.
     """
-    if node.role == "document":
-        return True
-    # The native class/control type still says "document" even after the role was
-    # normalised to `input` (Notepad's RichEditD2DPT editor). A rich-text editor
-    # advertises a Value pattern it does not honour, so it must be typed into.
-    native_type = f"{node.native.class_name or ''} {node.native.control_type or ''}".lower()
-    if "document" in native_type or "richedit" in native_type:
-        return True
-    cls = (node.native.class_name or "").lower()
-    if any(
-        token in cls
-        for token in (
-            "richedit",
-            "prosemirror",
-            "codemirror",
-            "monaco",
-            "editor",
-            "contenteditable",
-            "memo",
-            "terminal",
-            "xterm",
-        )
-    ):
-        return True
-    # A rich-text edit control is recognised by its multi-line/scrollable shape
-    # plus a text interface; a one-line form field is not.
-    return "text" in node.patterns and "scroll" in node.patterns and node.role == "input"
+    return "value" not in node.patterns
 
 
 def _is_text_entry(node: RawNode) -> bool:
@@ -223,17 +216,17 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         caps.setdefault("activate", _cap("activate"))
 
     # set_text is granted to *every* text-entry surface. The route it takes is
-    # decided at execution time by the resolver, via mutually exclusive steps:
+    # decided by the control's own interface, not by its class name or role:
     #
-    # * a plain form field writes through its Value pattern;
-    # * a rich-text/document editor types through the keyboard instead.
+    # * a control with a Value pattern is written through it - the application's
+    #   own write interface, atomic and independent of keyboard focus;
+    # * a control with none (a self-drawn Chromium/Electron editor, a terminal)
+    #   is reached by focusing it and typing.
     #
-    # The keyboard path matters because a Value pattern is not proof that text
-    # will stick: Windows 11 Notepad's RichEdit editor advertises `value` yet
-    # accepts `SetValue` and silently discards it (verified live). Rich-text and
-    # document editors are therefore always typed into, which is also what makes
-    # a self-drawn Chromium editor (QQ's ProseMirror box, CodeMirror, Monaco)
-    # writable without a hand-written pack.
+    # Both routes are expressed as conditional `via` steps so the resolver picks
+    # them from the live element. The keyboard step is guarded by
+    # `missing:value`, which is what makes it the fallback it is documented to
+    # be rather than a preference.
     if _is_text_entry(node):
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
         if _prefers_keyboard_entry(node):

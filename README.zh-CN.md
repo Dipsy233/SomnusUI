@@ -145,9 +145,10 @@ pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来
   `activate`（`Invoke` 模式，或执行器回退用的 `LegacyIAccessible`）。只暴露
   `ExpandCollapse` 的按钮显示 `+expand +collapse` 而没有 `activate`，因此行上写的
   就是能用的手势；什么都没暴露的控件不会得到一个注定失败的能力。
-- **`set_text`** 为每个可输入表面推导，执行时才选择路径：普通字段走 Value
-  模式，富文本/文档编辑器则用键盘输入。自绘编辑器（Chromium/Electron）
-  无需 pack 即可写入。
+- **`set_text`** 为每个可输入表面推导，路径由控件自身的接口决定、绝不看类名：
+  有 Value 模式的一律通过它写入（应用自己的写入接口，原子且不依赖键盘焦点），
+  只有完全没有的（自绘 Chromium/Electron 编辑器、终端）才用键盘输入。
+  因此记事本走原生写入，而 QQ 的 ProseMirror 输入框无需 pack 依然可写。
 - **`context_menu`** 在“可能有菜单”的控件上提供（即暴露了可操作内容的元素）。
   它是面对"忽略原生模式的应用"时的出口：菜单通过 UIA 自身打开
   （`ShowContextMenu`），指针不会移动、不发送任何按键，而菜单项本身是标准菜单项，

@@ -1,13 +1,20 @@
 """Declarative keyboard fallback (dev doc section 12.2).
 
 Keyboard input is **never** exposed to the LLM. It exists only as an explicitly
-authorized ``via`` step inside a pack capability, used when the target has no
+authorized ``via`` step inside a capability, used when the target has no
 suitable native pattern - the documented case is ``set_text`` on a control that
-lacks a Value pattern: focus it, then type.
+lacks a Value pattern: focus it, then type. A control that *has* a Value pattern
+is written through it instead; typing is the last resort, never a preference.
 
 Delivery is ``SendInput`` with ``KEYEVENTF_UNICODE``, which is layout
 independent (it types the character, not the physical key). The runtime performs
 the focus step separately, so this module only sends keystrokes.
+
+Caveat worth knowing: ``SendInput`` only *queues* events and returns before the
+target processes them. A fast burst is therefore droppable by the target's
+message pump, and the caller cannot tell from the return value alone. This route
+is used only where no write interface exists, and the caller verifies the result
+rather than trusting ``ok``.
 """
 
 from __future__ import annotations
@@ -132,10 +139,12 @@ def send_unicode_text(text: str) -> ExecResult:
     if not inputs:
         return ExecResult(ok=True)
 
-    # Deliver in small chunks with a tiny pause: a single SendInput of dozens
-    # of unicode events gets dropped by slower message pumps (live: Notepad
-    # received only the first two characters of a 17-char string), and games/
-    # editors with per-frame input loops lose whole bursts.
+    # Deliver in small chunks: a single SendInput of dozens of unicode events
+    # is more likely to be dropped by a slow message pump, and games/editors
+    # with per-frame input loops lose whole bursts. Chunking reduces the loss
+    # but does not eliminate it - SendInput only queues events and returns
+    # before the target processes them, so the caller must verify the result
+    # rather than trust this return value (see the module docstring).
     chunk_size = 8
     total_sent = 0
     for i in range(0, len(inputs), chunk_size):

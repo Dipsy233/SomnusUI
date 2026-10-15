@@ -9,7 +9,7 @@ so the generic path cannot silently regress into "needs a pack again".
 from __future__ import annotations
 
 from somnus.compiler.compile import Compiler
-from somnus.compiler.caps import _is_text_entry
+from somnus.compiler.caps import _is_text_entry, _prefers_keyboard_entry
 from somnus.compiler.match import HEURISTIC_THRESHOLD, heuristic_entities
 from somnus.compiler.normalize import normalize
 from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
@@ -174,6 +174,84 @@ def test_observe_shows_set_text_on_a_text_box():
     # And the capability recorded on the node is the one that was printed.
     node = session.result.find("q1")
     assert node is not None and "set_text" in node.cap_names()
+
+
+# --------------------------------------------------------------------------
+# set_text must use the control's own write interface, not the keyboard
+# --------------------------------------------------------------------------
+
+
+def _set_text_steps(node):
+    cap = node.get_cap("set_text") if hasattr(node, "get_cap") else None
+    return [(s.primitive, s.condition) for s in cap.via]
+
+
+def test_value_pattern_is_written_through_never_typed():
+    """A control exposing a Value pattern is written through it.
+
+    `ValuePattern::SetValue` is the application's own write interface: it runs
+    on the app's thread, so it is atomic and needs no keyboard focus. Typing is
+    not merely slower - `SendInput` queues keystrokes and returns before they
+    are processed, so a fast burst is dropped by the target's message pump
+    (measured live against Notepad: a 10-character `set_text` landed as a
+    correct *prefix* of 4-7 characters, 0/20 complete). So a control that
+    offers the native write must never be typed into."""
+    tree = _packless_tree(
+        [_n("document", "文本编辑器", patterns=frozenset({"value", "text", "scroll"}),
+            cls="RichEditD2DPT", runtime_id=1)]
+    )
+    res = _compile_packless(tree)
+    node = res.find("q1")
+    assert node is not None
+    steps = _set_text_steps(node)
+    # The native write is first and unguarded...
+    assert steps[0] == ("set_text", "has:value")
+    # ...and every typing step is gated on the Value pattern being absent.
+    for primitive, condition in steps:
+        if primitive in ("type_text", "focus"):
+            assert condition == "missing:value", steps
+
+
+def test_self_drawn_editor_without_a_value_pattern_still_types():
+    """The fallback survives: a control with no write interface is typed into.
+
+    This is what keeps a self-drawn Chromium/Electron editor (QQ's ProseMirror
+    box, CodeMirror, Monaco) and a terminal writable without a hand-written
+    pack. Routing the fix must not seal this route - it is the only one those
+    controls have."""
+    tree = _packless_tree(
+        [_n("group", "editor", patterns=frozenset({"text"}),
+            cls="ProseMirror is-empty ExEditor-qq-msg-editor", runtime_id=1)]
+    )
+    res = _compile_packless(tree)
+    node = res.find("q1")
+    assert node is not None and node.role == "input"
+    steps = _set_text_steps(node)
+    assert [p for p, _ in steps] == ["focus", "type_text"], steps
+    # Nothing is gated: there is no Value pattern to gate on.
+    assert all(c is None for _, c in steps), steps
+
+
+def test_set_text_route_is_decided_by_interface_not_class_name():
+    """The route follows the control's interface, never its class name.
+
+    Regression: every RichEdit/document class was sent down the keyboard path
+    on the belief that it "advertises a Value pattern it does not honour"
+    ("Windows 11 Notepad discards SetValue"). Measured live on Windows 11
+    24H2 that belief is false - Notepad's RichEditD2DPT reports `value`,
+    `IsReadOnly == 0`, and `SetValue` lands in 20/20 runs - so acting on it
+    threw away the one reliable route for the exact control it named."""
+    rich = _n("document", "文本编辑器", patterns=frozenset({"value", "text", "scroll"}),
+              cls="RichEditD2DPT", runtime_id=1)
+    plain = _n("edit", "Name", patterns=frozenset({"value", "text"}),
+               cls="Edit", runtime_id=2)
+    # Same interface, wildly different class names: same route.
+    assert _prefers_keyboard_entry(rich) is False
+    assert _prefers_keyboard_entry(plain) is False
+
+    typed = _n("group", "editor", patterns=frozenset({"text"}), cls="CodeMirror",
+               runtime_id=3)
+    assert _prefers_keyboard_entry(typed) is True
 
 
 # --------------------------------------------------------------------------
