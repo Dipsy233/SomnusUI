@@ -166,6 +166,10 @@ pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来
 
   因此记事本走原生写入，而发布不出接口的控件会被**如实报错，而不是被输入**。
   哪条路奏效会被记住整个会话，重复调用同一元素不再重新探测。
+
+  哪些接口真的能用、哪些是死路，都是实测得出的：见
+  [docs/interface-capability-report.md](docs/interface-capability-report.md)
+  （包含为什么 Chromium 自绘编辑器用 UIA / MSAA / `WM_SETTEXT` 都写不进去）。
 - **`context_menu`** 在“可能有菜单”的控件上提供（即暴露了可操作内容的元素）。
   它是面对"忽略原生模式的应用"时的出口：菜单通过 UIA 自身打开
   （`ShowContextMenu`），指针不会移动、不发送任何按键，而菜单项本身是标准菜单项，

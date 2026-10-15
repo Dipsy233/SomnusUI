@@ -177,6 +177,11 @@ native patterns, so an application the runtime has never seen is still usable:
   So Notepad is written natively and a field that publishes no interface is
   **reported, not typed into**. Which route answered is remembered for the rest
   of the session, so a repeated call on the same element does not re-probe it.
+
+  Which interfaces actually work - and which are dead ends - is measured, not
+  assumed: see [docs/interface-capability-report.md](docs/interface-capability-report.md)
+  for the live data (including why a self-drawn Chromium editor cannot be
+  written by any UIA, MSAA or `WM_SETTEXT` route).
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself
