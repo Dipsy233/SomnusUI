@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | **UIA `ValuePattern.SetValue`** | 控件实现 `Value` pattern | 否 | 否 | ✅ **首选**，记事本 20/20 |
 | **`WM_SETTEXT` / `EM_REPLACESEL`** | **元素自己**有非零 `CurrentNativeWindowHandle` | 否 | 否 | ✅ **已实现**：后台窗口写入 3/3，焦点未抢（2.10） |
-| **CDP `Input.insertText`** | Chromium 应用开了调试端口 | 否 | 否 | ✅ 可行，但需应用配合 |
+| **CDP `Input.insertText`** | Chromium **启动时**带 `--remote-debugging-port` | 否 | 否 | ⚠️ 机制上可行且无感，但**已运行的应用几乎必然不可用**（见 4.4c） |
 | **UIA `LegacyIAccessible.SetValue`** | MSAA Provider 实现了它 | 否 | 否 | ❌ 通常 `E_NOTIMPL` |
 | **UIA `TextPattern`** | 控件实现 `Text` pattern | 否 | 否 | ❌ **只读**，无写入方法 |
 | **UIA `TextEditPattern`** | 控件实现 `TextEdit` pattern（Win8.1+） | 否 | 否 | ❌ 取得到但**不可写**：range 恒 NULL 且无 `SetText`（见 2.9） |
@@ -31,7 +31,8 @@
 ```
 1. 元素自己有非零的 NativeWindowHandle？    → WM_SETTEXT / EM_REPLACESEL
 2. 有没有 UIA ValuePattern？                → SetValue
-3. 是不是 Chromium 应用且开了调试端口？      → CDP
+3. CDP：仅当应用启动时就带了 --remote-debugging-port
+     已运行的应用不要期待：实测无应用监听，启动后也开不了（4.4c）
 4. 都没有                                   → 应用没暴露写入能力，如实报错
 ```
 
@@ -442,6 +443,53 @@ QQ 输入框（hwnd=0，无 ValuePattern）
 但两个 range（`GetActiveComposition` / `GetConversionTarget`）在聚焦前后
 **均为 NULL 且无 `SetText`**。它是输入法组合串的上报接口，不是通用写入通道。
 
+### 4.4c CDP 对**已运行**的第三方应用是否可行（新增实测）
+
+结论：**对已经跑起来的第三方应用，无感启用 CDP 不可行**。不是“要应用配合”
+这么含糊，而是三条具体事实：
+
+**① 没有任何自绘应用在监听调试端口。**
+
+实测本机所有 Chromium 系进程（QQ × 8、msedgewebview2、Steam 等）与默认端口：
+
+```
+127.0.0.1:9222 / 9223 / 9224 / 9229  → 全部 URLError（无监听）
+```
+
+**② QQ 确实开了 5 个 loopback 端口，但都不是 CDP。**
+
+这是最容易被误判为“发现调试端口”的情形，实测排除了：
+
+```
+4003, 4301  → 非 HTTP
+4310        → 二进制响应（非 HTTP）
+5283        → HTTP 400
+9210        → HTTP 200，但返回 QQ 自己的协议：
+              {"errCode":4001,"errMsg":"请求数据结构错误","port":9210,"iat":...}
+              JWT 签名，无 Browser / Protocol-Version / webSocketDebuggerUrl 字段
+```
+
+**判据**：真正的 CDP `/json/version` 必返回 `Browser` 与 `Protocol-Version`。
+端口号接近 9222（9210）没有任何意义。
+
+**③ 启动后才开调试端口在 Electron 上做不到。**
+
+- `--remote-debugging-port` 只在**启动时**生效；
+- `DevToolsActivePort` 文件全系统搜索：**0 个**（该文件也是启动时写的）；
+- 重新启动应用 = 丢掉用户的会话，正是项目拒绝的干扰。
+
+**一个诚实的补充**：`OpenProcess(VM_WRITE|VM_OPERATION|CREATE_THREAD)` 对 QQ 的
+主进程**居然成功**（未受 UIPI 保护），也就是说“DLL 注入调用
+`DevToolsAgentHost::Start` 从而事后开启调试端口”在权限上并非不可能。
+但这**不是写入通道，而是代码注入**：它会向目标进程注入并执行代码、
+依赖 Chromium 内部符号、随版本失效，且本质上是在用户不知情下控制其应用。
+本项目的立命之本是“通过应用自己发布的接口驱动它”，注入与之直接冲突，
+因此**明确不采用**，记录于此是为了避免以后有人把它当成新发现重新探索。
+
+**唯一真正无感的 CDP 路径**：应用在**安装阶段**就带上 `--remote-debugging-port`
+（用户或部署方可控），或开发方自行开放调试端口。这属于第 4 类
+（自定义接口 / 需应用配合），不是我们能单方面实现的通用能力。
+
 ### 4.5 `LegacyIAccessible.SetValue`
 → 方法存在但 `E_NOTIMPL`。
 
@@ -578,7 +626,7 @@ ControlType → ValuePattern(含 IsReadOnly) → 实际 SetValue 调用 → 读�
 
 1. 该元素自己的原生 HWND（`CurrentNativeWindowHandle != 0`）→ `WM_SETTEXT` / `EM_REPLACESEL`
 2. `ValuePattern` 实现（→ `SetValue`）
-3. Chromium 调试端口（→ CDP）
+3. Chromium 调试端口（→ CDP，**仅限启动时已开启**，见 4.4c）
 4. 自定义 UIA Provider / IPC 接口（→ 需应用配合）
 
 > 第 1 项已修正：原文写作“原生 `Edit`/`RichEdit` **子窗口**”，判据过宽且会误杀
@@ -586,6 +634,9 @@ ControlType → ValuePattern(含 IsReadOnly) → 实际 SetValue 调用 → 读�
 >
 > 另：**`TextEditPattern` 不属于上面四条中的任何一条**。它看上去像第 4 条
 > （一个真正的 UIA 接口），但实测只能上报输入法组合串，不能写入。
+>
+> 第 3 条（CDP）需要降级理解：它对**已经运行**的应用实际上不可达，
+> 详见 4.4c 的三条实测事实。真正无感的 CDP 只在应用安装/部署时就带上了调试端口的前提下成立。
 
 四者皆无时，可选方案只剩下：**应用专用集成** 或 **合成输入**（有上述固有问题）。
 
