@@ -159,13 +159,26 @@ native patterns, so an application the runtime has never seen is still usable:
   one that can only fail.
 - **`set_text`** is derived for every text-entry surface, and its route is
   chosen by the control's own interface, never by its class name or its role.
-  A control with a Value pattern is written through it: the application's own
-  write interface, atomic and independent of keyboard focus.
+  Routes are ordered by how much they cost the user and the first that actually
+  works wins:
+
+  | # | Route | Requires | Steals focus |
+  | --- | --- | --- | --- |
+  | 1 | `ValuePattern.SetValue` | the control publishes a Value pattern | no |
+  | 2 | `WM_SETTEXT` / `EM_REPLACESEL` | **the element maps its own HWND** | no |
+  | 3 | focus and type | `--allow-keyboard` | **yes** |
+
+  Route 2 is a focus-free write: measured against Notepad with its window in the
+  **background**, 3/3 exact writes including CJK and a 50-character string, with
+  the foreground window never changing. The keyboard route cannot do this under
+  any settings (same conditions: `SendInput` landed 0/20 complete, always as a
+  truncated prefix). Its criterion is the **element's own HWND** - not "does the
+  process own a native `Edit` child window", which wrongly rules out controls in
+  the same process that can in fact be written.
 
   Which route works is decided **at execution time**, because no static
   inspection can settle it - UIA reports interfaces an element then refuses
   (measured: an editable advertises `value` and its setter is a no-op shell).
-  The declared routes are tried in order and the first that works wins:
 
   ```
   CALL q1.set_text("x")
@@ -174,14 +187,17 @@ native patterns, so an application the runtime has never seen is still usable:
            keyboard input is disabled; enable it with --allow-keyboard"
   ```
 
-  So Notepad is written natively and a field that publishes no interface is
-  **reported, not typed into**. Which route answered is remembered for the rest
-  of the session, so a repeated call on the same element does not re-probe it.
+  So Notepad is written natively and a field that publishes no interface (QQ's
+  self-drawn box, Steam, VS Code) is **reported, not typed into**. Which route
+  answered is remembered for the rest of the session, so a repeated call on the
+  same element does not re-probe it. The model still sees only the one name
+  `set_text`; which channel runs underneath is the runtime's decision.
 
   Which interfaces actually work - and which are dead ends - is measured, not
   assumed: see [docs/interface-capability-report.md](docs/interface-capability-report.md)
   for the live data (including why a self-drawn Chromium editor cannot be
-  written by any UIA, MSAA or `WM_SETTEXT` route).
+  written by any UIA, MSAA or `WM_SETTEXT` route, and the second-round findings
+  on `TextEditPattern`, `ValuePattern2` and element-level HWND).
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself

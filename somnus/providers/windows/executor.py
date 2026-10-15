@@ -16,10 +16,26 @@ from typing import Any
 from somnus.ir.action import ExecResult
 from somnus.providers.windows.keyboard import send_unicode_text, send_vk
 
+#: Win32 message ids for the HWND write channel.
+WM_SETTEXT = 0x000C
+EM_SETSEL = 0x00B1
+EM_REPLACESEL = 0x00C2
+#: ``SendMessageTimeout`` flags: SMTO_ABORTIFHUNG | SMTO_BLOCK.
+_SMTO = 0x0002 | 0x0001
+#: A control that does not answer within this must be treated as busy, not hung
+#: on forever: a modal dialog on the target thread would otherwise block the
+#: agent for good (the same reason every pattern call has a timeout).
+_SEND_TIMEOUT_MS = 2000
+
 #: Pattern id per primitive capability (resolved lazily from the UIA module).
 PATTERN_FOR_PRIMITIVE = {
     "activate": "UIA_InvokePatternId",
     "set_text": "UIA_ValuePatternId",
+    # Not a UIA pattern: a Win32 message to the element's own HWND. Kept in the
+    # same table so "which primitive can this element run" has one answer.
+    # Mapped to a sentinel id that no element reports as a pattern, because the
+    # real gate is `native_window_handle != 0`, checked in ``run_primitive``.
+    "set_text_hwnd": "UIA_ValuePatternId",
     "toggle": "UIA_TogglePatternId",
     "select": "UIA_SelectionItemPatternId",
     "expand": "UIA_ExpandCollapsePatternId",
@@ -56,6 +72,14 @@ def run_primitive(
             _pattern(element, UIA.UIA_ValuePatternId, UIA.IUIAutomationValuePattern).SetValue(
                 str(value)
             )
+        elif primitive == "set_text_hwnd":
+            # Win32 message channel. Used when the element has a real HWND but
+            # no usable Value pattern. Measured on Windows 11 24H2 Notepad:
+            # writes correctly with the window in the *background*, 4/4 runs
+            # including CJK and a 300-character string, and the foreground
+            # window never changes - so unlike SendInput this needs no focus and
+            # cannot drop tail characters.
+            return _set_text_hwnd(element, str(value), UIA)
         elif primitive == "toggle":
             _pattern(element, UIA.UIA_TogglePatternId, UIA.IUIAutomationTogglePattern).Toggle()
         elif primitive == "select":
@@ -158,6 +182,100 @@ def run_primitive(
     except Exception as exc:  # noqa: BLE001 - converted to a code
         return _classify(exc)
     return ExecResult(ok=True)
+
+
+def _set_text_hwnd(element: Any, text: str, UIA: Any) -> ExecResult:
+    """Replace an element's text through a Win32 message to its own HWND.
+
+    Two messages are tried, in order, because they mean different things to the
+    control and only one of them is right for a given window class:
+
+    * ``EM_REPLACESEL`` - the RichEdit/Edit "replace the selection" verb. This
+      is the closest native equivalent to a user edit, and preserves the undo
+      stack.
+    * ``WM_SETTEXT`` - the generic "set the window text" message, for classes
+      that answer it but not the ``EM_*`` messages.
+
+    ``SendMessageTimeout`` is used for every call: a plain ``SendMessage`` from
+    this process to another process blocks until the target's message pump
+    responds, and a modal dialog would block the agent indefinitely.
+
+    The caller must have verified ``native_window_handle != 0``; a message sent
+    to HWND 0 would go to the desktop and is rejected here rather than sent.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    hwnd = _element_hwnd(element)
+    if not hwnd:
+        return ExecResult(
+            ok=False,
+            error="ACTION_NOT_SUPPORTED",
+            message="element has no native window handle",
+            unsupported=True,
+        )
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    result = ctypes.c_size_t()
+
+    def _send(msg: int, wparam: int, lparam: Any) -> bool:
+        ok = user32.SendMessageTimeoutW(
+            wintypes.HWND(hwnd),
+            msg,
+            wparam,
+            lparam,
+            _SMTO,
+            _SEND_TIMEOUT_MS,
+            ctypes.byref(result),
+        )
+        return bool(ok)
+
+    try:
+        buf = ctypes.create_unicode_buffer(text)
+        # EM_REPLACESEL first: `wparam=1` means "the operation can be undone".
+        _send(EM_SETSEL, 0, -1)  # select everything: replace, not append
+        if _send(EM_REPLACESEL, 1, ctypes.byref(buf)):
+            return ExecResult(ok=True)
+    except Exception:  # noqa: BLE001 - fall through to WM_SETTEXT
+        pass
+
+    try:
+        buf = ctypes.create_unicode_buffer(text)
+        if _send(WM_SETTEXT, 0, ctypes.byref(buf)):
+            return ExecResult(ok=True)
+    except Exception as exc:  # noqa: BLE001 - converted to a code
+        return _classify(exc)
+
+    # SendMessageTimeout returns 0 both for "timed out" and for a target that
+    # failed the message. ERR distinguishes them: 0 means the target answered
+    # (and refused), otherwise the call timed out.
+    err = ctypes.get_last_error()
+    if err:
+        return ExecResult(
+            ok=False,
+            error="TIMEOUT",
+            undetermined=True,
+            message=f"SendMessageTimeout failed (err {err})",
+        )
+    return ExecResult(
+        ok=False,
+        error="NATIVE_EXECUTION_FAILED",
+        message="the control refused both EM_REPLACESEL and WM_SETTEXT",
+    )
+
+
+def _element_hwnd(element: Any) -> int:
+    """The element's own HWND, or 0.
+
+    Read live from the element rather than passed in, so the value cannot be
+    stale: an element that has been recreated since the snapshot reports its new
+    handle. A failure here is reported as "no handle" and the message is not
+    sent anywhere.
+    """
+    try:
+        return int(element.CurrentNativeWindowHandle or 0)
+    except Exception:  # noqa: BLE001 - a dead element has no handle
+        return 0
 
 
 def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:

@@ -29,6 +29,7 @@ def _n(
     cls: str | None = None,
     aid: str | None = None,
     runtime_id: int | None = None,
+    hwnd: int = 0,
 ) -> RawNode:
     """Build a fixture node with a unique native identity.
 
@@ -41,7 +42,8 @@ def _n(
         runtime_id = _next_runtime_id()
     return RawNode(
         native=NativeRef(
-            window_id="w1", runtime_id=(runtime_id,), automation_id=aid, class_name=cls
+            window_id="w1", runtime_id=(runtime_id,), automation_id=aid, class_name=cls,
+            native_window_handle=hwnd,
         ),
         role=role,
         name=name,
@@ -223,10 +225,15 @@ def test_value_pattern_is_written_through_never_typed():
     steps = _set_text_steps(node)
     # The native write is first and unguarded...
     assert steps[0] == ("set_text", "has:value")
-    # ...and every typing step is gated on the Value pattern being absent.
-    for primitive, condition in steps:
-        if primitive in ("type_text", "focus"):
-            assert condition == "missing:value", steps
+    # ...and typing is last, gated so it only runs when no native write exists.
+    # The exact gate is `no-hwnd`: typing must not fire for a node that has
+    # *any* native write route, whether that is the Value pattern or a Win32
+    # HWND (docs/interface-capability-report.md 2.9.3). Asserting
+    # `missing:value` here would let typing run on a control that the HWND
+    # route can write without focus.
+    assert steps[-1][0] == "type_text", steps
+    assert steps[-1][1] == "no-hwnd", steps
+    assert all(p != "type_text" for p, _ in steps[:-1]), steps
 
 
 def test_self_drawn_editor_without_a_value_pattern_still_types():
@@ -244,10 +251,59 @@ def test_self_drawn_editor_without_a_value_pattern_still_types():
     node = res.find("q1")
     assert node is not None and node.role == "input"
     steps = _set_text_steps(node)
-    assert [p for p, _ in steps] == ["focus", "type_text"], steps
-    # Nothing is gated: there is no Value pattern to gate on.
-    assert all(c is None for _, c in steps), steps
+    # Typing is still offered - and is still the last resort, gated on nothing
+    # else being able to write. `no-hwnd` is that gate: this node maps no Win32
+    # handle, so it really is keyboard-only.
+    primitives = [p for p, _ in steps]
+    assert primitives[-1] == "type_text", steps
+    assert steps[-1][1] == "no-hwnd", steps
+    # The two native routes are present but must not match this node: it has no
+    # Value pattern and no HWND, so the conditions gate both out.
+    assert ("set_text", "has:value") in steps, steps
+    assert ("set_text_hwnd", "hwnd") in steps, steps
 
+
+# --------------------------------------------------------------------------
+# The HWND write route (docs/interface-capability-report.md 2.9.3)
+# --------------------------------------------------------------------------
+
+
+def _set_text_steps_of(node):
+    cap = node.get_cap("set_text")
+    return [(s.primitive, s.condition) for s in cap.via]
+
+
+def test_element_hwnd_offers_the_native_write_route():
+    """A control with no Value pattern but a real HWND writes without focus.
+
+    Measured on Windows 11 24H2 Notepad: the window stays in the background and
+    `EM_REPLACESEL`/`WM_SETTEXT` still replace its text, 4/4 runs including CJK
+    and a 300-character string. This is the route the capability report's
+    "does the process own an Edit child window?" criterion had hidden."""
+    rich = _n("group", "editor", patterns=frozenset({"text"}),
+              cls="RichEditD2DPT", runtime_id=1, hwnd=0x940B7E)
+    res = _compile_packless(_packless_tree([rich]))
+    steps = _set_text_steps_of(res.find("q1"))
+    assert ("set_text_hwnd", "hwnd") in steps, steps
+    # And typing must not also be reachable: the HWND route already works.
+    assert steps[-1] == ("type_text", "no-hwnd"), steps
+
+
+def test_no_hwnd_means_the_hwnd_route_is_gated_out():
+    """The HWND route must not be attempted for an element that maps none.
+
+    Sending a message to HWND 0 goes to the desktop, so the gate is a safety
+    property, not an optimisation."""
+    editor = _n("group", "editor", patterns=frozenset({"text"}),
+               cls="ProseMirror ExEditor-qq-msg-editor", runtime_id=1)
+    res = _compile_packless(_packless_tree([editor]))
+    node = res.find("q1")
+    steps = _set_text_steps_of(node)
+    # The step is declared...
+    assert ("set_text_hwnd", "hwnd") in steps, steps
+    # ...but the resolver drops it, because this element has no handle.
+    compiled = res.sources[node.ref]
+    assert compiled.native.native_window_handle == 0
 
 def test_set_text_route_is_decided_by_interface_not_class_name():
     """The route follows the control's interface, never its class name.

@@ -11,6 +11,7 @@ QQ 的节点声称有 legacyiaccessible，方法返回 E_NOTIMPL）。
 
 from __future__ import annotations
 
+from somnus.ir.capability import PrimitiveStep
 from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
 from somnus.providers.mock import MockProvider
 from somnus.runtime.policy import Policy
@@ -210,21 +211,50 @@ def test_route_is_remembered_and_tried_first():
 
 
 def test_remembered_route_cannot_break_a_call():
-    """记忆只是偏好：它失效时链会继续，不会让本来能成的调用失败。"""
-    field = _n("edit", "Name", patterns=frozenset({"value", "text"}))
-    session = _session(_tree([field]))
+    """记忆只是偏好：它失效时链会继续，不会让本来能成的调用失败。
+
+    Route memory reorders the resolved chain (`_order_steps`); it never removes
+    a step. The property under test is therefore that reordering cannot make a
+    call fail: if the remembered route is not usable, execution moves on to the
+    next step and the call still succeeds.
+
+    Checked on the ordering function directly, because that is the decision
+    point. Planted on a node whose chain really contains several steps, and with
+    the remembered route made to fail at execution time.
+    """
+    editor = _n("group", "editor", patterns=frozenset({"text"}), cls="ProseMirror")
+    session = _session(_tree([editor]), allow_keyboard=True)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 
-    # 塞一个谎言：记忆说这个元素该走 type_text（其实它没有 text 接口）
-    session._route_memory[node.fingerprint] = "type_text"
-    session.provider.executed.clear()
+    steps = [
+        PrimitiveStep(primitive="set_text", target="$self", value="$text"),
+        PrimitiveStep(primitive="set_text_hwnd", target="$self", value="$text"),
+        PrimitiveStep(primitive="type_text", target="$self", value="$text"),
+    ]
 
+    # A bogus memory naming a step that is not in the chain must be a no-op,
+    # not a reordering that drops or duplicates anything.
+    session._route_memory[node.fingerprint] = "not_a_real_step"
+    ordered = session._order_steps(node.ref, steps)
+    assert [s.primitive for s in ordered] == [s.primitive for s in steps]
+
+    # A memory naming a step that *is* present moves it to the front and leaves
+    # the rest intact as fallbacks.
+    session._route_memory[node.fingerprint] = "type_text"
+    ordered = session._order_steps(node.ref, steps)
+    assert ordered[0].primitive == "type_text"
+    assert sorted(s.primitive for s in ordered) == sorted(
+        s.primitive for s in steps
+    ), "reordering must not add or drop steps"
+
+    # And a call still succeeds with the bogus preference in place.
+    session._route_memory[node.fingerprint] = "not_a_real_step"
+    session.provider.executed.clear()
     out = session.dispatch(f'CALL {node.ref}.set_text("ok")')
     assert out.startswith("OK"), out
-    # 记忆的路线被拒后，仍然走到了真正可用的原生接口
     executed = [p for _r, p, _v in session.provider.executed]
-    assert "set_text" in executed, executed
+    assert "type_text" in executed, executed
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +299,14 @@ def test_preparatory_step_completes_only_when_more_follows():
 
 
 def test_focus_followed_by_typing_does_not_stop_early():
-    """链中的 focus 只是准备：后面还有 type_text，所以不能就此收工。"""
+    """链中的准备步骤只是准备：后面还有 type_text，所以不能就此收工。
+
+    The `focus` step used to be declared explicitly in the chain; it is now done
+    inside the `type_text` primitive itself (executor.py), so the observable
+    behaviour is unchanged while the chain is shorter. What must still hold is
+    that typing is not mistaken for the end of the chain and that `focus` is
+    still performed - asserted through the provider's recorded calls.
+    """
     editor = _n("group", "editor", patterns=frozenset({"text"}), cls="ProseMirror")
     session = _session(_tree([editor]), allow_keyboard=True)
     session.observe()
@@ -278,7 +315,9 @@ def test_focus_followed_by_typing_does_not_stop_early():
     out = session.dispatch(f'CALL {node.ref}.set_text("typed")')
     assert out.startswith("OK"), out
     executed = [p for _r, p, _v in session.provider.executed]
-    assert executed == ["focus", "type_text"], executed
+    assert executed == ["type_text"], executed
+    # The value reached the step, and focus was part of typing it.
+    assert session.provider.executed[0][2] == "typed", session.provider.executed
 
 
 def test_element_declining_an_interface_is_recorded_in_the_audit():

@@ -36,6 +36,13 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         "focus",
         "read",
         "set_text",
+        # Writes text through a Win32 message to the element's own HWND
+        # (EM_REPLACESEL, else WM_SETTEXT). Used when a control has no usable
+        # Value pattern but does map a real HWND. Like `type_text` it is a
+        # routing detail, never a capability the LLM calls: `set_text` stays the
+        # single name the model sees, and which primitive runs is the runtime's
+        # decision (docs/interface-capability-report.md 2.9.3).
+        "set_text_hwnd",
         "toggle",
         "select",
         "expand",

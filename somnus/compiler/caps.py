@@ -133,33 +133,38 @@ def _is_control(node: RawNode) -> bool:
 
 
 def _prefers_keyboard_entry(node: RawNode) -> bool:
-    """Whether ``set_text`` must type because there is no Value pattern to write.
+    """Whether ``set_text`` would have to type, because no write interface exists.
 
-    The native ``ValuePattern::SetValue`` is the control's own write interface:
-    the application performs it on its own thread, so it is atomic, does not
-    race the message pump and does not need keyboard focus. It is therefore
-    always preferred when it exists.
+    Kept as a *predicate*, not as the routing decision: routing now lives in the
+    ordered ``via`` chain in :func:`primitive_capabilities`, which tries
+    ValuePattern, then the element's own HWND, then typing. This helper answers
+    the single question "does this node have nothing but the keyboard?", which
+    is what tests and diagnostics want.
 
-    This function answers one narrow question - *is there any write interface
-    at all?* - and returns True only when the answer is no, i.e. the node
-exposes no ``value`` pattern. That is the self-drawn editor case: a
-    Chromium/Electron rich-text box (QQ's ProseMirror box, CodeMirror, Monaco)
-    and a terminal implement no Value pattern, so keystrokes are the only way in.
+    Note the answer is now slightly wider than before: a node that maps a native
+    HWND (``native_window_handle != 0``) also has a non-keyboard write route, so
+    it is *not* keyboard-only either. That is the correction from
+    docs/interface-capability-report.md 2.9.3 - the HWND route was hidden by the
+    report's "does the process own an Edit child window?" criterion, which asked
+    about the process instead of the element.
 
-    It used to also send every RichEdit/document control down the keyboard path
-    on the belief that they advertise a Value pattern they do not honour
+    ``ValuePattern::SetValue`` remains the first choice when present: the
+    application performs it on its own thread, so it is atomic, does not race
+    the message pump and does not need keyboard focus.
+
+    It used to send every RichEdit/document control down the keyboard path on
+    the belief that they advertise a Value pattern they do not honour
     ("Windows 11 Notepad discards SetValue"). Measured live on Windows 11
-    24H2: Notepad's RichEditD2DPT reports ``value``, ``IsReadOnly == 0``, and
-    ``SetValue`` lands correctly in 20/20 runs including CJK and long strings -
-    the belief no longer holds, and acting on it discarded the one reliable
-    route. The keyboard route it substituted is not merely slower: ``SendInput``
-    queues keystrokes into the target's input queue and returns before they are
-    processed, so a fast burst is dropped by the message pump (measured: 0/20
-    complete for a 10-character string, always a correct *prefix*). Typing is
-therefore the last resort it was always documented to be, never a preference
-    based on a control's class name.
+    24H2 that belief is false: Notepad's RichEditD2DPT reports ``value``,
+    ``IsReadOnly == 0``, and ``SetValue`` lands correctly in 20/20 runs including
+    CJK and long strings. The keyboard route it substituted is not merely slower:
+    ``SendInput`` queues keystrokes into the target's input queue and returns
+    before they are processed, so a fast burst is dropped by the message pump
+    (measured: 0/20 complete for a 10-character string, always a correct
+    *prefix*). Typing is the last resort it was always documented to be, never a
+    preference based on a control's class name.
     """
-    return "value" not in node.patterns
+    return "value" not in node.patterns and not node.native.native_window_handle
 
 
 def _is_text_entry(node: RawNode) -> bool:
@@ -216,42 +221,48 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         caps.setdefault("activate", _cap("activate"))
 
     # set_text is granted to *every* text-entry surface. The route it takes is
-    # decided by the control's own interface, not by its class name or role:
+    # decided by the control's own interface, not by its class name or role.
+    # Routes are tried in order of how much they cost the user, and each is a
+    # conditional `via` step so the resolver picks from the live element:
     #
-    # * a control with a Value pattern is written through it - the application's
-    #   own write interface, atomic and independent of keyboard focus;
-    # * a control with none (a self-drawn Chromium/Electron editor, a terminal)
-    #   is reached by focusing it and typing.
+    #   1. `set_text`      - ValuePattern::SetValue. The application's own write
+    #                        interface: atomic, no focus, no keystrokes.
+    #   2. `set_text_hwnd` - the element maps a real HWND, so the text is written
+    #                        with EM_REPLACESEL / WM_SETTEXT. Measured zero-focus
+    #                        (Notepad stays in the background, 4/4 runs including
+    #                        CJK and 300 chars) and unlike SendInput it cannot
+    #                        drop trailing characters. This is the route the
+    #                        capability report's wrong criterion had hidden.
+    #   3. `type_text`     - focus and type. Last resort, gated on
+    #                        `--allow-keyboard`, because it steals focus and
+    #                        provably loses characters.
     #
-    # Both routes are expressed as conditional `via` steps so the resolver picks
-    # them from the live element. The keyboard step is guarded by
-    # `missing:value`, which is what makes it the fallback it is documented to
-    # be rather than a preference.
+    # The ordering is the whole point: a self-drawn editor that maps no HWND and
+    # has no Value pattern (QQ's ProseMirror box) falls through to 3 and is
+    # refused unless keyboard input was explicitly enabled, while a control that
+    # maps one is written without touching the user's focus at all.
     if _is_text_entry(node):
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
-        if _prefers_keyboard_entry(node):
-            cap.via = [
-                PrimitiveStep(primitive="focus", target="$self"),
-                PrimitiveStep(primitive="type_text", target="$self", value="$text"),
-            ]
-        else:
-            cap.via = [
-                PrimitiveStep(
-                    primitive="set_text",
-                    target="$self",
-                    value="$text",
-                    condition="has:value",
-                ),
-                PrimitiveStep(
-                    primitive="focus", target="$self", condition="missing:value"
-                ),
-                PrimitiveStep(
-                    primitive="type_text",
-                    target="$self",
-                    value="$text",
-                    condition="missing:value",
-                ),
-            ]
+        cap.via = [
+            PrimitiveStep(
+                primitive="set_text",
+                target="$self",
+                value="$text",
+                condition="has:value",
+            ),
+            PrimitiveStep(
+                primitive="set_text_hwnd",
+                target="$self",
+                value="$text",
+                condition="hwnd",
+            ),
+            PrimitiveStep(
+                primitive="type_text",
+                target="$self",
+                value="$text",
+                condition="no-hwnd",
+            ),
+        ]
         caps.setdefault("set_text", cap)
 
     if "toggle" in patterns or role in ("checkbox", "switch"):

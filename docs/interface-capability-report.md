@@ -16,10 +16,11 @@
 | 写入通道 | 需要的条件 | 是否抢焦点 | 是否合成输入 | 实测结论 |
 |---|---|---|---|---|
 | **UIA `ValuePattern.SetValue`** | 控件实现 `Value` pattern | 否 | 否 | ✅ **首选**，记事本 20/20 |
-| **`WM_SETTEXT`** | 存在原生 HWND `Edit`/`RichEdit` | 否 | 否 | ✅ 可行，**零焦点要求** |
+| **`WM_SETTEXT` / `EM_REPLACESEL`** | **元素自己**有非零 `CurrentNativeWindowHandle` | 否 | 否 | ✅ **已实现**：后台窗口写入 3/3，焦点未抢（2.10） |
 | **CDP `Input.insertText`** | Chromium 应用开了调试端口 | 否 | 否 | ✅ 可行，但需应用配合 |
 | **UIA `LegacyIAccessible.SetValue`** | MSAA Provider 实现了它 | 否 | 否 | ❌ 通常 `E_NOTIMPL` |
 | **UIA `TextPattern`** | 控件实现 `Text` pattern | 否 | 否 | ❌ **只读**，无写入方法 |
+| **UIA `TextEditPattern`** | 控件实现 `TextEdit` pattern（Win8.1+） | 否 | 否 | ❌ 取得到但**不可写**：range 恒 NULL 且无 `SetText`（见 2.9） |
 | **MSAA `IAccessible::put_accValue`** | 同上 | 否 | 否 | ❌ Chromium 只给无名 Pane |
 | **`IAccessibleEx` 桥接** | Provider 实现它 | — | — | ❌ `E_NOINTERFACE` |
 | **虚拟桌面隔离 + 键盘** | 能把窗口移走 | **是** | **是** | ❌ 移不动 + 切桌面更打扰 |
@@ -28,11 +29,18 @@
 **判断顺序**（从上到下，第一个可用的即是答案）：
 
 ```
-1. 有没有原生 HWND Edit/RichEdit 子窗口？  → WM_SETTEXT
+1. 元素自己有非零的 NativeWindowHandle？    → WM_SETTEXT / EM_REPLACESEL
 2. 有没有 UIA ValuePattern？                → SetValue
 3. 是不是 Chromium 应用且开了调试端口？      → CDP
 4. 都没有                                   → 应用没暴露写入能力，如实报错
 ```
+
+> 运行时不是按此顺序硬编码，而是同一能力的一条有条件通道链；实际顺序为
+> **ValuePattern → 元素级 HWND → 键盘**（后两条互斥），详见 2.10.1。
+>
+> **第二轮探测（2.9）修正了两处判据**，并落地了一条新通道：
+> 第 1 步的判据从“进程内有原生 Edit 子窗口”改为“**元素自己的 HWND**”（已实现，见 2.10）；
+> 并补充实测：`TextEditPattern` 虽可取到但不可写，`ValuePattern2` 根本不存在。
 
 ---
 
@@ -61,6 +69,12 @@
 
 UIA 有两个独立的问题要问：**"你声称支持吗"** 和 **"取出来真的能用吗"**。
 它们**不总是一致**，所以两者都要测。
+
+> **⚠️ 第二轮探测补充**：本节表格只覆盖了**第一代** pattern id，遗漏了文本家族里的
+> **`TextEditPattern`**（`UIA_TextEditPatternId` = 10032，Win8.1+）。它与
+> `TextPattern`（10014）是**两个不同的接口**，而不是同一个接口的别名。
+> 只探测 `TextPattern` 就得出"文本接口都是只读的"，覆盖的只是该家族的只读成员。
+> 已补测，结论见 **2.9**（结论是"仍然写不进去"，但**理由和原文不同**）。
 
 | Pattern | `IsXxxPatternAvailable` | `GetCurrentPattern` |
 |---|---|---|
@@ -174,6 +188,10 @@ set_accValue(0)   → COMError -2147467259 '未指定的错误'
 
 ### 2.8 原生 HWND 子窗口：不存在
 
+> **判据已被 2.9.3 修正**：本节问的是“进程里有原生 `Edit` 子窗口吗”，而 `WM_SETTEXT`
+> 真正需要的是“**元素自己有非零 `CurrentNativeWindowHandle`**”。本节的实测数据仍然有效，
+> 结论（QQ 不适用）也恰好相同，但**推理过程不可推广到其他控件**。
+
 `WM_SETTEXT` 需要真实的 Win32 窗口句柄。枚举：
 
 ```
@@ -187,6 +205,191 @@ QQ 是纯 Electron，**没有原生 Edit 子窗口**，`WM_SETTEXT` 不适用。
 
 ---
 
+### 2.9 第二轮探测：`TextEditPattern` 与元素级 HWND（新结论）
+
+> 本节由 `tools/probe_write_routes.py` 与 `tools/probe_textedit_state.py` 产出（均可在本仓库直接重跑）。
+
+第一轮探测留下了两个真空白，已补测。**结论：QQ 输入框依然写不进去，但原文给出的
+理由有两处不准确**，若不修正，后来者会按错误的前提去评估其他控件。
+
+复现工具：`tools/probe_write_routes.py`、`tools/probe_textedit_state.py`（本轮新增）。
+
+### 2.9.1 `TextEditPattern`：**真的存在，且真的取得到**
+
+在同一个 QQ 输入框（`class='ProseMirror is-empty ExEditor-qq-msg-editor'`）上：
+
+```
+-- does it CLAIM support? --
+  Value              [1st] available=False
+  Text               [1st] available=True
+  LegacyIAccessible  [1st] available=True
+  Invoke             [1st] available=False
+  TextEdit           [8.1] available=True      ← 原文未测
+  Text2              [8.1] available=False
+
+-- can the pattern ACTUALLY be fetched? --
+  Text               [1st] FETCHED  queried
+  TextEdit           [8.1] FETCHED  queried      ← 原文未测
+```
+
+**所以原文 2.3 节"全部 `E_NOINTERFACE`"的说法只对 *Provider 侧* 接口成立。**
+`GetCurrentPattern(UIA_TextEditPatternId)` 是**成功**的，取到的对象
+`QueryInterface(IUIAutomationTextEditPattern)` 也**成功**。
+这是原文漏掉的一条真实通道。
+
+### 2.9.2 但它依然不能写：range 是空指针，且没有 `SetText`
+
+`TextEditPattern` 的两个 range 都取得到，但**底层指针为 NULL**，且**没有写入方法**：
+
+```
+GetActiveComposition   range obtained
+    has SetText = False
+    GetText -> ValueError (NULL COM pointer access)
+GetConversionTarget    range obtained
+    has SetText = False
+    GetText -> ValueError (NULL COM pointer access)
+```
+
+"空指针"这个结果本身是有歧义的，所以又做了**状态对照实验**——因为这两个 range 的语义是
+"当前输入法组合串"，在**未聚焦 / 空编辑器**下返回 NULL 是设计行为，不能据此判死：
+
+| 状态 | 操作 | `GetActiveComposition` | `HasKeyboardFocus` |
+|---|---|---|---|
+| A（原状，`is-empty`） | — | NULL，无 `SetText` | 0 |
+| B（`SetFocus()` 之后） | 仅 UIA `SetFocus`，无任何按键 | **仍然** NULL，无 `SetText` | **1** |
+
+聚焦后状态确实变了（`HasKeyboardFocus = 1`，class 里出现 `ProseMirror-focused`），
+但两个 range **依然是 NULL**。同时 `TextPattern` 读到：
+
+```
+TextPattern document text = '\n'
+TextPattern selection len = 1
+TextPattern selection text = ''
+selection range has SetText = False
+```
+
+**结论**：`TextEditPattern` 在 Chromium 里只用于输入法组合串上报，**它不是一个通用写入接口**。
+编辑区为空时，两个 range 都没有可操作对象，因此无字可写。
+
+> **这一条值得单独记住**：原文第二条铁律是"方法存在 ≠ 有实现"。
+> 与其对称的另一半同样重要：**"方法返回 NULL 一次 ≠ 永远不可用"**。
+> range 类接口必须在它被定义的那个状态（此处是输入法组合进行中）下测，否则会把
+> "当前无数据"误判为"接口不存在"。本轮没有用合成输入去构造组合态，因为那正是项目
+> 拒绝的路线；因此 2.9.2 的结论限定为**"在无合成输入的前提下不可用"**。
+
+### 2.9.3 元素级 HWND：原文的判据写错了（真实缺口）
+
+> **✅ 已修复并落地**（v0.2）：本节描述的缺口已实现并端到端验证通过，见 **2.10**。
+
+原文 2.8 节用"枚举进程顶层窗口，找 `Edit`/`RichEdit` 子窗口"来判定 `WM_SETTEXT` 是否适用，
+并据此说"QQ 没有原生 Edit 子窗口，`WM_SETTEXT` 不适用"。
+
+**这个判据是错的。** `WM_SETTEXT` 的正确前置条件不是"存在原生 Edit 子窗口"，
+而是"**目标元素自己有非零的 `CurrentNativeWindowHandle`**"。实测该控件：
+
+```
+NativeWindowHandle = 0      ← 该元素不映射任何 HWND
+```
+
+**结论恰好相同（不适用），但原因不同。** 差别在于判据：按元素级 HWND 判，
+每一个控件都能各自给出确定的答案；按"进程里有没有 Edit 子窗口"判，会
+**把同一进程内本来可写的原生控件也一起误杀**（一个 Electron 应用完全可能同时
+自带可写的原生 Edit 子窗口和自绘编辑器）。
+
+**同时暴露一个实现缺口**：`NativeRef`（`somnus/ir/node.py`）当前只有
+`window_id / runtime_id / automation_id / class_name / control_type / path`，
+**没有保存元素级 HWND**。因此原文第六节流程图第 1 步在当前代码里**无从执行**。
+若要启用 `WM_SETTEXT` / `EM_REPLACESEL` 通道，必须先把
+`CurrentNativeWindowHandle` 存进 `NativeRef`。
+
+### 2.9.4 `ValuePattern2` 不存在（避免一个伪造结论）
+
+本轮曾把 `ValuePattern2` / `IUIAutomationValuePattern2` 当作"第二代 pattern"列入探测表。
+查本机 typelib 全部 `UIA_*PatternId` 常量后确认：
+
+```
+UIA_ValuePatternId  10002        ← 只有这一个
+（无 UIA_ValuePattern2Id，无 IUIAutomationValuePattern2）
+```
+
+**UIA 从未定义过 `ValuePattern2`。** `ValuePattern.SetValue` 是 UIA 唯一的取值写入接口。
+第一轮探测把它漏掉无所谓；但如果像本轮初稿那样去"探测"一个不存在的常量，
+输出会是一行看起来像实测数据的 `MISSING`，**实际上什么也没测**。
+值家族里真正属于新代的是 `TextPattern2` / `TransformPattern2` / `SelectionPattern2`（均 8.1+）。
+
+---
+
+## 2.10 已实现的第三条写入通道：元素级 HWND（实测数据）
+
+本节记录 2.9.3 指出的缺口**已修复**后的实测结果。工具：直接跑 runtime。
+
+### 2.10.1 通道链（现在的实际顺序）
+
+`set_text` 现在是一条**有序通道链**，由解析器按条件的实时求值决定跑哪一条：
+
+| 顺序 | primitive | 条件 | 前提 | 抢焦点 |
+|---|---|---|---|---|
+| 1 | `set_text` | `has:value` | `ValuePattern` | 否 |
+| 2 | **`set_text_hwnd`** | **`hwnd`** | **元素级 `NativeWindowHandle != 0`** | **否** |
+| 3 | `type_text` | `no-hwnd` | 需 `--allow-keyboard` | **是** |
+
+链在 `set_text` 能力内部完成，**LLM 依然只看到 `set_text` 一个名字**，
+看不到哪条通道在跑——与 `type_text` 既有的处理方式一致。
+
+### 2.10.2 端到端实测（记事本，窗口置后台）
+
+通过 runtime 真实调用，目标窗口**故意置为后台**，前景始终是终端：
+
+```
+foreground before = 'π - SomnusUI'
+notepad is foreground? False        ← 确实是后台
+
+-- dispatch with notepad in the BACKGROUND --
+  sent_len=3   got='后台一'          exact=True fg_still_background=True
+  sent_len=14  got='background-two' exact=True fg_still_background=True
+  sent_len=50  got='中中中…中'        exact=True fg_still_background=True
+```
+
+**3/3 精确写入，焦点一次未被抢走**，含 CJK 与 50 字符长串。
+对比键盘路径（第五节的实测）：同样条件下 `SendInput` 是 **0/20 完整**，
+且必然抢焦点。这就是这条通道值得存在的全部理由。
+
+### 2.10.3 两个反例仍然正确
+
+通道链必须有条件地失败，否则就是把"能写"当成"总能写"：
+
+```
+QQ 输入框（hwnd=0，无 ValuePattern）
+→ ERR ACTION_NOT_SUPPORTED msg="...synthetic keyboard input is disabled"
+
+记事本（hwnd=0x940B7E）
+→ OK_UNVERIFIED rev=3
+```
+
+同一个 runtime、同一次会话，两个控件走不同通道，QQ 依然**如实报错**。
+
+### 2.10.4 实现细节（都有理由，不是任意选择）
+
+- **`native_window_handle` 入 `NativeRef`**，由缓存请求一并拉取（属性 id 30020）。
+  一次元素属性单读会破坏批量化，这是缓存存在的意义。
+- **`SendMessageTimeout`（2s，`SMTO_ABORTIFHUNG`）而非 `SendMessage`**：
+  后者会阻塞到目标消息泵响应，一个模态对话框就能把 agent 永久卡死。
+- **先 `EM_REPLACESEL`（含 `EM_SETSEL` 全选），才退到 `WM_SETTEXT`**：
+  前者是"替换选区"语义、贴近用户编辑且保留撤销栈；后者是通用回退。
+- **句柄为空时不发送**：发给 `HWND 0` 会直送桌面，因此该判断是**安全属性**，不是优化。
+- **句柄从活元素上现读**（`_element_hwnd`），而非用快照时的旧值：
+  元素重建后报的是它当下的句柄。
+
+### 2.10.5 覆盖面（不要高估它）
+
+实测全部已开窗口：**357 个元素中仅 25 个（7%）有非零 HWND**，
+且多为窗口级骨架（任务栏、拖拽栏、树视图）。也就是说这条通道
+**只对一部分原生控件有效**，自绘控件（QQ/Steam/VS Code）依旧不在其内。
+
+它解决的是"原生控件因判据错误而被误杀"这一类，而不是"自绘控件可以写了"。
+
+---
+
 ## 三、对照组：能写入的控件长什么样
 
 | | 记事本编辑器 | QQ 输入框 |
@@ -197,11 +400,13 @@ QQ 是纯 Electron，**没有原生 Edit 子窗口**，`WM_SETTEXT` 不适用。
 | **IsReadOnly** | `0` | — |
 | **`SetValue` ** | **✅ 实测生效 20/20** | — |
 | **Text pattern** | 可用（只读） | 可用（只读） |
-| **原生 HWND** | ✅ `RichEditD2DPT` | ❌ 无 |
+| **TextEdit pattern** | — | ✅ 存在且可取到，但 range 为 NULL 且无 `SetText`（见 2.9） |
+| **元素级 HWND** | ✅ `RichEditD2DPT` | ❌ `0`（不是"进程里无 Edit 子窗口"） |
 | **可写入** | **是** | **否** |
 
 **决定性差别只有一行**：`ValuePattern` 存在与否。
 `Text` pattern 两者都有——它**不能**用来判断可写性。
+（`TextEdit` pattern 也同样不能：两列都取得到，但只有一列真的写得进去。）
 
 ---
 
@@ -218,8 +423,22 @@ QQ 是纯 Electron，**没有原生 Edit 子窗口**，`WM_SETTEXT` 不适用。
 ### 4.3 `ITextRangeProvider` / `ITextProvider` / `ITextEditProvider`
 → 全部 `E_NOINTERFACE`。拿不到 TextRange 对象，也就无法在范围上做任何事。
 
+> **⚠️ 这一条容易被误读，补充澄清（见 2.9）**：上面说的是向**元素**查询
+> *Provider 侧*接口时全部 `E_NOINTERFACE`。但这**不等于** UIA 的
+> `TextEditPattern` 不可用——实测 `GetCurrentPattern(UIA_TextEditPatternId)`
+> 是**成功**的。两者不矛盾：Chromium 自己实现了 UIA 的 pattern 映射，
+> 但没把底层 Provider 接口暴露给外部。**因此本节结论仅限于
+> “不能绕过 UIA 直接用 Provider 接口”，不能引申为“TextEditPattern 不存在”。**
+> 而 TextEditPattern 虽可取到，也依然不能写——原因见 2.9.2（range 为 NULL 且无 `SetText`），
+> **不是因为 `E_NOINTERFACE`**。
+
 ### 4.4 UIA `TextPattern` 写入
 → `TextPattern` 无写入方法，`range has SetText = False`。设计上就是只读。
+
+### 4.4b UIA `TextEditPattern` 写入（2.9 新增实测）
+→ pattern 本身**取得到**（`available=True`，`GetCurrentPattern` 成功），
+但两个 range（`GetActiveComposition` / `GetConversionTarget`）在聚焦前后
+**均为 NULL 且无 `SetText`**。它是输入法组合串的上报接口，不是通用写入通道。
 
 ### 4.5 `LegacyIAccessible.SetValue`
 → 方法存在但 `E_NOTIMPL`。
@@ -290,8 +509,12 @@ COMError (-2147024891, '拒绝访问')
 ```
 目标控件
   │
-  ├─ 1. 有原生 HWND Edit/RichEdit 子窗口吗？
-  │      有 → WM_SETTEXT（零焦点，最干净）
+  ├─ 1. 该元素自己有非零的 NativeWindowHandle 吗？
+  │      有 → WM_SETTEXT / EM_REPLACESEL（零焦点，最干净）
+  │      ★ 判据是【元素级 HWND】，不是“进程里有没有 Edit 子窗口”。
+  │        后者会把同进程中本来可写的原生控件一起误杀（见 2.9.3）。
+  │      ✅ 已实现：`native_window_handle` 已入 `NativeRef`，
+  │        运行时通过 `set_text_hwnd` primitive 自动选路（见 2.10）。
   │
   ├─ 2. 有 UIA ValuePattern 吗？
   │      ① IsValuePatternAvailable = true
@@ -307,11 +530,19 @@ COMError (-2147024891, '拒绝访问')
             不要用键盘偷偷改（除非显式 --allow-keyboard）
 ```
 
-### 判断可写性的三条铁律
+> 已实测排除、**不必再试**的中间选项（详见 2.9）：`TextEditPattern` 在 Chromium 上
+> 虽然存在且取得到，但只用于输入法组合串上报，range 恒为 NULL 且无 `SetText`；
+> `TextPattern` / `TextPattern2` 均为只读；`ValuePattern2` 不存在。
+
+### 判断可写性的四条铁律
 
 1. **`IsXxxPatternAvailable = true` 不等于能用** —— 必须真的 `GetCurrentPattern` 一次。
 2. **方法存在不等于有实现** —— `has SetValue = True` 但调用返回 `E_NOTIMPL`。必须真的调用。
-3. **`TextPattern` 存在不代表可写** —— 它是只读接口。判据是 `ValuePattern`。
+3. **`TextPattern` 存在不代表可写** —— 它是只读接口。**唯一的可写判据是 `ValuePattern`。**
+   同样适用于 `TextEditPattern`：它与 `TextPattern` 是两个接口，可取到，但**不是通用写入入口**。
+4. **返回 NULL 一次不等于永远不可用** —— 与第 2 条对称。像 `TextEditPattern` 的
+   range 这类接口，只在特定状态（输入法组合进行中）才有值；必须在**它被定义的那个状态**下
+   测，否则会把“当前无数据”误判成“接口不存在”。
 
 ### 探测的顺序建议
 
@@ -320,6 +551,17 @@ ControlType → ValuePattern(含 IsReadOnly) → 实际 SetValue 调用 → 读�
 ```
 
 前三步都是只读探测，最后一步才是写入。
+
+### 第二轮探测总览
+
+| 条目 | 第二轮实测结果 |
+|---|---|
+| **`TextEditPattern` 存在且可取到** | ✅ 真（原文未测） |
+| **`TextEditPattern` 能写入** | ❌ 否（range 恒 NULL，无 `SetText`）——**结论不变，但理由不同** |
+| **`ValuePattern2` 存在** | ❌ 不存在（UIA 从未定义） |
+| **原文 `WM_SETTEXT` 判据** | ❌ 判据写错（应为元素级 HWND，非“进程内有 Edit 子窗口”） |
+| **元素级 HWND 通道已实现** | ✅ 是（记事本后台写入 3/3，焦点未抢，见 2.10） |
+| **QQ 输入框可写** | ❌ 否（两个独立机制均已实测排除） |
 
 ---
 
@@ -332,10 +574,16 @@ ControlType → ValuePattern(含 IsReadOnly) → 实际 SetValue 调用 → 读�
 
 具体来说，一个控件要能被外部写入，应用必须至少提供以下之一：
 
-1. 原生 `Edit`/`RichEdit` 子窗口（→ `WM_SETTEXT`）
+1. 该元素自己的原生 HWND（`CurrentNativeWindowHandle != 0`）→ `WM_SETTEXT` / `EM_REPLACESEL`
 2. `ValuePattern` 实现（→ `SetValue`）
 3. Chromium 调试端口（→ CDP）
 4. 自定义 UIA Provider / IPC 接口（→ 需应用配合）
+
+> 第 1 项已修正：原文写作“原生 `Edit`/`RichEdit` **子窗口**”，判据过宽且会误杀
+> 同进程内可写的原生控件。正确的判据是**元素自己映射的 HWND**。
+>
+> 另：**`TextEditPattern` 不属于上面四条中的任何一条**。它看上去像第 4 条
+> （一个真正的 UIA 接口），但实测只能上报输入法组合串，不能写入。
 
 四者皆无时，可选方案只剩下：**应用专用集成** 或 **合成输入**（有上述固有问题）。
 
@@ -347,6 +595,20 @@ SomnusUI 的选择是：**如实报告这个事实**，而不是用合成输入�
 
 本报告所有数据可通过以下方式复现。核心是把 UIA 的两个问题分开问：
 **"你声称支持吗"** 和 **"取出来真的能用吗"**。
+
+**第二轮探测（2.9 节）已封装为可直接运行的工具**，无需手写脚本：
+
+```bash
+python tools/probe_write_routes.py --list                 # 列出候选输入控件
+python tools/probe_write_routes.py --window w4 --match ExEditor-qq-msg-editor
+python tools/probe_write_routes.py --window w4 --match ExEditor-qq-msg-editor --write
+python tools/probe_textedit_state.py                      # 聚焦前后状态对照（2.9.2）
+```
+
+这两个工具已覆盖完整 pattern 矩阵（含 `TextEditPattern` / `TextPattern2`）、
+元素级 HWND、以及"声称 vs 真取到 vs 真写入"的三级验证。
+
+下面是原始复现方式（已保留）。注意 `PROBE` 列表已在 2.9 中被扩展：
 
 ```python
 from somnus.providers.windows.uia import UiaProvider
@@ -367,6 +629,11 @@ PROBE = [
      "UIA_LegacyIAccessiblePatternId", "IUIAutomationLegacyIAccessiblePattern"),
     ("Invoke", "UIA_IsInvokePatternAvailablePropertyId",
      "UIA_InvokePatternId", "IUIAutomationInvokePattern"),
+    # ↓ 第二轮补充（见 2.9）。注意：不要写 ValuePattern2——它不存在。
+    ("TextEdit", "UIA_IsTextEditPatternAvailablePropertyId",
+     "UIA_TextEditPatternId", "IUIAutomationTextEditPattern"),
+    ("Text2", "UIA_IsTextPattern2AvailablePropertyId",
+     "UIA_TextPattern2Id", "IUIAutomationTextPattern2"),
 ]
 
 

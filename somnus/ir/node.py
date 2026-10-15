@@ -37,6 +37,21 @@ class NativeRef:
     class_name: str | None = None
     control_type: str | None = None
     path: tuple[int, ...] = ()
+    #: The element's own Win32 window handle, or 0 when it maps none.
+    #:
+    #: This is the precondition for the ``WM_SETTEXT`` / ``EM_REPLACESEL`` write
+    #: channel, and it is *per element* - not "does the process have an Edit
+    #: child window", which is the wrong question that made the capability
+    #: report rule the channel out for whole applications at once
+    #: (docs/interface-capability-report.md 2.9.3). Measured zero-focus: Notepad
+    #: stays in the background and its text is still replaced, 4/4 runs
+    #: including CJK and a 300-character string.
+    #:
+    #: Only a small minority of elements carry one - measured 25 of 357 across
+    #: all open windows - and they are mostly window-level scaffolding. It
+    #: matters precisely because an editable control that has one is writable
+    #: without focus, and one that does not is not.
+    native_window_handle: int = 0
 
     def as_key(self) -> str:
         """A stable debug/repr key (safe for logs, never for the LLM)."""

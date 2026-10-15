@@ -178,14 +178,24 @@ class Resolver:
         return steps
 
     def _condition_holds(self, step: PrimitiveStep, node: SemanticNode) -> bool:
-        """Evaluate a step's ``has:``/``missing:`` pattern gate against ``node``.
+        """Evaluate a step's ``has:``/``missing:``/``hwnd`` gate against ``node``.
 
         The node carries its own native pattern names, so the gate is exact and
         does not depend on a raw-tree lookup. A missing condition means "always
         run".
+
+        ``hwnd`` / ``no-hwnd`` are a separate predicate because a native window
+        handle is not a UIA pattern: it is a property of how the control is
+        implemented, and it is what gates the ``set_text_hwnd`` route. Expressing
+        it as a condition keeps every write route in one ordered ``via`` list
+        instead of branching in code.
         """
         if not step.condition:
             return True
+        if step.condition == "hwnd":
+            return self._has_hwnd(node)
+        if step.condition == "no-hwnd":
+            return not self._has_hwnd(node)
         kind, _, pattern = step.condition.partition(":")
         patterns = node.patterns
         if kind == "has":
@@ -193,6 +203,20 @@ class Resolver:
         if kind == "missing":
             return pattern not in patterns
         return True
+
+    def _has_hwnd(self, node: SemanticNode) -> bool:
+        """Whether the node maps a real Win32 window handle.
+
+        The compiled node does not carry the handle itself (the semantic layer
+        never exposes native identity), so the native ref is consulted. A node
+        whose ref is gone is treated as not having one, which makes the resolver
+        fall through to the keyboard route rather than sending a message to a
+        dead handle.
+        """
+        source = self.result.sources.get(node.ref)
+        if source is None:
+            return False
+        return bool(getattr(source.native, "native_window_handle", 0))
 
     def _resolve_target(
         self, node: SemanticNode, step: PrimitiveStep, members: dict[str, str]

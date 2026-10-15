@@ -103,6 +103,8 @@ _P_TOGGLE_STATE = 30042
 _P_EXPAND_COLLAPSE = 30053
 _P_IS_READONLY = 30046
 _P_DESCRIPTION = 30004
+#: The element's own Win32 HWND (0 when it maps none).
+_P_NATIVE_WINDOW_HANDLE = 30020
 
 _PATTERN_IDS = {
     "invoke": 10000,
@@ -730,6 +732,10 @@ class UiaProvider:
             class_name=cached.CachedClassName or None,
             control_type=role,
             path=path,
+            # Read from the *cached* property set, like every other field here.
+            # A single element property read would undo the batching; the value
+            # is already in the cache because cache.py requests 30020.
+            native_window_handle=_cached_int(cached, _P_NATIVE_WINDOW_HANDLE) or 0,
         )
         # Keep the live element so later executions avoid a re-find round trip.
         if native.runtime_id:
