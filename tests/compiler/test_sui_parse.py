@@ -79,3 +79,47 @@ def test_parse_observe():
 def test_escaped_quotes_in_args():
     action = parse_action('CALL q1.set_text("say \\"hi\\"")')
     assert action.args["_0"] == 'say "hi"'
+
+
+def test_escaped_backslash_in_args():
+    """A literal backslash is written ``\\\\``; the parser must collapse it.
+
+    Regression: the parser used to handle only ``\\"`` and ``\\n``, so a
+    Windows path could not be expressed at all - ``D:\\tmp\\notes.txt`` came out
+    with a real newline where ``\\n`` was, and ``D:\\\\tmp`` doubled every
+    separator. This is the case a Save-As dialog hits immediately.
+    """
+    action = parse_action('CALL q1.set_text("D:\\\\tmp\\\\notes.txt")')
+    assert action.args["_0"] == "D:\\tmp\\notes.txt"
+
+
+def test_escaped_backslash_before_n_stays_a_path():
+    """``\\\\n`` is a backslash followed by ``n``, not a newline."""
+    action = parse_action('CALL q1.set_text("notes\\\\new")')
+    assert action.args["_0"] == "notes\\new"
+
+
+def test_backslash_before_t_is_not_a_tab():
+    """``\\t`` must survive verbatim: ``C:\\temp`` is a folder, not a tab."""
+    action = parse_action('CALL q1.set_text("C:\\temp")')
+    assert action.args["_0"] == "C:\\temp"
+
+
+def test_newline_escape_still_works():
+    """A raw ``\\n`` is still the multi-line escape (long-text input relies on it)."""
+    action = parse_action('CALL q1.set_text("line one\\nline two")')
+    assert action.args["_0"] == "line one\nline two"
+
+
+def test_round_trip_through_serializer():
+    """Parse(quote(s)) == s for strings the serializer must represent exactly."""
+    from somnus.sui.serialize import _quote
+
+    for s in (
+        "D:\\tmp\\notes.txt",
+        "C:\\Users\\new",
+        "line one\nline two",
+        'he said "hi"',
+        "back\\slash",
+    ):
+        assert parse_action(f"CALL q1.set_text({_quote(s, 1000)})").args["_0"] == s

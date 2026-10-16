@@ -260,10 +260,51 @@ def _split_args(text: str) -> list[str]:
     return [p for p in (s.strip() for s in out) if p]
 
 
+def _unescape(text: str) -> str:
+    """Reverse :func:`somnus.sui.serialize._quote`.
+
+    The serializer escapes ``\\`` -> ``\\\\``, ``"`` -> ``\\"`` and a real
+    newline -> ``\\n``; this is its exact inverse. It is a single left-to-right
+    pass so a backslash that escapes another backslash is consumed once and
+    never re-read: ``"a\\\\nb"`` is the characters ``a``, ``\\``, ``n`` -> ``a\\n``
+    (a backslash and an ``n``), not a newline.
+
+    Only those three escapes are decoded - exactly what the serializer emits.
+    ``\\t`` and ``\\r`` are deliberately **not** decoded: on Windows a path
+    like ``D:\\tmp\\notes.txt`` contains ``\\t``, and treating it as a tab would
+    corrupt the one input this function most needs to get right. An unknown
+    escape (``\\q``, ``\\t``) is kept verbatim, which is what makes such a path
+    survive intact.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        nxt = text[i + 1]
+        if nxt == "\\":
+            out.append("\\")
+        elif nxt == '"':
+            out.append('"')
+        elif nxt == "n":
+            out.append("\n")
+        else:
+            # Unknown escape (including \t, \r): keep both characters rather
+            # than guess. This is what leaves `D:\tmp` intact.
+            out.append(ch)
+            out.append(nxt)
+        i += 2
+    return "".join(out)
+
+
 def _parse_value(text: str) -> Any:
     text = text.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1].replace('\\"', '"').replace("\\n", "\n")
+        return _unescape(text[1:-1])
     lowered = text.lower()
     if lowered in ("true", "false"):
         return lowered == "true"
