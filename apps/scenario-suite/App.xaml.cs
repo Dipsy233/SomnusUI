@@ -16,6 +16,8 @@ namespace ScenarioSuite;
 ///   console  - conversation list + message pane (simulated chat, no rich text)
 ///   native   - real Win32 EDIT controls (an HWND, no Value pattern): the
 ///              Win32-message write route, with no external program needed
+///   menu     - a menu bar and a context menu: items appear only when opened
+///   dialog   - a destructive action behind a modal confirmation
 /// </summary>
 public partial class App : Application
 {
@@ -30,6 +32,8 @@ public partial class App : Application
             "tree" => new TreeWindow(),
             "console" => new ConsoleWindow(),
             "native" => new NativeWindow(),
+            "menu" => new MenuWindow(),
+            "dialog" => new DialogWindow(),
             _ => new StoreWindow(),
         };
         window.Title = "Scenario Suite - " + scenario;

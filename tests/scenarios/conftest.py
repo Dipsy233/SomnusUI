@@ -60,6 +60,16 @@ def native_session():
 
 
 @pytest.fixture
+def menu_session():
+    return _session(S.menu_tree())
+
+
+@pytest.fixture
+def dialog_session():
+    return _session(S.dialog_tree())
+
+
+@pytest.fixture
 def make_session():
     """Build a session for any scenario, with policy knobs for the routing tests."""
 

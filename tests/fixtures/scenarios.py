@@ -687,6 +687,169 @@ def native_tree(
 
 
 # ---------------------------------------------------------------------------
+# menu: a menu bar and a context menu
+# ---------------------------------------------------------------------------
+
+
+def _menubar_entry(
+    window_id: str,
+    ids: _Ids,
+    label: str,
+    items: list[tuple[str, str]],
+    open_menu: str | None,
+) -> RawNode:
+    """One menu bar entry, with its items realized only when it is open."""
+    children = []
+    if open_menu == label:
+        children = [
+            _node(window_id, "menuitem", item_label, ids=ids,
+                  patterns=P_INVOKE, automation_id=f"menu_item_{aid}")
+            for aid, item_label in items
+        ]
+    return _node(
+        window_id, "menu", label, ids=ids, patterns=P_INVOKE,
+        states=frozenset({"expanded"} if open_menu == label else {"collapsed"}),
+        automation_id=f"menu_bar_{label}", children=children,
+    )
+
+
+def menu_tree(
+    *,
+    open_menu: str | None = None,
+    last_action: str = "就绪",
+    context_open: bool = False,
+    window_id: str = "w1",
+) -> RawTree:
+    """A window with a menu bar, driven the way a real one is.
+
+    ``open_menu`` names the menu bar entry whose submenu is showing; its items
+    are only realized then. That is the property that matters: a menu is a
+    *navigation* - the items do not exist in the tree until the menu is opened,
+    so an agent must activate the bar entry first and read the delta, exactly as
+    with a real Windows menu.
+
+    ``context_open`` shows the target row's context menu instead - the same
+    shape the runtime's ``context_menu`` gesture produces.
+    """
+    ids = _Ids()
+
+    # Allocate the container's id before the entries, so the menubar owns the
+    # lowest id in its subtree (a stable, readable order rather than one that
+    # depends on how the children happen to be built).
+    menubar = _node(
+        window_id, "menubar", "菜单栏", ids=ids,
+        children=[
+            _menubar_entry(window_id, ids, label, items, open_menu)
+            for label, items in _MENU_ITEMS.items()
+        ],
+    )
+
+    # The document area: one row that owns a context menu.
+    row = _node(
+        window_id, "listitem", "文档 1", ids=ids, patterns=P_SELECT,
+        automation_id="menu_row",
+    )
+    document = _node(
+        window_id, "list", "文档", ids=ids, patterns=P_LIST,
+        automation_id="menu_documents", children=[row],
+    )
+
+    root_children = [
+        menubar,
+        document,
+        _node(window_id, "text", last_action, ids=ids, patterns=P_TEXT,
+              automation_id="menu_status"),
+    ]
+    if context_open:
+        # The context menu attached to the row, as the runtime mounts it: it is
+        # part of the same tree, under the node that owns it.
+        root_children.append(
+            _node(
+                window_id, "menu", "上下文", ids=ids,
+                children=[
+                    _node(window_id, "menuitem", "重命名", ids=ids, patterns=P_INVOKE,
+                          automation_id="menu_ctx_rename"),
+                    _node(window_id, "menuitem", "删除", ids=ids, patterns=P_INVOKE,
+                          automation_id="menu_ctx_delete"),
+                ],
+            )
+        )
+
+    root = _node(
+        window_id, "pane", "menu", ids=ids, automation_id="menu_window",
+        children=root_children,
+    )
+    return _window(window_id, "Scenario Suite - menu", "scenariosuite.exe", root)
+
+
+# ---------------------------------------------------------------------------
+# dialog: a modal confirmation that appears on demand
+# ---------------------------------------------------------------------------
+
+
+def dialog_tree(
+    *,
+    dialog_open: bool = False,
+    confirmed: bool = False,
+    rows: list[str] | None = None,
+    window_id: str = "w1",
+) -> RawTree:
+    """A list with a destructive action that opens a confirmation dialog.
+
+    ``dialog_open`` mounts the dialog as a ``role=dialog`` node under the
+    window root - the shape the compiler treats as a dialog layer and prefixes
+    ``d``. Its confirm/cancel buttons are only in the tree while it is open,
+    which is the property a real modal has (and the reason an agent must read
+    the delta to find them rather than guessing their refs).
+
+    ``confirmed`` reflects that the deletion went through: the last row is gone
+    and the status says so.
+    """
+    ids = _Ids()
+    rows = rows if rows is not None else ["报告 A", "报告 B", "报告 C"]
+
+    row_nodes = [
+        _node(window_id, "listitem", label, ids=ids, patterns=P_SELECT,
+              automation_id=f"dialog_row_{i}")
+        for i, label in enumerate(rows)
+    ]
+    document = _node(
+        window_id, "list", "报告", ids=ids, patterns=P_LIST,
+        automation_id="dialog_rows", children=row_nodes,
+    )
+
+    status = "已删除" if confirmed else "就绪"
+    root_children = [
+        document,
+        _node(window_id, "button", "删除", ids=ids, patterns=P_INVOKE,
+              automation_id="dialog_delete"),
+        _node(window_id, "text", status, ids=ids, patterns=P_TEXT,
+              automation_id="dialog_status"),
+    ]
+    if dialog_open:
+        root_children.append(
+            _node(
+                window_id, "dialog", "确认删除", ids=ids,
+                states=frozenset({"modal"}),
+                children=[
+                    _node(window_id, "text", "确定要删除最后一项吗？", ids=ids,
+                          patterns=P_TEXT, automation_id="dialog_message"),
+                    _node(window_id, "button", "确定", ids=ids, patterns=P_INVOKE,
+                          automation_id="dialog_confirm"),
+                    _node(window_id, "button", "取消", ids=ids, patterns=P_INVOKE,
+                          automation_id="dialog_cancel"),
+                ],
+            )
+        )
+
+    root = _node(
+        window_id, "pane", "dialog", ids=ids, automation_id="dialog_window",
+        children=root_children,
+    )
+    return _window(window_id, "Scenario Suite - dialog", "scenariosuite.exe", root)
+
+
+# ---------------------------------------------------------------------------
 # scripted mutations for the mock provider
 # ---------------------------------------------------------------------------
 
@@ -737,6 +900,12 @@ def _make_item(parent: RawNode | None, name: str, aid: str, role: str = "listite
     if parent is not None and parent.native.runtime_id:
         base = parent.native.runtime_id[0] * 1000 + len(parent.children) + 1
     wid = parent.native.window_id if parent is not None else "w1"
+    if role == "listitem":
+        patterns = P_SELECT
+    elif role in ("menuitem", "button"):
+        patterns = P_INVOKE
+    else:
+        patterns = P_TEXT
     return RawNode(
         native=NativeRef(
             window_id=wid,
@@ -746,7 +915,7 @@ def _make_item(parent: RawNode | None, name: str, aid: str, role: str = "listite
         ),
         role=role,
         name=name,
-        patterns=P_SELECT if role == "listitem" else P_TEXT,
+        patterns=patterns,
     )
 
 
@@ -970,6 +1139,110 @@ def noop(node: RawNode, root: RawNode) -> None:
     """A control that really does nothing (used for buttons with no handler)."""
 
 
+def menu_open(node: RawNode, root: RawNode) -> None:
+    """Mirror opening a menu bar entry: realize that entry's items.
+
+    Matches a real menu: the items are children of the menubar entry, and only
+    the opened entry has them.
+    """
+    label = node.name or ""
+    entry = _find(root, f"menu_bar_{label}")
+    if entry is None:
+        return
+    items = _MENU_ITEMS.get(label, [])
+    entry.children = [
+        _make_item(entry, item_label, f"menu_item_{aid}", role="menuitem")
+        for aid, item_label in items
+    ]
+    entry.states = frozenset({"expanded"})
+    # Close the *other bar entries*. The menubar container is also a `menu` role
+    # (the compiler aliases `menubar` to `menu`), so the discriminator is the
+    # entry id prefix, not the role - collapsing by role alone would empty the
+    # container and take every entry with it.
+    for other in root.walk():
+        aid = other.native.automation_id or ""
+        if other is entry or not aid.startswith("menu_bar_"):
+            continue
+        other.states = frozenset({"collapsed"})
+        other.children = []
+
+
+def menu_item_action(node: RawNode, root: RawNode) -> None:
+    """Mirror choosing a menu item: name it in the status line."""
+    status = _find(root, "menu_status")
+    if status is not None:
+        status.name = f"已执行: {node.name or ''}"
+    # Choosing an item closes its menu, as a real menu does.
+    for entry in root.walk():
+        if (entry.native.automation_id or "").startswith("menu_bar_"):
+            entry.states = frozenset({"collapsed"})
+            entry.children = []
+
+
+def menu_context_open(node: RawNode, root: RawNode) -> None:
+    """Mirror the runtime's context_menu gesture on the row."""
+    if _find(root, "menu_ctx_rename") is not None:
+        return
+    root.children.append(
+        _node(
+            node.native.window_id, "menu", "上下文", ids=_Ids(),
+            children=[
+                _make_item(root, "重命名", "menu_ctx_rename", role="menuitem"),
+                _make_item(root, "删除", "menu_ctx_delete", role="menuitem"),
+            ],
+        )
+    )
+
+
+def dialog_open(node: RawNode, root: RawNode) -> None:
+    """Mirror pressing Delete: mount the confirmation dialog."""
+    if _find(root, "dialog_confirm") is not None:
+        return
+    root.children.append(
+        _node(
+            node.native.window_id, "dialog", "确认删除", ids=_Ids(),
+            states=frozenset({"modal"}),
+            children=[
+                _make_item(root, "确定要删除最后一项吗？", "dialog_message", role="text"),
+                _make_item(root, "确定", "dialog_confirm", role="button"),
+                _make_item(root, "取消", "dialog_cancel", role="button"),
+            ],
+        )
+    )
+
+
+def dialog_confirm(node: RawNode, root: RawNode) -> None:
+    """Mirror confirming: remove the last row, close the dialog, say so."""
+    rows = _find(root, "dialog_rows")
+    if rows is not None and rows.children:
+        rows.children.pop()
+    status = _find(root, "dialog_status")
+    if status is not None:
+        status.name = "已删除"
+    dialog = next((n for n in root.walk() if n.role == "dialog"), None)
+    if dialog is not None:
+        root.children.remove(dialog)
+
+
+def dialog_cancel(node: RawNode, root: RawNode) -> None:
+    """Mirror cancelling: close the dialog, change nothing else."""
+    status = _find(root, "dialog_status")
+    if status is not None:
+        status.name = "已取消"
+    dialog = next((n for n in root.walk() if n.role == "dialog"), None)
+    if dialog is not None:
+        root.children.remove(dialog)
+
+
+#: Menu bar label -> its items, shared by the fixture and the opener mutator so
+#: the two cannot drift.
+_MENU_ITEMS: dict[str, list[tuple[str, str]]] = {
+    "文件": [("new", "新建"), ("save", "保存"), ("exit", "退出")],
+    "编辑": [("undo", "撤销"), ("redo", "重做"), ("copy", "复制")],
+    "帮助": [("about", "关于")],
+}
+
+
 #: Mutators the ``callback`` mutation op can name. Kept as a registry so a test
 #: cannot silently reference a mutator that does not exist: an unknown name is
 #: a no-op only after the assertion in :func:`callbacks` has run.
@@ -983,6 +1256,12 @@ SCENARIO_MUTATIONS: dict[str, Callable[[RawNode, RawNode], None]] = {
     "chat_select": chat_select,
     "console_select": console_select,
     "console_send": console_send,
+    "menu_open": menu_open,
+    "menu_item_action": menu_item_action,
+    "menu_context_open": menu_context_open,
+    "dialog_open": dialog_open,
+    "dialog_confirm": dialog_confirm,
+    "dialog_cancel": dialog_cancel,
     "noop": noop,
 }
 
@@ -1002,6 +1281,18 @@ def scenario_scripts() -> dict:
         "重置:activate": [{"op": "callback", "fn": "form_reset"}],
         # chat
         "发送:activate": [{"op": "callback", "fn": "chat_send"}],
+        # menu: the bar entries open their submenu; items act then close it.
+        "文件:activate": [{"op": "callback", "fn": "menu_open"}],
+        "编辑:activate": [{"op": "callback", "fn": "menu_open"}],
+        "帮助:activate": [{"op": "callback", "fn": "menu_open"}],
+        "新建:activate": [{"op": "callback", "fn": "menu_item_action"}],
+        "保存:activate": [{"op": "callback", "fn": "menu_item_action"}],
+        "撤销:activate": [{"op": "callback", "fn": "menu_item_action"}],
+        "文档 1:context_menu": [{"op": "callback", "fn": "menu_context_open"}],
+        # dialog: Delete opens the confirmation; its buttons act on it.
+        "删除:activate": [{"op": "callback", "fn": "dialog_open"}],
+        "确定:activate": [{"op": "callback", "fn": "dialog_confirm"}],
+        "取消:activate": [{"op": "callback", "fn": "dialog_cancel"}],
         # console sends through its own button, which shares the label; the
         # opener is separate so both scenarios can be scripted at once without
         # a name collision firing the wrong mutation.
