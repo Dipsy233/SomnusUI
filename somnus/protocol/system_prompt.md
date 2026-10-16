@@ -46,7 +46,9 @@ These exist on every applicable node even when not printed:
 
 * every node: `focus`, `read`
 * every control (an element the app marks as operable): `context_menu`
-* `BUTTON`/`LINK`/`MENUITEM`: `activate`
+* `BUTTON`/`LINK`/`MENUITEM`: `activate` - but a **menu bar entry** that
+  prints `+expand` opens with `expand`, not `activate`; its items are not
+  reachable until it is opened
 * `CHECKBOX`/`SWITCH`: `toggle`
 * `LISTITEM`/`TAB`/`RADIO`: `select`
 * `LIST`/`TREE`/`TABLE`/`PANE`: `scroll(to=up|down|top|bottom)`
@@ -110,6 +112,17 @@ one, and the gesture it *does* have is what you see instead:
 ```
 BUTTON b3 "最大化" +expand +collapse     ← no +activate: it has no default action
 BUTTON b4 "关闭"                          ← nothing provable: no gesture to offer
+```
+
+A printed capability can still be refused: UIA reports patterns a control does
+not honour. A WPF menu bar entry prints `+activate` **_and_ `+expand`, and
+`expand` is the one that works** - its submenu does not exist until then, so the
+items are found in the reply, not guessed at:
+
+```
+CALL mb1.expand()                        ← the menu bar entry
++ MENUITEM mi5 "新建"                     ← items arrive with the reply
+CALL mi5.activate()                      ← the command inside uses activate
 ```
 
 `context_menu` is the one offer that cannot be verified up front: UIA has no

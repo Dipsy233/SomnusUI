@@ -122,6 +122,39 @@ OK_UNVERIFIED rev=5
 菜单消失（被点了、被别处焦点顶掉）后挂载自动解除。
 以返回的 delta 为准，它比状态字更可信。
 
+### 两个实测的平台坑（WPF）
+
+**菜单栏顶层项要用 `expand`，不是 `activate`。** WPF 的 `MenuItem` **声称**
+支持 `activate`（它继承了 `ButtonBase` 的 Invoke pattern），但菜单栏顶层的项
+不实现这个行为——调用会被如实拒绝：
+
+```text
+sui> CALL mi2.expand()          ← 菜单栏项：expand 才打开子菜单
+OK_UNVERIFIED rev=2
++ MENUITEM mi5 "新建"
+
+sui> CALL mi2.activate()        ← 声明了，但执行时被拒
+ERR ACTION_NOT_SUPPORTED mi2 hint=report-user
+```
+
+里面真正的**命令项**才用 `activate`。"声明了"不等于"能执行"——UIA 里这两件
+事是分开的，所以以打印出的能力和返回值为准，不靠猜。
+
+**XAML `ContextMenu` 触发不了 `context_menu`。** WPF 在 XAML 里挂的
+`ContextMenu` 是框架层的东西，UIA 的 `ShowContextMenu`（系统层的动词）够不着它。
+运行时检测到没弹出菜单就**如实报**，并给出该元素真正有的能力：
+
+```text
+sui> CALL li1.context_menu()
+OK_UNVERIFIED rev=2
+~ context_menu produced no menu (this element registers none);
+  li1 does expose activate/select - try CALL li1.activate()
+```
+
+能触发 `context_menu` 的是走真正 Win32 菜单循环的控件（托盘图标、Shell 菜单，
+窗口类 `#32768`）；自绘控件里由应用自己响应 `ShowContextMenu` 的也行。这不是
+运行时的缺陷，是平台的边界，运行时的处理（报实情 + 给替代）就是为它准备的。
+
 ## 后台无干扰操作
 
 agent 操作窗口不需要它在前台，也不抢用户焦点。UIA 的语义调用
