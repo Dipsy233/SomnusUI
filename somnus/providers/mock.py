@@ -215,9 +215,14 @@ class MockProvider:
         # (ShowContextMenu is callable on any element and does nothing when the
         # application registered no menu), so a fixture may exercise it
         # wherever the capability was granted.
+        #
+        # `paste_text` and `type_text` are absent for the same reason: neither is
+        # a UIA pattern, both are synthetic-input routes whose real gate is the
+        # capability chain's condition plus the policy, so a fixture can exercise
+        # them wherever their step was declared.
         pattern = required.get(primitive)
         if pattern is None:
-            return True  # focus / read / scroll / type_text need no pattern
+            return True  # focus / read / scroll / type_text / paste_text
         return pattern in node.patterns
 
     def execute(
@@ -258,10 +263,11 @@ class MockProvider:
             # Bring the item into view and clear its offscreen state.
             node.states = frozenset(s for s in node.states if s != "offscreen")
             mutated = True
-        if primitive in ("set_text", "type_text") and value is not None and not mutated:
-            if primitive == "type_text":
+        if primitive in ("set_text", "type_text", "paste_text") and value is not None and not mutated:
+            if primitive in ("type_text",):
                 # The keyboard fallback appends to whatever is already there,
-                # unlike set_text which replaces the value.
+                # unlike set_text which replaces the value. A paste replaces the
+                # selection, so it behaves like set_text here.
                 node.value = (node.value or "") + str(value)
             else:
                 node.value = str(value)

@@ -872,6 +872,7 @@ class UiaProvider:
             "focus",
             "read",
             "type_text",
+            "paste_text",
             "scroll_into_view",
             "context_menu",
         ):

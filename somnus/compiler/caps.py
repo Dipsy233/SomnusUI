@@ -144,7 +144,7 @@ def _prefers_keyboard_entry(node: RawNode) -> bool:
     Note the answer is now slightly wider than before: a node that maps a native
     HWND (``native_window_handle != 0``) also has a non-keyboard write route, so
     it is *not* keyboard-only either. That is the correction from
-    docs/interface-capability-report.md 2.9.3 - the HWND route was hidden by the
+    docs/interface-capability-report.md 3.2 - the HWND route was hidden by the
     report's "does the process own an Edit child window?" criterion, which asked
     about the process instead of the element.
 
@@ -233,14 +233,27 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     #                        CJK and 300 chars) and unlike SendInput it cannot
     #                        drop trailing characters. This is the route the
     #                        capability report's wrong criterion had hidden.
-    #   3. `type_text`     - focus and type. Last resort, gated on
+    #   3. `paste_text`    - put the text on the clipboard and send Ctrl+V.
+    #                        Needs the foreground and borrows the user's
+    #                        clipboard, but reaches a control that publishes
+    #                        nothing and maps no HWND, because the application's
+    #                        own WM_PASTE handler reads the text. Measured: a
+    #                        constant ~37 ms from 10 to 3000 characters, since
+    #                        the text never enters the input queue (report 3.1).
+    #                        Gated on `--allow-clipboard`.
+    #   4. `type_text`     - focus and type. Last resort, gated on
     #                        `--allow-keyboard`, because it steals focus and
     #                        provably loses characters.
     #
     # The ordering is the whole point: a self-drawn editor that maps no HWND and
-    # has no Value pattern (QQ's ProseMirror box) falls through to 3 and is
-    # refused unless keyboard input was explicitly enabled, while a control that
-    # maps one is written without touching the user's focus at all.
+    # has no Value pattern (QQ's ProseMirror box) falls through to 3 and 4 and is
+    # refused unless a host explicitly enabled one, while a control that maps an
+    # HWND is written without touching the user's focus or clipboard at all.
+    #
+    # `paste_text` sits *before* `type_text` because the report measures it as
+    # strictly better where both apply: no queue stall, length-independent cost,
+    # and a real delivery signal when the element can be read back. Both stay
+    # behind the two focus-free routes, which cost the user nothing.
     if _is_text_entry(node):
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
         cap.via = [
@@ -255,6 +268,12 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
                 target="$self",
                 value="$text",
                 condition="hwnd",
+            ),
+            PrimitiveStep(
+                primitive="paste_text",
+                target="$self",
+                value="$text",
+                condition="no-hwnd",
             ),
             PrimitiveStep(
                 primitive="type_text",

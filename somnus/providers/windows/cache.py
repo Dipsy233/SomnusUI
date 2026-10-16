@@ -30,7 +30,7 @@ CACHED_PROPERTIES: dict[int, str] = {
     # The element's own Win32 HWND (0 when it maps none). Needed because the
     # WM_SETTEXT / EM_REPLACESEL write channel is gated on *this* value, not on
     # whether the process owns an Edit child window. See
-    # docs/interface-capability-report.md 2.9.3 and NativeRef.native_window_handle.
+    # docs/interface-capability-report.md 3.2 and NativeRef.native_window_handle.
     30020: "native_window_handle",
 }
 

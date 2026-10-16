@@ -228,7 +228,7 @@ def test_value_pattern_is_written_through_never_typed():
     # ...and typing is last, gated so it only runs when no native write exists.
     # The exact gate is `no-hwnd`: typing must not fire for a node that has
     # *any* native write route, whether that is the Value pattern or a Win32
-    # HWND (docs/interface-capability-report.md 2.9.3). Asserting
+    # HWND (docs/interface-capability-report.md 3.2). Asserting
     # `missing:value` here would let typing run on a control that the HWND
     # route can write without focus.
     assert steps[-1][0] == "type_text", steps
@@ -264,7 +264,7 @@ def test_self_drawn_editor_without_a_value_pattern_still_types():
 
 
 # --------------------------------------------------------------------------
-# The HWND write route (docs/interface-capability-report.md 2.9.3)
+# The HWND write route (docs/interface-capability-report.md 3.2)
 # --------------------------------------------------------------------------
 
 

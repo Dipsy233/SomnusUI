@@ -41,6 +41,15 @@ class Policy:
     #: element with no usable interface is therefore reported as such rather
     #: than typed into, unless a host explicitly opts in.
     allow_keyboard: bool = False
+    #: Whether the clipboard channel may be used. **Off by default**: it is
+    #: cheaper and far more reliable than typing (constant ~37 ms regardless of
+    #: length, no queue to stall), but it borrows a resource that belongs to the
+    #: user, needs the target in the foreground, and cannot restore a
+    #: non-text clipboard. The writes are marked opt-out so they do not enter
+    #: clipboard history or cloud sync, and the channel refuses outright when the
+    #: clipboard holds something that could not be put back
+    #: (docs/interface-capability-report.md 3.3, 6).
+    allow_clipboard: bool = False
 
     def check_step(self, primitive: str) -> None:
         """Refuse a step the policy does not authorise.
@@ -48,14 +57,31 @@ class Policy:
         Checked per step rather than per capability, because a capability may
         declare a native route *and* a keyboard fallback; only the fallback
         needs authorisation.
+
+        The message names **both** ways to opt in: the one-run flag and the
+        persistent settings file. An agent that hits this refusal can then act on
+        it - the settings file is deliberately small and text-only so it can be
+        edited without the runtime's help (see somnus/config.py).
         """
         if primitive == "type_text" and not self.allow_keyboard:
             raise SomnusError(
                 ErrorCode.ACTION_NOT_SUPPORTED,
                 message=(
                     "the element offers no interface this runtime can use, and "
-                    "synthetic keyboard input is disabled; enable it with "
-                    "--allow-keyboard to type anyway"
+                    "synthetic keyboard input is disabled; enable it for one run "
+                    "with --allow-keyboard, or persistently with "
+                    "`somnus config --allow-keyboard`"
+                ),
+            )
+        if primitive == "paste_text" and not self.allow_clipboard:
+            raise SomnusError(
+                ErrorCode.ACTION_NOT_SUPPORTED,
+                message=(
+                    "the element offers no interface this runtime can use, and "
+                    "the clipboard channel is disabled; enable it for one run "
+                    "with --allow-clipboard, or persistently with "
+                    "`somnus config --allow-clipboard` (it borrows the clipboard "
+                    "and needs the target in the foreground)"
                 ),
             )
 

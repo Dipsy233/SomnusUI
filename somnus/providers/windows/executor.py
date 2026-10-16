@@ -14,6 +14,7 @@ from ctypes import wintypes
 from typing import Any
 
 from somnus.ir.action import ExecResult
+from somnus.providers.windows.clipboard import paste_text
 from somnus.providers.windows.keyboard import send_unicode_text, send_vk
 
 #: Win32 message ids for the HWND write channel.
@@ -36,6 +37,10 @@ PATTERN_FOR_PRIMITIVE = {
     # Mapped to a sentinel id that no element reports as a pattern, because the
     # real gate is `native_window_handle != 0`, checked in ``run_primitive``.
     "set_text_hwnd": "UIA_ValuePatternId",
+    # Also not a UIA pattern: the clipboard channel (focus, Ctrl+V, restore).
+    # Mapped to the same sentinel as set_text_hwnd - the real gate is the
+    # `no-hwnd`/`clipboard` condition checked in ``run_primitive``.
+    "paste_text": "UIA_ValuePatternId",
     "toggle": "UIA_TogglePatternId",
     "select": "UIA_SelectionItemPatternId",
     "expand": "UIA_ExpandCollapsePatternId",
@@ -114,6 +119,36 @@ def run_primitive(
                 value,
                 UIA,
             )
+        elif primitive == "paste_text":
+            # Clipboard channel: focus, put the text on the clipboard, Ctrl+V,
+            # then put the user's clipboard back. Reaches a control that
+            # publishes nothing writable and maps no HWND (a self-drawn editor),
+            # because the text is read by the application's own WM_PASTE handler
+            # rather than pushed through the input queue - measured constant
+            # ~37 ms from 10 to 3000 characters, where per-character SendInput
+            # parks most of a fast burst (docs/interface-capability-report.md 3.3).
+            #
+            # It needs the foreground and it disturbs the user's clipboard, so it
+            # is gated on --allow-clipboard and ordered *after* both focus-free
+            # routes. A refusal that costs nothing (the clipboard holds an image
+            # we cannot restore) is reported as unsupported so the chain falls
+            # through to typing rather than failing the call.
+            element.SetFocus()
+            outcome = paste_text(str(value), verify=_text_landed_verifier(element, value))
+            if outcome.ok:
+                return ExecResult(ok=True)
+            if outcome.error == "CLIPBOARD_UNAVAILABLE":
+                # The environment refused (the clipboard could not be opened at
+                # all - a locked session, or another process holding it). The
+                # element may well accept a paste, so this is reported as an
+                # unavailable *route* and the chain continues to typing.
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message=outcome.message,
+                    unsupported=True,
+                )
+            return ExecResult(ok=False, error=outcome.error, message=outcome.message)
         elif primitive == "type_text":
             # Declarative keyboard fallback: focus the target, then type. Only
             # reached because a pack declared it as a conditional `via` step
@@ -285,39 +320,116 @@ def _element_hwnd(element: Any) -> int:
 def _text_landed_verifier(element: Any, expected: Any):
     """Build the callback that tells the sender when a character has arrived.
 
-    Reads the element's own value through UIA, which is the only channel that
-    reports what the control actually holds (a window-level ``WM_GETTEXT`` is not
-    available for a self-drawn control). Returns None when no readable surface
-    exists, in which case the sender falls back to paced delivery and says so.
+    Reads the element through UIA, which is the only channel that reports what a
+    self-drawn control actually holds (a window-level ``WM_GETTEXT`` does not
+    exist for one). Returns None when no readable surface exists at all, in
+    which case the sender falls back to paced delivery and says so.
 
-    Deliberately compares by length rather than by content: typing is
-    incremental, the control may normalise what it stores (rich text, an IME
-    composition), and the question being answered is only "has the target caught
-    up with what was sent", not "is the stored text identical".
+    **Two surfaces, tried in order.** The Value property is the obvious one, but
+    it is *not* the one a rich-text editor uses. Measured live on QQ's
+    ProseMirror editor (class ``ProseMirror ExEditor-qq-msg-editor``):
+
+    ===========================  ==========================================
+    surface                      what it reports while typing
+    ===========================  ==========================================
+    ``Value`` property (30045)   always ``''`` - present but dead
+    ``Text`` pattern document    the live content, updated per character
+    ===========================  ==========================================
+
+    Reading only the Value property therefore produced a verifier that could
+    never succeed: it returned ``len('') - 0 >= count`` -> ``False`` forever, so
+    every character burned its full retry budget and the sender nudged the
+    target with SHIFT keystrokes the whole time. Measured cost: 1.89 s for three
+    characters, 3.41 s for six, and a hard provider timeout at ten. Reading the
+    Text pattern where Value is empty fixes the signal rather than the timeout.
+
+    Compares by *length*, not content: typing is incremental, the control may
+    normalise what it stores (rich text, an IME composition), and the question is
+    only "has the target caught up", not "is the stored text identical".
     """
     want = str(expected)
-    try:
-        baseline = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
-    except Exception:  # noqa: BLE001 - unreadable element: no verifier
-        baseline = None
-    if not isinstance(baseline, str):
-        # Try the cached value property by raw id before giving up; some
-        # providers answer only one of the two.
-        baseline = ""
-    start = len(baseline)
+    surface = _read_surface(element)
+    if surface is None:
+        return None
+    start = len(surface())
 
     def _verify(count: int) -> bool:
-        try:
-            current = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
-        except Exception:  # noqa: BLE001
-            return True  # cannot read: stop nudging, do not turn it into a failure
-        if not isinstance(current, str):
+        current = surface()
+        if current is None:
+            # Cannot read: stop nudging, do not turn it into a failure.
             return True
         # Each character adds one unit; a control that reports something else
         # entirely should not spin the timeout.
         return len(current) - start >= count
 
     return _verify
+
+
+#: UIA_TextPatternId, and the document range cap. A verifier only ever compares
+#: lengths, so the cap only bounds the read cost on a very long document.
+_UIA_TEXT_PATTERN_ID = 10014
+_TEXT_READ_CAP = 65536
+
+
+def _read_surface(element: Any):
+    """Pick the property that actually reports this element's text.
+
+    Returns a zero-argument callable yielding the current text, or ``None`` when
+    neither surface works (meaning: no verifier is possible here).
+
+    The Value property is preferred *only when it is alive*. An editor that
+    exposes no Value pattern typically still answers the property read - with an
+    empty string, not an error - so "it returned a string" is not evidence that
+    it is usable. The Text pattern is the surface rich-text editors actually
+    publish, and it is what the fallback reads.
+    """
+
+    def _value() -> str | None:
+        try:
+            current = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
+        except Exception:  # noqa: BLE001 - unreadable element
+            return None
+        return current if isinstance(current, str) else None
+
+    def _text() -> str | None:
+        try:
+            raw = element.GetCurrentPattern(_UIA_TEXT_PATTERN_ID)
+            if raw is None:
+                return None
+            # ``GetCurrentPattern`` returns a bare IUnknown pointer; without the
+            # cast its methods are not visible. A provider/test double that
+            # already yields the interface is accepted as-is.
+            query = getattr(raw, "QueryInterface", None)
+            text_pattern = query(_text_pattern_interface()) if query else raw
+            return text_pattern.DocumentRange.GetText(_TEXT_READ_CAP) or ""
+        except Exception:  # noqa: BLE001 - no Text pattern, or it refused
+            return None
+
+    # Prefer Value when it reports something; otherwise use the Text pattern.
+    value_now = _value()
+    if value_now:
+        return _value
+    text_now = _text()
+    if text_now is not None:
+        return _text
+    # A readable-but-empty Value is still better than nothing: it at least
+    # reports "nothing arrived", which is the honest answer for a control that
+    # stores elsewhere and cannot be observed.
+    if value_now is not None:
+        return _value
+    return None
+
+
+def _text_pattern_interface():
+    """IUIAutomationTextPattern, imported on demand.
+
+    Importing the generated UIA typelib at module scope would make the executor
+    unusable wherever comtypes cannot generate it, and this is only reached for
+    elements that actually answer the Text pattern.
+    """
+    from comtypes.gen import UIAutomationClient as _UIA
+
+    return _UIA.IUIAutomationTextPattern
 
 
 def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:

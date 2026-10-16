@@ -892,11 +892,25 @@ class Session:
         exec_result = None
         route = ""
         ordered_steps = self._order_steps(action.ref or "", resolution.steps)
+        denied: list[str] = []
         for index, step in enumerate(ordered_steps):
             # Authorisation is per step: a capability may declare a native
             # route plus a synthetic-input fallback, and only the fallback
             # needs the host's consent.
-            self.policy.check_step(step.primitive)
+            #
+            # A refused step is *skipped*, not fatal. A capability declares its
+            # routes as alternatives - paste, else type - and a host that
+            # enabled neither has authorised none of them; failing the call on
+            # the first one would hide the routes further down the chain and
+            # report "unsupported" for a capability whose last declared route is
+            # perfectly allowed. The refusals are collected instead, so that a
+            # chain where *every* route was denied still names what was denied
+            # and how to enable it.
+            try:
+                self.policy.check_step(step.primitive)
+            except SomnusError as err:
+                denied.append((step.primitive, err))
+                continue
             exec_result = self.provider.execute(step.native, step.primitive, step.value)
             self._audit_action(action, step, exec_result)
             is_last = index == len(ordered_steps) - 1
@@ -949,6 +963,26 @@ class Session:
                     message=f"no usable interface on this element (tried {tried})",
                 )
             if exec_result is None:
+                # Nothing was even attempted: every route in the chain was
+                # refused by policy. Report the refusal that names the *last*
+                # route (the most capable one the chain ends on), and list what
+                # was refused so the agent knows the whole chain, not just one
+                # flag.
+                if denied:
+                    # Name the *last* route's refusal: the chain ends on the most
+                    # capable fallback (typing), so that is the flag whose absence
+                    # is the real obstacle. Every refused route is then listed with
+                    # its own message, so a host that enabled neither sees both
+                    # flags rather than only the last one.
+                    _primitive, last_err = denied[-1]
+                    detail = "; ".join(
+                        f"{primitive}: {err.message}" for primitive, err in denied
+                    )
+                    raise SomnusError(
+                        ErrorCode.ACTION_NOT_SUPPORTED,
+                        ref=action.ref,
+                        message=f"{last_err.message} (refused routes: {detail})",
+                    )
                 raise SomnusError(ErrorCode.ACTION_NOT_SUPPORTED, ref=action.ref)
             code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
             self.policy.check_native_permission(code)

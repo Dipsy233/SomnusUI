@@ -41,8 +41,17 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         # Value pattern but does map a real HWND. Like `type_text` it is a
         # routing detail, never a capability the LLM calls: `set_text` stays the
         # single name the model sees, and which primitive runs is the runtime's
-        # decision (docs/interface-capability-report.md 2.9.3).
+        # decision (docs/interface-capability-report.md 3.2).
         "set_text_hwnd",
+        # Writes text by putting it on the clipboard and sending Ctrl+V, then
+        # restoring what the user had. The only route that reaches a self-drawn
+        # editor (Chromium/Electron rich text, QQ's ProseMirror box) that
+        # publishes no writable interface and maps no HWND, because the text is
+        # consumed by the application's own WM_PASTE handler. Gated on
+        # `--allow-clipboard`: it needs the foreground and it borrows the user's
+        # clipboard. Like `type_text` it is a routing detail, never a capability
+        # the LLM calls (docs/interface-capability-report.md 3.3).
+        "paste_text",
         "toggle",
         "select",
         "expand",
@@ -64,8 +73,7 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         # Declarative keyboard fallback (v0.2): focus the target and type the
         # value. Never offered to the LLM as a capability of its own - it only
         # appears as a `via` step inside a pack capability (dev doc section 12.2).
-        "type_text",
-    }
+        "type_text",    }
 )
 
 #: Capabilities that never change application state.
