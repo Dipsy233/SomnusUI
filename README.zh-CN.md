@@ -344,13 +344,47 @@ docs/
   packs.md              App Pack 编写指南
   interactive-usage.md  REPL / CLI / 脚本三种驱动方式
   what-the-llm-sees.md  一个窗口、四个工具，附真实输出
+  scenario-test-plan.md 场景矩阵与通过标准
 examples/               agent 循环、契约检查、任务评估（宿主示例代码）
 bench/                  基准门槛 + LLM 控制演示
-tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
+tests/{
+  fixtures/             原始树构造器，含 `scenarios.py`（测试应用固件）
+  scenarios/            S1：测试应用在固件上跑 —— 任意平台
+  golden,compiler,projection,runtime,providers/
+  e2e/                  S2：真实窗口（`-m windows`）
+}/
 ```
 
 依赖方向：`providers → compiler → projection → serialization → protocol`；
 `runtime` 依赖以上全部；任何地方都不导入 LLM。
+
+### 验收应用：一个应用，五种真实形态
+
+GUI agent 的水平取决于它被什么样的界面试过。三行的玩具界面证明不了折叠、
+路由和验证中的任何一件事，所以验收应用是一组**界面**，每个对准一类真实难点：
+
+| 界面 | 它是什么 | 它逼运行时做对什么 |
+| --- | --- | --- |
+| `store` | 搜索框 + **240 行**可滚动商品列表 + 购物车 | 大数据量：折叠、`FIND` 进入被折叠的列表、按原生接口写入搜索框 |
+| `form` | 带标签的字段（一个可写、一个只读）、复选框、下拉、禁用按钮、需确认的提交 | 表单形态：可写/只读在行上可分辨，校验是真实结果，**提交记录**才是验证面 |
+| `chat` | **自绘**富文本编辑器、消息历史、发送按钮、可见的发送记录 | `set_text` 回退链：一个不发布任何可写接口的控件（无 ValuePattern、无元素级 HWND，UIA 把它报成带工具包类名的 `Group`）—— 因此运行时必须如实拒绝，或走显式开启的通道，然后把发送记下来 |
+| `console` | **普通**文本框编辑器 + 联系人列表 | 路由对照：有自己写入接口的控件绝不能退到合成通道 |
+| `tree` | 可展开的嵌套树（数千节点） | 按展开等级压缩：概览有界，明细只为真正展开的部分付费 |
+
+每个界面存在两份：真实 WPF 窗口（`apps/scenario-suite`，用
+`ScenarioSuite.exe <界面>` 启动）与固件（`tests/fixtures/scenarios.py`）。
+固件复刻真实的无障碍形状——包括最容易写错的部分，比如 chat 的编辑器是一个
+手绘控件，UIA 把它报成名为 `ProseMirror ExEditor` 的 `Group`（无 value
+pattern、无 HWND），与 QQ / 豆包 完全同形——因此 `tests/scenarios/` 可以到处
+跑，而 `tests/e2e/test_windows_scenarios.py` 负责证明固件没有跑偏。
+
+无需 Windows 就能回放任意界面：
+
+```bash
+somnus --scenario chat observe
+somnus --scenario store repl
+somnus --scenario tree --allow-clipboard repl
+```
 
 ## App Packs（可选）
 
@@ -371,25 +405,40 @@ session = Session(provider, pack=build_pack())
 ## 测试
 
 ```bash
-pytest                      # 编译器/投影/运行时测试可在任意平台运行
+pytest                      # 全部可移植测试，含场景套件（S1）
+pytest tests/scenarios      # 只跑固件上的场景套件
 pytest --update-golden      # 重写 golden SUI-Text 固件
-pytest -m windows           # UIA + WPF 端到端（仅 Windows 运行器）
+
+# S2：真实窗口（仅 Windows 运行器）
+dotnet build apps/scenario-suite
+pytest -m windows
 ```
 
-`MockProvider` 回放录制的 `RawTree` 固件并执行脚本化的变更，因此编译器、
-投影、解析器、增量与验证等路径都可以在没有桌面的环境下得到覆盖。
+分两层是刻意的。**S1**（`tests/scenarios/`）在固件上驱动五个验收界面，
+因此任何平台、每次提交都能跑。**S2**
+（`tests/e2e/test_windows_scenarios.py`）用真实 WPF 窗口经真实 UIA provider
+驱动同一批界面，它才是 S1 可信的依据：固件一旦与真实控件脱节，S1 会绿而
+S2 会红。
+
+`MockProvider` 回放录制的 `RawTree` 固件并执行脚本化的变更——包括通过具名
+回调实现的真实逐行行为——因此编译器、投影、解析器、增量、路由链与验证
+等路径都可以在没有桌面的环境下得到覆盖。
 
 ## 指标
 
-| 指标 | 目标 | 当前（`--demo bench`） |
+| 指标 | 目标 | 当前（`somnus --demo bench --runs 100`） |
 | --- | --- | --- |
 | 零视觉（Zero Vision） | 0 次视觉/坐标调用 | ✓（结构性保证） |
 | 信息隔离 | LLM 上下文中 0 个原生 ID | ✓（泄露扫描 = 0） |
-| 压缩比 | ≥ 10× | ≥ 73× |
+| 压缩比 | ≥ 10× | ≥ 1500×（完全展开的树） |
 | 动作成功率 | ≥ 99% | 100% |
 | 任务成功率 | ≥ 90% | 100% |
+| L0 观察 | ≤ 300 token | 80 token（240 行目录 + 展开树） |
 
-运行方式：`somnus --demo bench --runs 100`。
+运行方式：`somnus --demo bench --runs 100`。隔离检查是**取证式**而非正则臆测：
+它枚举被测树里实际存在的 automation id / 类名 / runtime id，断言它们没有
+出现在模型会收到的文本里；于是仅仅**看起来**像 ID 的应用数据（表单自己的
+`REQ-0001`）不会被误判成泄露。
 
 ## 许可证
 

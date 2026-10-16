@@ -158,6 +158,7 @@ class MockProvider:
         scripts: dict[str, list[dict[str, Any]]] | None = None,
         *,
         fixture_paths: Iterable[str | Path] | None = None,
+        callbacks: dict[str, Callable[[RawNode, RawNode], None]] | None = None,
         **_: Any,
     ) -> None:
         self._trees: dict[str, RawTree] = {}
@@ -169,6 +170,10 @@ class MockProvider:
             self._trees[tree.window.window_id] = tree
         #: capability name -> list of mutation dicts
         self.scripts = scripts or {}
+        #: name -> mutator(node, root) used by the `callback` mutation op. Lets a
+        #: fixture replay an application's behaviour without the mock having to
+        #: know about that application (see `tests/fixtures/scenarios.py`).
+        self.callbacks = callbacks or {}
         self._listeners: dict[str, list[Callable[[UiEvent], None]]] = {}
         self._rev = {wid: t.raw_revision for wid, t in self._trees.items()}
         self.executed: list[tuple[NativeRef, str, Any]] = []
@@ -254,8 +259,24 @@ class MockProvider:
             )
 
         # Apply scripted mutation keyed by primitive (and by capability alias).
+        #
+        # The label key tries the node's own name and then the name of its
+        # first named descendant. A row in a WPF list is an unnamed container
+        # whose label is a child text node, so keying only on the container's
+        # own name would make every per-row action unaddressable - and per-row
+        # actions are the whole point of a list (row 5's handler is not row 7's).
+        #
+        # The candidate keys are de-duplicated: for a control that *is* named
+        # (a button), the own-name key and the label key are the same string, and
+        # running the script twice would double every effect.
         mutated = False
-        for key in (primitive, f"{node.name}:{primitive}"):
+        keys = [primitive]
+        for candidate in (node.name, _row_label(node)):
+            if candidate:
+                key = f"{candidate}:{primitive}"
+                if key not in keys:
+                    keys.append(key)
+        for key in keys:
             for mut in self.scripts.get(key, ()):
                 self._apply(node, mut, value)
                 mutated = True
@@ -351,6 +372,17 @@ class MockProvider:
                 mut.get("name", "cart"),
                 mut.get("count_text", ""),
             )
+        elif op == "callback":
+            # A named mutator from the caller's registry, called with the root
+            # of the window the action targeted. This is how an application's
+            # own behaviour is replayed without teaching the mock every app:
+            # the mutator lives with the fixture that describes the window, and
+            # the mock just calls it. `node` is passed so a mutator can react to
+            # *which* row was acted on, which is exactly what a per-row Add or
+            # a per-conversation Send needs.
+            fn = self.callbacks.get(mut.get("fn", ""))
+            if fn is not None:
+                fn(node, self._trees[node.native.window_id].root)
 
 
 def _as_number(text: str | None) -> float | None:
@@ -360,6 +392,23 @@ def _as_number(text: str | None) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _row_label(node: RawNode) -> str | None:
+    """The label of a row: its own name, else its first named descendant.
+
+    A row in a WPF list is an unnamed container whose visible text is a child
+    node, so a script keyed only on the container's own name could never address
+    a single row. Falling back to the first named descendant is what makes
+    per-row scripts (row 5 adds row 5's product) possible without inventing a
+    name the platform does not report.
+    """
+    if node.name:
+        return node.name
+    for child in node.walk():
+        if child is not node and child.name:
+            return child.name
+    return None
 
 
 def _cart_add(root: RawNode, price: float) -> None:

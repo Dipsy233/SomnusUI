@@ -34,7 +34,7 @@ import logging
 import os
 import sys
 
-from somnus.errors import SomnusError
+from somnus.errors import ErrorCode, SomnusError
 from somnus.providers.mock import MockProvider
 from somnus.runtime.policy import Policy
 from somnus.runtime.session import Session
@@ -56,17 +56,39 @@ def build_session(args: argparse.Namespace) -> Session:
     if args.demo:
         provider_name = "mock"
 
-    if provider_name == "mock" or args.fixture:
+    if provider_name == "mock" or args.fixture or getattr(args, "scenario", None):
         trees = []
         scripts = {}
+        callbacks = None
         if args.demo:
             from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
 
             trees.append(restaurant_demo_tree())
             scripts = demo_scripts()
-        for path in args.fixture or []:
+        if getattr(args, "scenario", None):
+            # The Scenario Suite screens, replayed offline. This is what makes
+            # the suite usable without Windows: the same trees and the same
+            # scripted behaviour the acceptance app produces are available here.
+            from tests.fixtures import scenarios as S
+
+            screen = args.scenario
+            if screen not in S.SCREENS:
+                raise SomnusError(
+                    ErrorCode.PARSE_ERROR,
+                    message=(
+                        f"unknown scenario {screen!r}; choose from "
+                        f"{', '.join(sorted(S.SCREENS))}"
+                    ),
+                )
+            builder, scripts_factory = S.SCREENS[screen]
+            trees.append(builder())
+            scripts = scripts_factory()
+            callbacks = S.callbacks()
+        for path in args.fixture or ():
             trees.append(_load_fixture(path))
-        provider = MockProvider(fixtures=trees, scripts=scripts)
+        provider = MockProvider(
+            fixtures=trees, scripts=scripts, callbacks=callbacks
+        )
     else:
         from somnus.providers.base import get_provider
 
@@ -228,6 +250,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--fixture", action="append", default=None)
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument(
+        "--scenario",
+        default=None,
+        metavar="NAME",
+        help=(
+            "replay one Scenario Suite screen offline through the mock provider "
+            "(store | form | chat | console | tree). This is the test app the "
+            "acceptance suite drives, available without Windows"
+        ),
+    )
     parser.add_argument("--pack", default=None)
     parser.add_argument(
         "--no-pack",

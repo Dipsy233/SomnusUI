@@ -69,14 +69,30 @@
 ## 二、落点建议（映射到现有测试结构）
 
 ```
-tests/e2e/test_scenarios_mock.py      # A1 A3 A5 B3 C1-C4 E1-E3 F3 —— 纯 mock，每 commit 跑
-tests/e2e/test_scenarios_windows.py   # A2 A4 B1 B2 B4 D1-D4 C5 E4 —— @pytest.mark.windows
-examples/eval_scenarios.py            # S3：LLM agent 跑任务清单（复用 eval_agent.py）
+tests/fixtures/scenarios.py            # 验收应用（apps/scenario-suite）的固件
+                                      # 与脚本化行为，S1/S2 共用
+tests/scenarios/test_store.py         # A1  搜索 + 240 行列表 + 购物车
+tests/scenarios/test_form.py          # A4  表单：只读/可写、校验、提交记录
+tests/scenarios/test_chat.py          # B2  自绘编辑器（无 ValuePattern/无 HWND）：set_text 回退链 + 发送记录
+tests/scenarios/test_console.py       # B1  普通文本框：原生写入优先
+tests/scenarios/test_tree.py          # A5/E2  嵌套树：按展开等级压缩
+tests/scenarios/test_contracts.py     # E1/C1/C2/F2  泄露、能力、窗口切换
+tests/scenarios/test_bench.py         # E3  基准门槛自身不被悄悄改坏
+tests/e2e/test_windows_scenarios.py   # S2：同一批界面的真实窗口版本
 ```
 
-- 复用 `tests/fixtures/builders.py` 构造 UI 突变、延迟、萎缩树等注入；
-- mock 层断言"LLM 可见文本"而非内部对象，直接对 SUI-Text 输出做正则泄露扫描；
-- S2 场景尽量复用 `apps/restaurant-demo` + notepad，减少对环境的具体依赖。
+- 验收应用是**一个应用、五个界面**（`apps/scenario-suite`，用
+  `ScenarioSuite.exe <界面>` 启动），取代了对记事本与三行餐厅界面的依赖：
+  记事本只是"一个带 HWND 的文本控件"，而真实 GUI 的难点是搜索/表单/
+  自绘输入框/大列表/深树这些形态。
+- 固件复刻真实无障碍形状而不是 C# 实现，所以 S1 能在任意平台跑，而 S2
+  负责坐实固件没跑偏（例如 WPF 把 `RichTextBox` 报成没有 Value 模式的
+  `document`）。
+- mock 层断言"LLM 可见文本"而非内部对象，直接对 SUI-Text 输出做泄露扫描；
+  泄露扫描是取证式的（枚举树里真实存在的 id 再看它有没有出现在文本里），
+  不是对四位数字的正则猜测——后者会把应用自己的 `REQ-0001` 误判为泄露。
+- `MockProvider` 新增 `callback` 变更操作，让固件可以回放"逐行行为"
+  （第 5 行的加入与第 7 行不同），而不必把每个应用硬编码进 mock。
 
 ## 三、S3 LLM-in-the-loop 任务清单（bench/eval 扩展）
 

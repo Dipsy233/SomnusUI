@@ -112,7 +112,19 @@ def _has_default_action(node: RawNode) -> bool:
     advertises `activate`: the platform does offer the action, and whether the
     application reacts is the application's business, reported through the
     delta - that is the caller's decision, not the compiler's.
+
+    A text-entry surface is the one exception, and it is a measured one: WPF's
+    ``RichTextBox`` (and every native ``EDIT``) reports ``legacyiaccessible``,
+    so treating that pattern as a default action would put ``+activate`` on a
+    document. The element's default action there is to take text, which is
+    already expressed by ``set_text``; offering ``activate`` alongside it would
+    advertise a gesture the application does not perform.
     """
+    if node.role in _TEXT_ENTRY_ROLES or _is_text_entry(node):
+        # `invoke` on a text-entry node is taken seriously (some editors do
+        # publish it as "open"), but the blanket `legacyiaccessible` bridge is
+        # not - every Win32 edit control carries it.
+        return "invoke" in node.patterns
     return bool(node.patterns & _ACTIVATION_PATTERNS)
 
 
@@ -170,10 +182,22 @@ def _prefers_keyboard_entry(node: RawNode) -> bool:
 def _is_text_entry(node: RawNode) -> bool:
     """Whether ``node`` should advertise ``set_text``.
 
-    True when the node is a known text-entry role, or when it is a focusable,
-    enabled surface that either has a writable Value pattern or exposes a text
-    interface it can be typed into. The three exclusions (readonly, disabled,
-    offscreen) are the cases where typing would silently do nothing.
+    True when the node is a known text-entry role, or when it publishes a
+    **Value pattern** on a role that can carry text. Both are evidence the
+    platform supplied.
+
+    There is deliberately **no** structural fallback here. A node that merely
+    has a Text interface was previously granted `set_text` on the strength of
+    its role (any `group`/`pane`), which handed the capability to controls that
+    cannot accept text at all - a labelled panel, a read-only document - and
+    made the observation promise a write that could only fail. Self-drawn
+    editors are identified in the compiler's normalize pass (by the toolkit's
+    class name) and arrive here already carrying the `input` role, so nothing is
+    lost by removing the guess: what is left is exactly what the platform
+    proved.
+
+    The three exclusions (readonly, disabled, offscreen) are the cases where
+    typing would silently do nothing.
     """
     if "readonly" in node.states or "disabled" in node.states:
         return False
@@ -187,16 +211,6 @@ def _is_text_entry(node: RawNode) -> bool:
     # never be treated as an input.
     if "value" in node.patterns:
         return node.role in ("pane", "document", "group", "unknown")
-    # No Value pattern, but a focusable text surface: a self-drawn editor
-    # (Chromium/Electron rich text, terminal emulators) that accepts keyboard
-    # input. A `text` label has no keyboard target, so it is excluded.
-    if "text" in node.patterns and node.role in (
-        "document",
-        "group",
-        "pane",
-        "unknown",
-    ):
-        return True
     return False
 
 

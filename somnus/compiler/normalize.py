@@ -138,12 +138,22 @@ _INTERACTIVE_PATTERNS = frozenset(
 )
 
 
-def normalize_role(raw_role: str, has_name: bool, patterns: frozenset[str]) -> str:
+def normalize_role(
+    raw_role: str,
+    has_name: bool,
+    patterns: frozenset[str],
+) -> str:
     """Map a provider role string to a portable role.
 
     ``custom``/``groupless`` nodes are disambiguated using their patterns: an
     unnamed custom control with an Invoke pattern is a button; one with a Value
     pattern is an input; otherwise it stays ``group`` if named else ``unknown``.
+
+    A ``document`` is mapped to ``text`` unless it publishes a Value pattern.
+    Whether a document that lacks one is nevertheless editable is decided by
+    **structure** in :func:`_looks_like_editor`, not here: a class name would be
+    a naming convention rather than a capability, and this compiler only accepts
+    a capability the platform actually published.
     """
     role = (raw_role or "unknown").lower()
     role = ROLE_ALIASES.get(role, role)
@@ -156,8 +166,8 @@ def normalize_role(raw_role: str, has_name: bool, patterns: frozenset[str]) -> s
             return "listitem"
         return "group" if has_name else "unknown"
     if role == "document":
-        # Read-only documents (PDF views, help pages) are text; editable ones
-        # (Notepad's RichEdit editor, word processors) are inputs.
+        # A Value pattern is proof; without one the node is provisionally text
+        # and `normalize()` re-examines it as a typing surface.
         return "input" if "value" in patterns else "text"
     if role not in ROLES:
         return "group" if has_name else "unknown"
@@ -195,12 +205,27 @@ def is_interactive(role: str, patterns: frozenset[str]) -> bool:
 
 def normalize(node: RawNode) -> RawNode:
     """Normalize one raw node in place and recurse."""
+    raw_role = node.role
     role = normalize_role(node.role, bool(node.name), node.patterns)
-    # Rich-text editors render as named groups (QQ's ProseMirror message box,
-    # CodeMirror, generic "...editor" class names). They take text input and
-    # are the primary target of set_text, so expose them as inputs - the class
-    # name never leaves the runtime, so this cannot leak to the LLM.
-    if role == "group" and _looks_like_editor(node):
+    # A self-drawn typing surface is promoted to `input` so it can be written.
+    # The evidence is the control's **class name**, and that is deliberate: a
+    # self-drawn editor (QQ/豆包's ProseMirror composer, CodeMirror, Monaco, a
+    # terminal) publishes *nothing* the platform can use - that is the whole
+    # problem - so the only thing left to recognise it by is what the toolkit
+    # calls itself. Role and patterns cannot tell it from a read-only document
+    # or a toolbar, both of which are also leaf-ish nodes with a Text interface.
+    #
+    # Falling back to structure instead would be a guess, and the guess fails in
+    # both directions: a PDF viewer and a `RichTextBox` look like editors and
+    # are not always writable, while a toolbar is a container that is not a
+    # typing surface at all. This project's rule is that a capability must be
+    # proof-able; class names are the one honest signal here, they never leave
+    # the runtime, and an editor with an unknown class name is simply not
+    # recognised - which is reported, not guessed at.
+    if (
+        raw_role.lower() in _EDITOR_CANDIDATE_ROLES
+        and _looks_like_editor(node)
+    ):
         role = "input"
     node.role = role
     node.states = normalize_states(node.states)
@@ -209,9 +234,21 @@ def normalize(node: RawNode) -> RawNode:
     return node
 
 
+#: Class names of editors whose *name* is a well-known giveaway. This is how a
+#: self-drawn typing surface is recognised at all: it publishes no usable
+#: interface (that is what makes it self-drawn), so its class name is the only
+#: evidence left. Rich-text toolkits (ProseMirror, CodeMirror, Monaco, tiptap,
+#: xterm) and the platform editors that behave the same way for our purposes
+#: (``RichEdit``/``RichEditD2DPT``) are listed together.
+#:
+#: A class name is a naming convention rather than a platform guarantee, so it
+#: is used for exactly one thing - granting ``set_text`` - and the routes that
+#: capability resolves to are the ones the element really has. An editor whose
+#: class name is not here is left as a ``group``/``text`` and treated as
+#: unwritable, because the runtime genuinely cannot tell what it is.
 _EDITOR_CLASS_RE = re.compile(
-    r"prosemirror|codemirror|monaco|textarea|text-editor|editor\b|"
-    r"contenteditable|rich-?text|ace_editor|xterm|terminal",
+    r"prosemirror|codemirror|monaco|tiptap|textarea|text-editor|editor\b|"
+    r"contenteditable|rich-?text|richedit|ace_editor|xterm|terminal",
     re.IGNORECASE,
 )
 
@@ -222,27 +259,47 @@ _EDITOR_CANDIDATE_ROLES: frozenset[str] = frozenset(
 
 
 def _looks_like_editor(node: RawNode) -> bool:
-    """Whether a non-``input`` node is actually a text editor.
+    """Whether a node the platform did not call ``input`` is really an editor.
 
-    A self-drawn editor (Chromium/Electron rich text, CodeMirror, Monaco, a
-    terminal) is exposed by the platform as a plain ``group``/``pane`` with a
-    text interface but no Value pattern, so role alone cannot identify it. Two
-    signals are combined, class name first (cheap and exact for the well-known
-    editors), then structure: a text interface on a leaf-ish focusable node that
-    is not a labelled container.
+    Recognised by **class name**. That is the only honest signal available: a
+    self-drawn editor is exactly a control that publishes no usable interface
+    (otherwise it would already be an ``input``), so there is no pattern to
+    consult. Role cannot do it either - a read-only document and a writable
+    rich-text box are both leaf-ish nodes with a Text interface - and structure
+    cannot do it, because a toolbar is also a container with a Text interface.
+
+    The class name is a naming convention, which is weaker evidence than a
+    platform pattern, so it is used for exactly this one promotion and nothing
+    else: it grants ``set_text`` to a control whose *only* remaining write
+    routes are the clipboard and the keyboard, which are off by default and
+    reported when refused. An editor whose class name is not recognised stays a
+    ``group``/``text`` and is treated as unwritable - the honest answer, since
+    the runtime genuinely cannot tell what it is.
     """
     cls = node.native.class_name or ""
-    if cls and _EDITOR_CLASS_RE.search(cls):
-        return True
-    if node.role not in _EDITOR_CANDIDATE_ROLES:
+    if not cls:
         return False
-    if "text" not in node.patterns or "value" in node.patterns:
+    if node.role not in _EDITOR_CANDIDATE_ROLES:
         return False
     # A container with named interactive children is a toolbar/panel, not an
     # editor; an editor presents itself as a single typing surface.
+    #
+    # Children are still *raw* here (this runs before `normalize` recurses), so
+    # the check accepts both spellings of "interactive": the raw role and the
+    # role it will normalise to. Testing only the raw spelling would let a
+    # toolbar containing an `edit` slip through as an editor.
     if any(
-        c.role in ("button", "input", "menuitem", "tab", "link")
+        c.role in _INTERACTIVE_CHILD_ROLES
+        or ROLE_ALIASES.get(c.role.lower(), c.role.lower()) in _INTERACTIVE_CHILD_ROLES
         for c in node.children
     ):
         return False
-    return True
+    return _EDITOR_CLASS_RE.search(cls) is not None
+
+
+#: Child roles that prove a container is a panel/toolbar rather than a single
+#: typing surface. Listed in portable spelling; raw spellings are mapped through
+#: ``ROLE_ALIASES`` at the call site.
+_INTERACTIVE_CHILD_ROLES: frozenset[str] = frozenset(
+    {"button", "input", "menuitem", "tab", "link", "checkbox", "radio", "switch"}
+)

@@ -161,6 +161,23 @@ def _diff_node(old: SemanticNode, new: SemanticNode) -> list[tuple[str, str, Any
     if old.role in ("input", "slider", "text", "statusbar") and old.value != new.value:
         if new.value is not None:
             out.append((new.ref, "value", old.value or "", new.value))
+    # A label's *name* is its text, and for a status/summary line that text is
+    # the state: `0 items $0.00` becoming `1 items $9.50` is the application
+    # reporting what happened. UIA puts that string in the Name property, so
+    # comparing only `value`/attrs missed it entirely and the most informative
+    # line of the delta ("the cart total moved") never appeared - the agent saw
+    # a new row appear with no statement of what it did to the totals.
+    #
+    # Restricted to named leaves: on a container the name is a stable label
+    # ("购物车", "商品") whose churn is noise, and entities carry attrs instead.
+    elif (
+        old.role in ("text", "statusbar", "link")
+        and not old.children
+        and old.name
+        and new.name
+        and old.name != new.name
+    ):
+        out.append((new.ref, "name", old.name, new.name))
     return out
 
 

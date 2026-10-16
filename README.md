@@ -384,17 +384,55 @@ somnus/
 ├── config.py      persistent settings (the opt-in switches live here)
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
+apps/scenario-suite/    WPF (.NET 8) acceptance app: five screens covering the
+                        shapes a real GUI throws at an agent (see below)
 docs/
   packs.md              how to write an App Pack
   interactive-usage.md  REPL vs one-shot CLI vs script
   what-the-llm-sees.md  one window, four tools, with real output
+  scenario-test-plan.md the scenario matrix and its pass criteria
 examples/               agent loop, contract check, task evaluation (host examples)
 bench/                  benchmark gates + LLM control demos
-tests/{fixtures,golden,compiler,projection,runtime,providers,e2e}/
+tests/{
+  fixtures/             raw-tree builders, incl. `scenarios.py` (the suite)
+  scenarios/            S1: scenario suite on fixtures — runs anywhere
+  golden,compiler,projection,runtime,providers/
+  e2e/                  S2: real windows (`-m windows`)
+}/
 ```
 
 Dependency direction: `providers → compiler → projection → serialization →
 protocol`; `runtime` depends on all of them; nothing imports an LLM.
+
+### The acceptance app: one app, five real-world shapes
+
+A GUI agent is only as tested as the screen it was tested on. A three-row demo
+proves nothing about folding, routing or verification, so the acceptance app is
+a *suite* of screens, each aimed at one class of difficulty:
+
+| Screen | What it is | What it forces the runtime to get right |
+| --- | --- | --- |
+| `store` | search box + a **240-row** scrollable catalog + cart | large data: folding, `FIND` into a folded list, a search field written natively |
+| `form` | labelled fields (one writable, one read-only), checkbox, combo, disabled button, gated submit | a form's shape: writable vs read-only is visible on the line, validation is a real outcome, the submit **record** is the verification surface |
+| `chat` | a **self-drawn** rich-text composer, message history, send button, visible send log | the `set_text` fallback: a control that publishes nothing writable at all (no ValuePattern, no element HWND, reported as a `Group` with the toolkit's class name) - so the runtime must refuse honestly or use an opt-in channel, then record the send |
+| `console` | a **plain** text box composer and a contact list | the routing contrast: a control with its own write interface must never fall back to the synthetic channels |
+| `tree` | a nested, expandable tree (thousands of nodes) | compression by expansion level: a bounded overview, and a detailed view that costs what was actually unfolded |
+
+Each screen exists twice: as a real WPF window (`apps/scenario-suite`, run with
+`ScenarioSuite.exe <screen>`) and as a fixture (`tests/fixtures/scenarios.py`).
+The fixtures mirror the live accessibility shape - including the parts that are
+easy to get wrong, such as the chat composer, which is a hand-drawn control that
+UIA reports as a `Group` called `ProseMirror ExEditor` (no value pattern, no
+HWND) exactly as QQ's and 豆包's are - so `tests/scenarios/` runs anywhere while
+`tests/e2e/test_windows_scenarios.py` proves the fixtures are faithful.
+
+Replay any screen without Windows:
+
+```bash
+somnus --scenario chat observe
+somnus --scenario store repl
+somnus --scenario tree --allow-clipboard repl
+```
 
 ## App Packs (optional)
 
@@ -416,26 +454,42 @@ Authoring guide: [`docs/packs.md`](docs/packs.md).
 ## Testing
 
 ```bash
-pytest                      # compiler/projection/runtime tests run anywhere
+pytest                      # everything portable, plus the scenario suite (S1)
+pytest tests/scenarios      # just the scenario suite on fixtures
 pytest --update-golden      # rewrite golden SUI-Text fixtures
-pytest -m windows           # UIA + WPF E2E (Windows runner only)
+
+# S2: the real windows (Windows runner only)
+dotnet build apps/scenario-suite
+pytest -m windows
 ```
 
+Two layers, on purpose. **S1** (`tests/scenarios/`) drives the five acceptance
+screens replayed from fixtures, so it runs on any platform and every commit.
+**S2** (`tests/e2e/test_windows_scenarios.py`) drives the same screens as real
+WPF windows through the real UIA provider, and is what makes S1 trustworthy: a
+fixture that drifted from the live control would pass S1 and fail S2.
+
 The `MockProvider` replays recorded `RawTree` fixtures and applies scripted
-mutations, so the compiler, projection, resolver, delta and verification paths
-are all exercised without a desktop.
+mutations - including real per-row behaviour through a named callback - so the
+compiler, projection, resolver, delta, routing-chain and verification paths are
+all exercised without a desktop.
 
 ## Metrics
 
-| Metric | Target | Current (`--demo bench`) |
+| Metric | Target | Current (`somnus --demo bench --runs 100`) |
 | --- | --- | --- |
 | Zero Vision | 0 vision/coordinate calls | ✓ (structural) |
 | Information isolation | 0 native ids in LLM context | ✓ (leak scan = 0) |
-| Compression ratio | ≥ 10× | ≥ 73× |
+| Compression ratio | ≥ 10× | ≥ 1500× (fully expanded tree) |
 | Action success | ≥ 99% | 100% |
 | Task success | ≥ 90% | 100% |
+| L0 observation | ≤ 300 tokens | 80 tokens (240-row catalog, expanded tree) |
 
-Run with `somnus --demo bench --runs 100`.
+Run with `somnus --demo bench --runs 100`. The isolation check is evidence-based
+rather than a regex guess: it enumerates the actual automation ids, class names
+and runtime ids of the tree under test and asserts none appears in the text the
+model would receive, so application data that merely *looks* like an id (a form's
+`REQ-0001`) is not mistaken for a leak.
 
 ## License
 

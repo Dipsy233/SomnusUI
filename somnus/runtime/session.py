@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 
@@ -1412,18 +1413,57 @@ def _find_parent(root: SemanticNode, target: SemanticNode) -> SemanticNode | Non
 
 
 def _node_matches(node: SemanticNode, query: str) -> bool:
+    """Whether ``query`` names ``node``.
+
+    The searchable text is the node's *name* and *value* plus its **textual**
+    attributes (an entity type, a unit). Numeric attributes are deliberately
+    excluded from token matching, and matching is on word boundaries rather
+    than substrings, because the loose version made containers shadow their own
+    rows: a catalog whose parent carries ``entity=item count=240`` matched
+    ``FIND "Item 40"`` on the ``40`` inside ``240`` and returned the list
+    instead of item 40 (found while building the large-catalog scenario). A
+    container is not a match for its children's names - that is what scoping
+    (``FIND "..." in l1``) is for.
+    """
     if not query:
         return True
     q = query.casefold().strip()
-    # Match name, value, attrs, and aliases.
+    # Exact substring match on the node's own name/value: the strongest signal,
+    # and the one that makes "Big Mac" find "Big Mac Meal".
     haystacks = [node.name or "", str(node.value or "")]
-    haystacks.extend(str(v) for v in node.attrs.values())
     if any(q in h.casefold() for h in haystacks):
         return True
-    # Token subset match ("big mac" matches "Big Mac Meal").
+    # Attribute text (entity type, currency) may also be named, but only when
+    # it is a string - a number is an amount, not a name.
+    attr_text = [
+        str(value)
+        for value in node.attrs.values()
+        if isinstance(value, str) and value
+    ]
+    if any(q in value.casefold() for value in attr_text):
+        return True
+    # Token subset match ("big mac" matches "Big Mac Meal"): every query token
+    # must appear as a whole word, so "40" does not match inside "240".
     tokens = [t for t in q.split() if t]
-    joined = " ".join(haystacks).casefold()
-    return bool(tokens) and all(t in joined for t in tokens)
+    if not tokens:
+        return False
+    words = set()
+    for source in (*haystacks, *attr_text):
+        words.update(_word_tokens(source))
+    return all(t in words for t in tokens)
+
+
+_WORD_RE = re.compile(r"[0-9a-z\u4e00-\u9fff]+")
+
+
+def _word_tokens(text: str) -> list[str]:
+    """Lower-cased word tokens, keeping CJK runs as one token each.
+
+    Splitting only on non-alphanumerics means ``Item 40`` yields ``item`` and
+    ``40`` (so a token match cannot land inside ``240``), while ``巨无霸``
+    stays one token because CJK has no spaces.
+    """
+    return _WORD_RE.findall(text.casefold())
 
 
 def _render_subtree(node: SemanticNode, lines: list[str], opts: RenderOptions, depth: int, indent: int) -> None:
