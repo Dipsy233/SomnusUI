@@ -51,6 +51,13 @@ _TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "fals
 #: preparation as completion reported success for an action that never ran.
 _PREPARATORY_PRIMITIVES = frozenset({"focus", "scroll_into_view"})
 
+#: Primitives that write text into a control. After one of these succeeds the
+#: response echoes the exact value written, so the agent can confirm what
+#: landed without a follow-up `inspect`: the delta only shows a `value` change
+#: when the value actually differed, and a routed write (`set_text_hwnd`,
+#: `paste_text`) may not be readable back through UIA at all.
+_WRITE_PRIMITIVES = frozenset({"set_text", "set_text_hwnd", "type_text", "paste_text"})
+
 
 @dataclass(slots=True)
 class Observation:
@@ -892,6 +899,7 @@ class Session:
         # would be the runtime overruling what it was told to do.
         exec_result = None
         route = ""
+        written: Any = None
         ordered_steps = self._order_steps(action.ref or "", resolution.steps)
         denied: list[str] = []
         for index, step in enumerate(ordered_steps):
@@ -943,6 +951,8 @@ class Session:
                     continue
                 route = step.primitive
                 self._remember_route(action.ref or "", step.primitive)
+                if step.primitive in _WRITE_PRIMITIVES:
+                    written = step.value
                 break
             if exec_result.unsupported:
                 # This element does not offer this interface; try the next
@@ -1103,6 +1113,16 @@ class Session:
             tree_body = f"{tree_body}\n{popup_text}" if tree_body else popup_text
         if tree_body:
             body = f"{body}\n{tree_body}" if body else tree_body
+        # Echo the value a write actually put into the control. The delta shows
+        # a `value` change only when it differs from what was there, and a
+        # routed write (`set_text_hwnd`, `paste_text`) may leave a value UIA
+        # cannot read back - so without this line the agent cannot tell "wrote
+        # the same text" from "wrote nothing", nor spot that a bad argument
+        # became the literal text. This is data, so it is quoted, like every
+        # other string the runtime reports.
+        if written is not None:
+            echo = f"~ {action.ref} text={_q(str(written))}"
+            body = f"{body}\n{echo}" if body else echo
         # A context_menu on a tray icon may open its menu as a *separate
         # top-level window* (QQ's CEF tray menu), invisible to the in-window
         # delta. Compare the window list captured after the action against

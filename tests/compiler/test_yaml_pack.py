@@ -200,6 +200,58 @@ def test_keyboard_fallback_executes_through_the_resolver():
     assert editor.value and "hello" in editor.value
 
 
+def test_set_text_echoes_the_value_written():
+    """A write reports the exact text it stored, so the agent can confirm it.
+
+    The delta only shows a `value` change when the value differed and a routed
+    write may not be readable back through UIA, so without this echo "wrote the
+    same text" and "wrote nothing" look identical.
+    """
+    from somnus.providers.mock import MockProvider
+    from somnus.runtime.policy import Policy
+    from somnus.runtime.session import Session
+
+    pack = load_pack_dict(_KEYBOARD_PACK)
+    session = Session(
+        MockProvider(fixtures=[_editor_tree(has_value=True)]),
+        pack=pack,
+        policy=Policy(allow_keyboard=True),
+    )
+    session.observe()
+    editor = next(n for n in session.result.root.walk() if n.entity == "editor")
+
+    out = session.dispatch(f'CALL {editor.ref}.set_text("hello")')
+    assert f'~ {editor.ref} text="hello"' in out, out
+
+    # Writing the same value again leaves the delta empty, but the echo stays:
+    # the agent can still tell the write happened, and what it stored.
+    again = session.dispatch(f'CALL {editor.ref}.set_text("hello")')
+    assert f'~ {editor.ref} text="hello"' in again, again
+
+
+def test_set_text_echo_shows_a_literal_colon_argument():
+    """`text:\"x\"` is data, not a named argument, and the echo says so.
+
+    A JSON-style colon is the mistake this makes visible: the write stored the
+    whole literal, and the quoted echo shows it instead of hiding it.
+    """
+    from somnus.providers.mock import MockProvider
+    from somnus.runtime.policy import Policy
+    from somnus.runtime.session import Session
+
+    pack = load_pack_dict(_KEYBOARD_PACK)
+    session = Session(
+        MockProvider(fixtures=[_editor_tree(has_value=True)]),
+        pack=pack,
+        policy=Policy(allow_keyboard=True),
+    )
+    session.observe()
+    editor = next(n for n in session.result.root.walk() if n.entity == "editor")
+
+    out = session.dispatch(f'CALL {editor.ref}.set_text(text:"foo")')
+    assert r'~ ' + editor.ref + r' text="text:\"foo\""' in out, out
+
+
 def test_keyboard_fallback_is_refused_by_default():
     """Without authorisation, a capability that can only type is refused.
 

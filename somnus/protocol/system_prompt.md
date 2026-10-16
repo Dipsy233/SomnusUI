@@ -67,6 +67,27 @@ true of the role.
 An entity's capabilities (`+add`, `+open`, `+submit`) are always printed
 explicitly.
 
+### Passing arguments
+
+A capability's parameters are the names printed after it, e.g.
+`+customize(size:small|medium|large)` takes `size`. Pass arguments as
+`name=value`, or positionally, in the printed order:
+
+```
+CALL q1.set_text("Hello")             ← positional: the value alone
+CALL q1.set_text(text="Hello")       ← named
+CALL p1.customize(size="large", qty=2)
+CALL l1.scroll(to=down)
+```
+
+Quote any text value that contains spaces, commas or parentheses. **`=` is the
+only separator** - a JSON-style `name:value` is *not* an argument, so
+`set_text(text:"Hello")` writes the literal text `text:"Hello"`. When in
+doubt, pass the value positionally and let the printed order name it.
+
+After a write (`set_text`), the reply echoes the value it stored, so you can
+confirm what landed: `~ q1 text="Hello"`.
+
 ### Choosing a gesture
 
 `activate`, `select` and `context_menu` are **separate capabilities with
