@@ -1345,6 +1345,9 @@ SCREENS: dict[str, tuple[Callable[..., RawTree], Callable[[], dict]]] = {
     "chat": (chat_tree, chat_scripts),
     "console": (console_tree, console_scripts),
     "tree": (tree_tree, scenario_scripts),
+    "native": (native_tree, scenario_scripts),
+    "menu": (menu_tree, scenario_scripts),
+    "dialog": (dialog_tree, scenario_scripts),
 }
 
 
