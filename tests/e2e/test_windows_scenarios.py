@@ -49,19 +49,22 @@ def _require_app():
         pytest.skip(f"scenario suite not built: {APP} (dotnet build apps/scenario-suite)")
 
 
-#: The observation taken when a session was launched, keyed by session id. On a
-#: large window the first observe is by far the most expensive step (a UIA walk
-#: of every row), so a test that only inspects that first observation reuses it
-#: rather than paying for an identical second walk.
+#: The observation taken when a session was launched. On a large window the
+#: first observe is by far the most expensive step (a UIA walk of every row), so
+#: a test that only inspects that first observation reuses it rather than paying
+#: for an identical second walk. Keyed by the session object itself (an
+#: ``id()`` key can be reused by a later session once the first is collected,
+#: which would hand one test another's tree).
 _LAUNCH_OBSERVATION: dict[int, object] = {}
 
 
 def _observe_once(session):
     """Return the launch observation, taking it on first use."""
     key = id(session)
-    if key not in _LAUNCH_OBSERVATION:
-        _LAUNCH_OBSERVATION[key] = session.observe()
-    return _LAUNCH_OBSERVATION[key]
+    cached = _LAUNCH_OBSERVATION.get(key)
+    if cached is None or cached[0] is not session:
+        _LAUNCH_OBSERVATION[key] = (session, session.observe())
+    return _LAUNCH_OBSERVATION[key][1]
 
 
 @pytest.fixture

@@ -133,7 +133,17 @@ def run_primitive(
             # routes. A refusal that costs nothing (the clipboard holds an image
             # we cannot restore) is reported as unsupported so the chain falls
             # through to typing rather than failing the call.
-            element.SetFocus()
+            fg = _bring_to_foreground(element)
+            if not fg.ok:
+                # The window could not be raised, so Ctrl+V would go to whatever
+                # *is* in front. Report the route as unavailable so the chain
+                # can try the next one rather than typing into a stranger.
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message=fg.message,
+                    unsupported=True,
+                )
             outcome = paste_text(str(value), verify=_text_landed_verifier(element, value))
             if outcome.ok:
                 return ExecResult(ok=True)
@@ -153,7 +163,14 @@ def run_primitive(
             # Declarative keyboard fallback: focus the target, then type. Only
             # reached because a pack declared it as a conditional `via` step
             # (dev doc section 12.2); the LLM never sees this primitive.
-            element.SetFocus()
+            fg = _bring_to_foreground(element)
+            if not fg.ok:
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message=fg.message,
+                    unsupported=True,
+                )
             # Pass a verifier so the sender can tell whether each character
             # actually landed. Without it the target can park queued input until
             # the next real keystroke, which shows up as "the text was entered but
@@ -220,6 +237,82 @@ def run_primitive(
         return ExecResult(ok=False, error="ACTION_NOT_SUPPORTED", message=str(exc), unsupported=True)
     except Exception as exc:  # noqa: BLE001 - converted to a code
         return _classify(exc)
+    return ExecResult(ok=True)
+
+
+def _top_level_hwnd(element: Any) -> int:
+    """The top-level window handle an element lives in, or 0.
+
+    An element's own handle is 0 for the self-drawn controls the synthetic
+    channels exist to serve, so the walk goes up the UIA tree to the first
+    ancestor that has one (the enclosing window).
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    try:
+        hwnd = int(getattr(element, "CurrentNativeWindowHandle", 0) or 0)
+    except Exception:
+        hwnd = 0
+    if hwnd:
+        return int(user32.GetAncestor(hwnd, 2) or hwnd)  # 2 = GA_ROOT
+    try:
+        from comtypes.gen import UIAutomationClient as _UIA
+
+        walker = _UIA.CUIAutomation().ControlViewWalker
+        current = element
+        for _ in range(64):
+            parent = walker.GetParentElement(current)
+            if parent is None:
+                break
+            parent_hwnd = int(getattr(parent, "CurrentNativeWindowHandle", 0) or 0)
+            if parent_hwnd:
+                return int(user32.GetAncestor(parent_hwnd, 2) or parent_hwnd)
+            current = parent
+    except Exception:
+        return 0
+    return 0
+
+
+def _bring_to_foreground(element: Any) -> ExecResult:
+    """Focus ``element`` and raise its top-level window, or say why not.
+
+    A ``Ctrl+V`` (and typing) goes to the *foreground* window's focused control,
+    so both halves are required: ``SetFocus`` chooses the control inside the
+    window, ``SetForegroundWindow`` chooses the window. Focusing without raising
+    is what let a synthetic write land on whatever else happened to be in front
+    (observed live: a chat send went nowhere while another app held the
+    foreground).
+
+    ``SetForegroundWindow`` is refused while another process owns the foreground
+    (Win32's foreground lock). That is reported as ``FOREGROUND_DENIED`` so the
+    caller can fall through to a focus-free route instead of sending a keystroke
+    that would land in somebody else's window.
+    """
+    try:
+        element.SetFocus()
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = _top_level_hwnd(element)
+        if not hwnd:
+            return ExecResult(ok=True, message="no top-level window handle")
+        if int(user32.GetForegroundWindow() or 0) != hwnd:
+            user32.SetForegroundWindow(hwnd)
+        if int(user32.GetForegroundWindow() or 0) != hwnd:
+            return ExecResult(
+                ok=False,
+                error="FOREGROUND_DENIED",
+                message=(
+                    "the target window could not be raised (another application "
+                    "holds the foreground); synthetic input would land elsewhere"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - converted to a code
+        return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED", message=str(exc))
     return ExecResult(ok=True)
 
 

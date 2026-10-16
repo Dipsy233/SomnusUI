@@ -54,16 +54,16 @@ P_EXPAND = frozenset({"expandcollapse"})
 P_EXPAND_ITEM = frozenset({"expandcollapse", "selectionitem"})
 #: A **self-drawn** rich-text composer, as UIA reports one: a ``group`` with
 #: the toolkit's own class name, a Text interface for reading, no Value pattern
-#: and no element HWND. Measured on QQ (``Group``, ``ProseMirror
-#: ExEditor-qq-msg-editor``, ``legacyiaccessible``/``text``/``window``) and on
-#: 豆包 (``tiptap ProseMirror``); the Scenario Suite's ``SelfDrawnEditor``
-#: reproduces the same shape in WPF.
+#: and no element HWND. The Scenario Suite's ``SelfDrawnEditor`` reproduces the
+#: shape in WPF, where the peer adds ``legacyiaccessible`` (the MSAA bridge) and
+#: the Text pattern is what its ``ITextProvider`` publishes - so the readable
+#: surface is ``text``, and there is nothing to *write* through.
 #:
 #: This is the hard case, and the one this screen exists for: the control
-#: publishes *nothing* the runtime can write through, so ``set_text`` must fall
+#: publishes nothing the runtime can write through, so ``set_text`` must fall
 #: to the two synthetic channels - both off by default, both reported when
 #: refused.
-P_RICHTEXT = frozenset({"legacyiaccessible", "text", "window"})
+P_RICHTEXT = frozenset({"legacyiaccessible", "text"})
 
 
 class _Ids:

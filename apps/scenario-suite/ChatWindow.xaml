@@ -49,8 +49,8 @@
          shape the capability report measured on QQ and 豆包's ProseMirror box,
          and the one the set_text fallback chain exists for: the only remaining
          routes are the two synthetic channels, both of which need the
-         foreground and both of which are gated behind --allow-clipboard /
-         --allow-keyboard. A WPF RichTextBox would be easier but would test the
+         foreground and both of which are gated behind the allow-clipboard /
+         allow-keyboard switches. A WPF RichTextBox would be easier but would test the
          wrong thing: it is a platform document control that merely lacks a
          writable Value pattern, not a painted surface the platform knows
          nothing about. -->

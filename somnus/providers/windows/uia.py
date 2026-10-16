@@ -1154,16 +1154,12 @@ def _cached_str(cached: Any, prop_id: int) -> str | None:
 
 
 def _set_foreground(el: Any) -> ExecResult:
-    try:
-        el.SetFocus()
-    except Exception:
-        pass
-    try:
-        import ctypes
+    """Bring ``el``'s window to the foreground (see ``executor._bring_to_foreground``).
 
-        hwnd = el.CurrentNativeWindowHandle
-        if hwnd:
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-    except Exception as exc:
-        return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED", message=str(exc))
-    return ExecResult(ok=True)
+    ``focus_window`` and ``CALL wN.focus()`` use this to switch the session's
+    target; it is the same primitive the synthetic-input routes need, so it lives
+    in one place.
+    """
+    from somnus.providers.windows.executor import _bring_to_foreground
+
+    return _bring_to_foreground(el)

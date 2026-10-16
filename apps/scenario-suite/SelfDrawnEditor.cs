@@ -1,6 +1,9 @@
 using System;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using System.Windows.Automation.Text;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -145,7 +148,7 @@ public class SelfDrawnEditor : FrameworkElement
 /// a control that publishes nothing writable must be indistinguishable from one
 /// that has nothing writable, because that is the truth.
 /// </summary>
-public class SelfDrawnEditorPeer : FrameworkElementAutomationPeer
+public class SelfDrawnEditorPeer : FrameworkElementAutomationPeer, ITextProvider
 {
     public SelfDrawnEditorPeer(SelfDrawnEditor owner) : base(owner) { }
 
@@ -153,4 +156,103 @@ public class SelfDrawnEditorPeer : FrameworkElementAutomationPeer
 
     protected override AutomationControlType GetAutomationControlTypeCore() =>
         AutomationControlType.Group;
+
+    /// <summary>
+    /// Publish the UIA **Text** pattern for the painted content.
+    ///
+    /// This is what a real self-drawn editor does: QQ's ProseMirror box and
+    /// every Chromium/Electron editor publish their text this way (it is how a
+    /// screen reader reads them). It is the *readable* surface, and it is
+    /// deliberately the only one - there is still no ValuePattern and no element
+    /// HWND, so the content can be read and diffed but never written through a
+    /// native interface. That is the shape the capability report measured, and
+    /// the shape the set_text fallback chain exists for: readable, not writable.
+    ///
+    /// Publishing it matters to the runtime too. Without it, a synthetic write
+    /// has no way to confirm it landed and can only wait on a timer; with it,
+    /// the sender reads the content back and reports delivery as a measurement.
+    /// </summary>
+    public override object? GetPattern(PatternInterface patternInterface)
+    {
+        if (patternInterface == PatternInterface.Text)
+        {
+            return this;
+        }
+        return base.GetPattern(patternInterface);
+    }
+
+    ITextRangeProvider[] ITextProvider.GetSelection() =>
+        new ITextRangeProvider[] { new SelfDrawnTextRange((SelfDrawnEditor)Owner) };
+
+    ITextRangeProvider[] ITextProvider.GetVisibleRanges() =>
+        new ITextRangeProvider[] { new SelfDrawnTextRange((SelfDrawnEditor)Owner) };
+
+    ITextRangeProvider? ITextProvider.RangeFromChild(IRawElementProviderSimple childElement) =>
+        new SelfDrawnTextRange((SelfDrawnEditor)Owner);
+
+    ITextRangeProvider? ITextProvider.RangeFromPoint(Point screenLocation) =>
+        new SelfDrawnTextRange((SelfDrawnEditor)Owner);
+
+    ITextRangeProvider ITextProvider.DocumentRange =>
+        new SelfDrawnTextRange((SelfDrawnEditor)Owner);
+
+    SupportedTextSelection ITextProvider.SupportedTextSelection =>
+        SupportedTextSelection.Single;
+}
+
+/// <summary>
+/// The one text range this editor exposes: the whole document.
+///
+/// Only reading is meaningful here (the runtime reads the content back to see
+/// whether a paste arrived). The editing members exist because the interface
+/// demands them; they report "unsupported" rather than pretending to work,
+/// which keeps the control honest about being read-only through UIA.
+/// </summary>
+public class SelfDrawnTextRange : ITextRangeProvider
+{
+    private readonly SelfDrawnEditor _owner;
+
+    public SelfDrawnTextRange(SelfDrawnEditor owner) => _owner = owner;
+
+    public ITextProvider TextPattern => (ITextProvider)UIElementAutomationPeer.CreatePeerForElement(_owner)!;
+
+    public string GetText(int maxLength) =>
+        maxLength < 0 ? _owner.Text : _owner.Text.Substring(0, Math.Min(maxLength, _owner.Text.Length));
+
+    public bool Compare(ITextRangeProvider range) => range is SelfDrawnTextRange;
+
+    public int CompareEndpoints(TextPatternRangeEndpoint endpoint, ITextRangeProvider targetRange, TextPatternRangeEndpoint targetEndpoint) => 0;
+
+    public void ExpandToEnclosingUnit(TextUnit unit) { }
+
+    public ITextRangeProvider? FindAttribute(int attributeId, object value, bool backward) => null;
+
+    public ITextRangeProvider? FindText(string text, bool backward, bool ignoreCase) => null;
+
+    public object? GetAttributeValue(int attributeId) => null;
+
+    public double[]? GetBoundingRectangles() => null;
+
+    public IRawElementProviderSimple? GetEnclosingElement() =>
+        UIElementAutomationPeer.CreatePeerForElement(_owner) as IRawElementProviderSimple;
+
+    public IRawElementProviderSimple[] GetChildren() => System.Array.Empty<IRawElementProviderSimple>();
+
+    public int Move(TextUnit unit, int count) => 0;
+
+    public int MoveEndpointByUnit(TextPatternRangeEndpoint endpoint, TextUnit unit, int count) => 0;
+
+    public void MoveEndpointByRange(TextPatternRangeEndpoint endpoint, ITextRangeProvider targetRange, TextPatternRangeEndpoint targetEndpoint) { }
+
+    public void Select() { }
+
+    public void AddToSelection() { }
+
+    public void RemoveFromSelection() { }
+
+    public void ScrollIntoView(bool alignToTop) { }
+
+    public ITextRangeProvider Clone() => new SelfDrawnTextRange(_owner);
+
+    public bool Equals(ITextRangeProvider range) => range is SelfDrawnTextRange r && ReferenceEquals(r._owner, _owner);
 }
