@@ -30,6 +30,12 @@ public partial class NativeWindow : Window
         ReadOnlyBox.AccessibleName = "只读输入";
         RichBox.Name = "native_rich";
         RichBox.AccessibleName = "富文本输入";
+        // Keep the status line truthful: a native control changes its own text
+        // when the runtime writes through it, and the record should follow
+        // without a button press.
+        SingleLine.TextChanged += (_, _) => UpdateStatus();
+        MultiLine.TextChanged += (_, _) => UpdateStatus();
+        RichBox.TextChanged += (_, _) => UpdateStatus();
         UpdateStatus();
     }
 

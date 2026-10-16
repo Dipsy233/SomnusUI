@@ -55,6 +55,11 @@ def tree_session():
 
 
 @pytest.fixture
+def native_session():
+    return _session(S.native_tree())
+
+
+@pytest.fixture
 def make_session():
     """Build a session for any scenario, with policy knobs for the routing tests."""
 

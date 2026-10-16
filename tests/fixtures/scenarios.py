@@ -622,6 +622,71 @@ def _count_nodes(node: RawNode) -> int:
 
 
 # ---------------------------------------------------------------------------
+# native: real Win32 controls (an HWND, a Value pattern)
+# ---------------------------------------------------------------------------
+
+
+def native_tree(
+    *,
+    single: str = "",
+    multiline: str = "",
+    readonly: str = "LOCKED",
+    rich: str = "",
+    status: str | None = None,
+    window_id: str = "w1",
+) -> RawTree:
+    """The native screen: Win32 EDIT controls hosted in WPF.
+
+    Every control here maps a real HWND (the ``hwnd`` field is non-zero), which
+    is what makes them the native-control case: the shape the accessibility tree
+    reports for an application that uses real Win32 controls rather than WPF's
+    painted ones. They also publish ``value``, so the ordinary Value route
+    writes them - the point of the screen is that reachable, real native shapes
+    are covered, not that a special route runs.
+
+    ``readonly`` maps a handle but no ``set_text`` at all, which is the honest
+    answer for a control the platform refuses to write.
+    """
+    ids = _Ids()
+    if status is None:
+        status = f'单行="{single}" 多行="{multiline}" 富文本="{rich}"'
+
+    root = _node(
+        window_id,
+        "pane",
+        "native",
+        ids=ids,
+        automation_id="native_window",
+        children=[
+            _node(window_id, "text", "单行(原生 EDIT):", ids=ids,
+                  patterns=P_TEXT, automation_id="native_edit_label"),
+            _node(window_id, "edit", "单行输入", ids=ids, value=single,
+                  patterns=P_VALUE, automation_id="native_edit", hwnd=0xA001),
+            _node(window_id, "text", "多行(原生):", ids=ids,
+                  patterns=P_TEXT, automation_id="native_multiline_label"),
+            _node(window_id, "edit", "多行输入", ids=ids, value=multiline,
+                  patterns=P_VALUE, automation_id="native_multiline", hwnd=0xA002),
+            _node(window_id, "text", "只读(原生):", ids=ids,
+                  patterns=P_TEXT, automation_id="native_readonly_label"),
+            _node(window_id, "edit", "只读输入", ids=ids, value=readonly,
+                  patterns=P_TEXT, states=frozenset({"readonly"}),
+                  automation_id="native_readonly", hwnd=0xA003),
+            _node(window_id, "text", "RichEdit(原生):", ids=ids,
+                  patterns=P_TEXT, automation_id="native_rich_label"),
+            _node(window_id, "edit", "富文本输入", ids=ids, value=rich,
+                  patterns=P_VALUE, automation_id="native_rich", hwnd=0xA004),
+            _node(window_id, "button", "复制到状态", ids=ids, patterns=P_INVOKE,
+                  automation_id="native_copy"),
+            _node(window_id, "button", "清空", ids=ids, patterns=P_INVOKE,
+                  automation_id="native_clear"),
+            _node(window_id, "text", status, ids=ids, patterns=P_TEXT,
+                  automation_id="native_status"),
+        ],
+    )
+    return _window(window_id, "Scenario Suite - native", "scenariosuite.exe", root)
+
+
+# ---------------------------------------------------------------------------
 # scripted mutations for the mock provider
 # ---------------------------------------------------------------------------
 
