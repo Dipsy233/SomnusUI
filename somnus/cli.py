@@ -19,6 +19,12 @@ Global options::
     --pack ID                    force an app pack
     --allow PROCESS              allow-list a process (repeatable)
     --confirmed                  pre-confirm critical actions
+    --allow-clipboard            permit the Ctrl+V channel for this run
+    --allow-keyboard             permit synthetic typing for this run
+    --config PATH                read settings from PATH
+
+The two synthetic-input switches are off by default and can be made persistent
+(``somnus config --allow-clipboard``) - see :mod:`somnus.config`.
 """
 
 from __future__ import annotations
@@ -41,6 +47,11 @@ def _load_fixture(path: str):
 
 
 def build_session(args: argparse.Namespace) -> Session:
+    from somnus.config import load as load_settings
+
+    # Read once per session so the flag/config/env precedence is applied in one
+    # place (see somnus/config.py).
+    settings = load_settings(getattr(args, "config", None))
     provider_name = args.provider
     if args.demo:
         provider_name = "mock"
@@ -62,12 +73,21 @@ def build_session(args: argparse.Namespace) -> Session:
         provider = get_provider(provider_name)
 
     policy = Policy(
-        allow_processes=tuple(args.allow or ()),
+        allow_processes=tuple(args.allow or ()) or settings.allow_processes,
         confirmed=bool(args.confirmed),
         # Synthetic input is off unless asked for: the runtime drives the
         # interfaces an application publishes, and an element offering none is
         # reported rather than typed into.
-        allow_keyboard=bool(getattr(args, "allow_keyboard", False)),
+        #
+        # `settings` is the persistent answer to "I accept the cost": the flag
+        # wins for one run, the config file decides by default, and the built-in
+        # default is off. See somnus/config.py.
+        allow_keyboard=bool(getattr(args, "allow_keyboard", False)) or settings.allow_keyboard,
+        # The clipboard channel borrows a resource that belongs to the user, so
+        # it is opt-in for the same reason synthetic input is - and it is the
+        # route that reaches a self-drawn editor when keyboard input is the only
+        # alternative. Off unless the host asks for it.
+        allow_clipboard=bool(getattr(args, "allow_clipboard", False)) or settings.allow_clipboard,
     )
     return Session(
         provider,
@@ -80,6 +100,43 @@ def build_session(args: argparse.Namespace) -> Session:
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """Show or edit the persistent settings.
+
+    This is the command a person runs when they have decided the focus cost is
+    acceptable, and the one an agent is pointed at when a route is refused: an
+    opt-in that can only be expressed as a flag on a process nobody controls is
+    not an opt-in.
+    """
+    from somnus import config as config_module
+
+    settings = config_module.load(getattr(args, "config", None))
+
+    if args.path:
+        print(settings.path)
+        return 0
+
+    changed = False
+    if args.set_clipboard is not None:
+        settings.allow_clipboard = args.set_clipboard
+        changed = True
+    if args.set_keyboard is not None:
+        settings.allow_keyboard = args.set_keyboard
+        changed = True
+
+    if changed:
+        written = config_module.save(settings)
+        print(f"wrote {written}")
+    elif not settings.path.exists():
+        # Saying "here is the file" when it does not exist is a dead end; write
+        # the defaults so the user has something concrete to edit.
+        written = config_module.save(settings)
+        print(f"wrote {written} (defaults; both channels off)")
+
+    print(settings.render())
+    return 0
 
 
 def cmd_windows(args: argparse.Namespace) -> int:
@@ -183,17 +240,82 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow", action="append", default=None)
     parser.add_argument("--confirmed", action="store_true")
     parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "settings file to read (default: the platform config directory, "
+            "see `somnus config --path`). Settings are the persistent form of "
+            "--allow-clipboard / --allow-keyboard; a flag still wins for one run"
+        ),
+    )
+    parser.add_argument(
         "--allow-keyboard",
         action="store_true",
         help=(
             "permit synthetic keyboard input for elements that publish no "
             "usable interface (off by default: such an element is reported "
-            "instead of typed into)"
+            "instead of typed into). Persist this in the settings file with "
+            "`somnus config --allow-keyboard`"
+        ),
+    )
+    parser.add_argument(
+        "--allow-clipboard",
+        action="store_true",
+        help=(
+            "permit the clipboard channel (Ctrl+V) for elements that publish "
+            "no usable interface and map no HWND. Off by default: it needs "
+            "the target in the foreground. The user's clipboard is saved and "
+            "restored format by format - bitmaps and file lists included - so "
+            "nothing is lost; writes are marked to stay out of clipboard "
+            "history and cloud sync. Persist this in the settings file with "
+            "`somnus config --allow-clipboard`"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("windows").set_defaults(func=cmd_windows)
+
+    p = sub.add_parser(
+        "config",
+        help="show or edit the persistent settings (the opt-in switches live here)",
+    )
+    p.add_argument(
+        "--path",
+        action="store_true",
+        help="print only the settings file path, for scripting",
+    )
+    p.add_argument(
+        "--allow-clipboard",
+        dest="set_clipboard",
+        action="store_const",
+        const=True,
+        default=None,
+        help="persist allow_clipboard = true",
+    )
+    p.add_argument(
+        "--no-allow-clipboard",
+        dest="set_clipboard",
+        action="store_const",
+        const=False,
+        help="persist allow_clipboard = false",
+    )
+    p.add_argument(
+        "--allow-keyboard",
+        dest="set_keyboard",
+        action="store_const",
+        const=True,
+        default=None,
+        help="persist allow_keyboard = true",
+    )
+    p.add_argument(
+        "--no-allow-keyboard",
+        dest="set_keyboard",
+        action="store_const",
+        const=False,
+        help="persist allow_keyboard = false",
+    )
+    p.set_defaults(func=cmd_config)
 
     p = sub.add_parser("record")
     p.add_argument("window", nargs="?")

@@ -2,6 +2,12 @@
 
 Uses the official ``mcp`` package when installed. Kept separate from
 :mod:`somnus.protocol.jsonrpc` so a host can embed either transport.
+
+**Settings are read here too.** An MCP client launches this process itself, so it
+is exactly the case a command-line flag cannot serve: the user's one-off opt-in
+would have no way to reach it. The persistent settings file (``somnus/config.py``)
+applies to every transport, and a caller passing explicit policy overrides still
+wins.
 """
 
 from __future__ import annotations
@@ -11,15 +17,32 @@ import json
 import sys
 from typing import Any
 
+from somnus.config import load as load_settings
 from somnus.protocol.tools import TOOL_SPECS, call_tool
+from somnus.runtime.policy import Policy
 from somnus.runtime.session import Session
 
 
 def build_session(**kwargs: Any) -> Session:
+    """Build a session with the persistent settings applied.
+
+    A ``policy`` may be passed explicitly (tests, embedding); otherwise one is
+    built from the settings file, so the opt-in switches work without a flag.
+    """
     from somnus.providers.base import get_provider
 
+    policy = kwargs.pop("policy", None)
+    config_path = kwargs.pop("config", None)
+    if policy is None:
+        settings = load_settings(config_path)
+        policy = Policy(
+            allow_processes=settings.allow_processes,
+            allow_clipboard=settings.allow_clipboard,
+            allow_keyboard=settings.allow_keyboard,
+        )
+
     provider = get_provider(kwargs.pop("provider", "auto"), **kwargs)
-    return Session(provider)
+    return Session(provider, policy=policy)
 
 
 def make_mcp_server(session: Session):
