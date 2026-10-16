@@ -85,6 +85,45 @@ OK_UNVERIFIED rev=3
 用 `FIND` 直接在其中搜索，无需先展开。无名字、无能力的匿名叶子在 L0
 折叠为一行 `… +N unnamed` 汇总，`INSPECT` / `expand` / `full` 可展开。
 
+## 在两个会话之间切换
+
+当需要用剪贴板/键盘通道（它们要求目标在前台，会和用户抢焦点）时，可以把
+agent 移到子会话里。agent 同一时间只在一个桌面上，用 `SWITCH` 移动：
+
+```text
+sui> SWITCH child
+OK session=child windows=3
+  WINDOW w1 "此电脑"
+  ...
+
+sui> OBSERVE w2                 ← 现在 ref 指的是子会话里的窗口
+sui> CALL q1.set_text("hi")     ← 输入发生在子会话，不影响用户
+
+sui> SWITCH main
+OK session=main windows=11      ← 回到用户的桌面
+```
+
+| 命令 | 效果 |
+| --- | --- |
+| `SWITCH main` | 回到用户桌面 |
+| `SWITCH child` | 切到子会话（须已打开） |
+| `SESSION open` | 打开子会话并切过去 |
+| `SESSION close` | 结束子会话并回到 main |
+| `SESSION detach` | 本进程退出后仍保留它 |
+
+**切换会丢弃全部 ref。** 切换后窗口列表不同，`w1` 不是"过期"，而是变成了
+新桌面上的另一个窗口——先重新 `OBSERVE` 再操作。
+
+系统级配置（需管理员，只需一次）：
+
+```bash
+somnus child-session setup
+somnus child-session start
+somnus child-session close
+```
+
+原理、失败模式和「为什么不用虚拟桌面」见 [child-session.md](child-session.md)。
+
 ## 手势
 
 `select`、`activate`、`context_menu` 是三个不同的能力，运行时不替你选择：

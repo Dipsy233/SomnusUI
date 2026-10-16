@@ -10,9 +10,9 @@ an LLM can operate software by *capability calls* instead of *pixel clicks*.
 ```
 User Intent
    ↓
-LLM (planner, 4 tools only)
+LLM (planner, 5 tools only)
    ↓
-Somnus Runtime ─ observe / find / inspect / call
+Somnus Runtime ─ observe / find / inspect / call / switch
    ├─ Session Registry   (ref ↔ fingerprint ↔ native element)
    ├─ Resolver           (semantic capability → native primitives)
    ├─ Verifier           (settle + effects + delta)
@@ -23,6 +23,7 @@ Semantic Graph
 Semantic Compiler (deterministic: normalize → infer → match → project → compress)
    ↑
 AccessibilityProvider (Windows UIA; AX / AT-SPI later)
+   └─ peer provider: a Session on the far side of the session boundary
 ```
 
 The LLM never sees pixels, coordinates, screenshots, handles, `AutomationId`s or
@@ -65,7 +66,13 @@ somnus observe w1                  # one window
 somnus call 'CALL b1.activate()'
 somnus --no-pack repl              # multi-step session, no App Pack
 somnus record w1 -o fixture.json
-somnus mcp                         # MCP server (stdio), 4 tools
+somnus mcp                         # MCP server (stdio), 5 tools
+
+# A second desktop the agent can work in without disturbing you (Windows Pro+):
+somnus child-session status        # is the feature available here?
+somnus child-session setup         # once, elevated
+somnus child-session start         # open it
+somnus child-session close         # end it and clean up
 ```
 
 ### As an MCP server for any client
@@ -286,21 +293,27 @@ and operate a control.
 
 ## Providers
 
-The runtime talks to one `AccessibilityProvider`. Two exist, and the compiler,
+The runtime talks to one `AccessibilityProvider`. Three exist, and the compiler,
 projection and runtime are identical for all of them.
 
 | Provider | Source | Status |
 | --- | --- | --- |
 | `uia` | Windows UI Automation (Win32 / WPF / UWP) | available |
 | `mock` | recorded `RawTree` fixtures (any platform) | available |
+| `peer` | a `Session` running in the child session | available |
 
 ```bash
 somnus --provider uia windows          # native windows
 ```
 
-## Background workspace (non-intrusive operation)
+The `peer` provider is the point of the child-session work below: window
+enumeration, the accessibility tree and synthetic input are all confined to the
+caller's Windows session, so a second desktop is reached only by running a
+provider where those windows actually are.
 
-The agent's work does not require the window to be foreground and never
+## Working without disturbing the user
+
+The agent's ordinary work does not require the window to be foreground and never
 steals the user's focus. Verified live:
 
 - A **visible but covered** window exposes its full tree and accepts every
@@ -309,29 +322,96 @@ steals the user's focus. Verified live:
 - a **minimized** window lays nothing out (CEF apps such as Steam/QQ/Chrome
   collapse to a bare shell) and is the one state that actually blocks
   operation;
-- a window on **another virtual desktop** (not minimized) is usually fully
-  usable.
 
-So the provider automatically does two things before snapshotting or acting
-(`workspace.py`):
+So the provider shows a minimized window with `SW_SHOWNOACTIVATE` before
+snapshotting or acting - **never activating**, so whatever the user is typing
+into keeps its focus. The window's prior state is recorded, and provider
+`close()` restores it.
 
-1. a minimized window is shown with `SW_SHOWNOACTIVATE` - **never
-   activating**, so whatever the user is typing into keeps its focus;
-2. a window on another virtual desktop is moved to the current one through
-   the official `IVirtualDesktopManager` (same process, no second login:
-   QQ signs in once on the user's desktop).
+Known limitation: a no-activate show cannot fully hide the window (its taskbar
+icon appears). That is inherent to the no-activation path and still less
+intrusive than any focus-based approach.
 
-The window's prior state is recorded, and provider `close()` **restores
-it** (re-minimizes what was minimized) - agent work never leaves the user's
-desktop rearranged.
+### When that is not enough: a child session
 
-Known limitation: a no-activate show cannot fully hide the window (its
-taskbar icon appears; if it was topmost it is briefly visible on screen,
-fully covered windows are unnoticeable). That is inherent to the
-no-activation path and still less intrusive than any focus-based approach,
-synthetic input included.
+Two channels do need the foreground: `--allow-clipboard` and
+`--allow-keyboard`. They exist because an application that publishes no writable
+interface (a self-drawn editor, a terminal surface, an omnibox that only commits
+on Enter) is otherwise unreachable, and they were measured as the single largest
+class of unfinished tasks. But `SendInput` and `Ctrl+V` go to the **foreground
+window**, and a desktop has exactly one - so when the agent uses them it is
+competing with the person at the keyboard.
 
-## The four tools
+No Win32 trick resolves that. What does is a **child session**: a second
+interactive logon for the same account, with its own input desktop, its own
+foreground window and its own input queue. An agent parked there can raise
+windows, type and paste freely; the user, in the console session, is unaffected -
+not because the agent is polite, but because the two sessions do not share the
+thing they used to fight over.
+
+```bash
+somnus child-session setup     # once, elevated: feature, listener, delegation
+somnus child-session start     # open the loopback
+somnus child-session close     # end it and clear anything left behind
+```
+
+For the agent it is one tool. The agent stays on one desktop at a time; `SWITCH`
+moves it.
+
+| Command | Effect |
+| --- | --- |
+| `SWITCH main` | go to the user's desktop |
+| `SWITCH child` | go to the separate session (must be open) |
+| `SESSION open` | start it and move there |
+| `SESSION close` | end it, and return |
+| `SESSION detach` | leave it running after this process exits |
+
+Everything intelligent stays on the main side: the compiler, projection,
+registry, resolver, policy and the ref namespace. The far session runs a thin
+peer that owns a `Session` and answers tool calls over a named pipe - perception
+and actuation, no model, no policy of its own. That is what keeps it one agent
+rather than two, and it is why switching is cheap: it swaps the provider
+(`peerprovider.py`), not the runtime.
+
+Under the hood, and worth knowing before relying on it:
+
+- **A session exists only as long as its RDP connection does.** Closing the
+  loopback ends it, and the programs in it.
+- **Sign-in.** Credential delegation is set up first, so the loopback usually
+  signs in with the credentials the user already used and no password is stored.
+  When policy refuses that (measured: a local account marked
+  "password not required" is refused), the fallback is a password stored with
+  `somnus child-session credential --save` - DPAPI-encrypted for this machine
+  and account, never in `config.toml`.
+- **Requirements.** Windows Pro / Enterprise / Education (Home has no child
+  sessions), one elevated setup, and one child session at a time system-wide.
+- **No security isolation.** The two sessions are the same account, so the
+  agent can reach every file the user can. This separates *input*, not
+  *privilege*.
+- **Cleanup.** A session the process opened is cleaned up when the process
+  exits, unless `SESSION detach` said otherwise; a session left by a crash is
+  detected and cleared by the next `close` or `status`.
+
+#### Why not the supported cross-session UIA API
+
+The documented mechanism for this is `Windows.UI.UIAutomation.Core`
+(`RemoteAutomationClientSession` / `RemoteAutomationServer`). It was implemented
+against a live loopback and does not work here: the client session constructs
+and `Start()`s from the RDP host, but `ConnectionRequested` never fires, and the
+provider half answers "class not registered" from both sessions while the
+connection is up. It is aimed at Microsoft's own remote-desktop stack, which
+sets up a private UIA provider context this program cannot reproduce. Measured,
+not assumed - the details are in `somnus/session/bridge.py`.
+
+#### Why not a virtual desktop
+
+A virtual desktop shares the session's input desktop, foreground window and
+input queue with every other virtual desktop. So it cannot separate the agent's
+input from the user's: a synthetic keystroke either goes to the wrong virtual
+desktop or, by moving the target, brings the agent's window onto the user's -
+which is the disturbance it was supposed to avoid.
+
+## The five tools
 
 | Tool | Purpose | Returns |
 | --- | --- | --- |
@@ -339,6 +419,7 @@ synthetic input included.
 | `find` | `FIND [type] "query" [in ref]` | matching entity lines |
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 detail |
 | `call` | `CALL ref.cap(args)` | `OK`/`ERR` + delta |
+| `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` + window list |
 
 ## SUI-Text
 
@@ -379,6 +460,8 @@ somnus/
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
+├── session/       child session: childsession setup credentials rdp launch
+│                  bridge wire peerprovider peerstart lifecycle
 ├── packs/         generic.py restaurant_demo.py (built-in demo pack)
 ├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
 ├── config.py      persistent settings (the opt-in switches live here)
@@ -386,10 +469,14 @@ somnus/
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 apps/scenario-suite/    WPF (.NET 8) acceptance app: five screens covering the
                         shapes a real GUI throws at an agent (see below)
+tools/rdp-host/         .NET (WinForms) OLE container for the RDP control: the
+                        one piece Python cannot host, since embedding the
+                        control needs AxHost. Built with `dotnet build`.
 docs/
   packs.md              how to write an App Pack
   interactive-usage.md  REPL vs one-shot CLI vs script
-  what-the-llm-sees.md  one window, four tools, with real output
+  child-session.md      the second desktop: why, how, and what did not work
+  what-the-llm-sees.md  one window, five tools, with real output
   scenario-test-plan.md the scenario matrix and its pass criteria
 examples/               agent loop, contract check, task evaluation (host examples)
 bench/                  benchmark gates + LLM control demos

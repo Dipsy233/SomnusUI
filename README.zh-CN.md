@@ -11,9 +11,9 @@ English | [中文](README.zh-CN.md)
 ```
 用户意图
    ↓
-LLM（规划器，仅 4 个工具）
+LLM（规划器，仅 5 个工具）
    ↓
-Somnus 运行时 ─ observe / find / inspect / call
+Somnus 运行时 ─ observe / find / inspect / call / switch
    ├─ 会话注册表        （ref ↔ 指纹 ↔ 原生元素）
    ├─ 解析器            （语义能力 → 原生原语）
    ├─ 验证器            （稳定 + 效果 + 增量）
@@ -24,6 +24,7 @@ Somnus 运行时 ─ observe / find / inspect / call
 语义编译器（确定性：normalize → infer → match → project → compress）
    ↑
 AccessibilityProvider（Windows UIA；后续支持 AX / AT-SPI）
+   └─ peer provider：位于会话边界另一侧的 Session
 ```
 
 LLM 永远不会看到像素、坐标、截图、句柄、`AutomationId` 或 COM 指针。
@@ -62,7 +63,13 @@ somnus observe w1                  # 只观察某个窗口
 somnus call 'CALL b1.activate()'
 somnus --no-pack repl              # 多步会话，不应用 App Pack
 somnus record w1 -o fixture.json
-somnus mcp                         # MCP 服务器（stdio），4 个工具
+somnus mcp                         # MCP 服务器（stdio），5 个工具
+
+# agent 可以待在其中、不干扰用户的第二个桌面（Windows 专业版及以上）：
+somnus child-session status        # 本机支持吗？
+somnus child-session setup         # 一次性，需管理员
+somnus child-session start         # 打开
+somnus child-session close         # 结束并清理
 ```
 
 ### 作为 MCP 服务器接入任意客户端
@@ -77,12 +84,16 @@ Claude Desktop、Cursor、pi 等任何 MCP 客户端都可接入：
 }
 ```
 
-暴露 `observe` / `find` / `inspect` / `call` 四个工具，provider 自动选择
+暴露 `observe` / `find` / `inspect` / `call` 四个感知与操作工具，外加
+`switch`（在两个 Windows 会话之间移动 agent），provider 自动选择
 （有 UIA 依赖时驱动真实窗口，否则回退 mock）。
 
 ## LLM 看到什么
 
-一个真实窗口，四个工具调用。除此之外的任何内容都不会呈现给模型。
+一个真实窗口，几次工具调用。除此之外的任何内容都不会呈现给模型。
+
+（下面只用到四个“看和做”的工具；第五个 `switch` 用于在两个 Windows 会话
+之间移动 agent，见 [child-session.md](docs/child-session.md)。）
 
 **① `observe`** —— 以能力形式呈现的当前屏幕（一个 Windows 文件夹属性
 对话框仅 304 token）：
@@ -257,36 +268,90 @@ pack 仍适合编码通用路径无法推断的领域词汇（`PRODUCT p1 +add`�
 | --- | --- | --- |
 | `uia` | Windows UI Automation（Win32 / WPF / UWP） | 可用 |
 | `mock` | 回放录制的 `RawTree` 固件（任意平台） | 可用 |
+| `peer` | 运行在子会话里的 `Session` | 可用 |
 
 ```bash
 somnus --provider uia windows          # 原生窗口
 ```
 
-## 后台工作区（无干扰操作）
+## 无干扰操作
 
-agent 的工作不要求窗口在前台，也不抢占用户焦点。实测事实：
+agent 的日常工作不要求窗口在前台，也不抢占用户焦点。实测事实：
 
 - **可见但被遮挡**的窗口：快照完整、所有 UIA 原语可用——前台不是任何操作的前提；
 - **最小化**窗口：CEF 应用（Steam/QQ/Chrome）渲染挂起、树萎缩到壳，是唯一
-  真正阻断操作的状态；
-- **其他虚拟桌面**（未最小化）的窗口：通常依然完整可用。
+  真正阻断操作的状态。
 
-因此 provider 在快照/操作前自动做两件事（`workspace.py`）：
+因此 provider 在快照/操作前会把最小化的窗口用 `SW_SHOWNOACTIVATE` 展开——
+**绝不抢焦点**。窗口被接触前的状态会被记录，provider `close()` 时**自动恢复**。
 
-1. 最小化的窗口用 `SW_SHOWNOACTIVATE` 展开——**绝不抢焦点**，用户正在
-   输入的内容不受影响；
-2. 位于其他虚拟桌面的窗口用官方 `IVirtualDesktopManager` 移到当前桌面
-   （同一进程无需重新登录：QQ 在主桌面登录一次即可）。
+已知限制：无激活展开无法完全隐藏窗口（任务栏图标可见）。这是无激活路径的
+固有限制，但仍比任何需要 focus 的方案干扰小。
 
-窗口被接触前的状态会被记录，provider `close()` 时**自动恢复原状**
-（原来最小化的重新最小化），agent 的工作永远不给用户留下桌面被重新布置
-的痕迹。
+### 不够用时：子会话
 
-已知限制：无激活展开无法完全隐藏窗口（任务栏图标可见；若它原来处于顶层
-z-order 会短暂出现在屏幕上，被完全遮挡则无感）。这是无激活路径的固有限制，
-但已比任何需要 focus 的方案（含合成输入类）干扰都小。
+有两条通道必须占用前台：`--allow-clipboard` 和 `--allow-keyboard`。它们存在
+是因为不发布可写接口的控件（自绘编辑器、终端、只在回车时提交的地址栏）没有
+别的办法，实测这是未完成任务里最大的一类。但 `SendInput` 和 `Ctrl+V` 都发往
+**前台窗口**，而一个桌面只有一个——agent 用它们时就是在和用户抢。
 
-## 四个工具
+没有 Win32 技巧能解决。能解决的是**子会话**：同一账户的第二次交互式登录，
+有自己的 input desktop、自己的前台窗口、自己的输入队列。agent 待在那里，
+怎么升窗口、怎么打字都不影响用户——不是因为它客气，而是两个会话不再共享
+那个以前要争的东西。
+
+```bash
+somnus child-session setup     # 一次性，需管理员：特性、监听器、凭据委派
+somnus child-session start     # 打开环回
+somnus child-session close     # 结束并清理残留
+```
+
+对 agent 来说就一个工具。agent 同一时间只在一个桌面上，用 `SWITCH` 移动。
+
+| 命令 | 效果 |
+| --- | --- |
+| `SWITCH main` | 回到用户桌面 |
+| `SWITCH child` | 切到子会话（须已打开） |
+| `SESSION open` | 打开并切过去 |
+| `SESSION close` | 结束并回来 |
+| `SESSION detach` | 本进程退出后仍保留 |
+
+智能部分全部留在主侧：编译器、投影、注册表、解析器、策略和 ref 命名空间。
+子会话里只跑一个瘦 peer：持有 `Session`，通过命名管道应答工具调用——只有
+感知和执行，没有模型、没有自己的策略。这才是“一个 agent”而不是两个，也是
+切换代价低的原因：切换只是换 provider（`peerprovider.py`），不是重建运行时。
+
+几点需要注意的前提：
+
+- **会话只在环回连接存在期间存在。** 关闭环回即结束会话及其中的程序。
+- **登录。** 先配置凭据委派，因此环回通常用用户已登录的凭据直接进入，
+  不存密码。若被策略拒绝（实测：标记为“密码非必需”的本地账户会被拒），
+  兜底是用 `somnus child-session credential --save` 存密码——DPAPI 加密，
+  仅本机本账户可解，绝不写进 `config.toml`。
+- **要求。** Windows 专业版/企业版/教育版（家庭版没有子会话）、一次管理员
+  配置、全系统同时只允许一个子会话。
+- **不提供安全隔离。** 两个会话是同一账户，agent 能读写用户能读写的所有
+  文件。它隔离的是**输入**，不是**权限**。
+- **清理。** 进程打开的会话在进程退出时自动清理，除非用了 `SESSION detach`；
+  崩溃残留会被下一次 `close` 或 `status` 识别并清除。
+
+#### 为什么不用官方的跨会话 UIA API
+
+官方机制是 `Windows.UI.UIAutomation.Core`（`RemoteAutomationClientSession` /
+`RemoteAutomationServer`）。我们在真实环回上实现并实测：客户端会话能从 RDP
+宿主构造并 `Start()`，但 `ConnectionRequested` **从不触发**，而 provider 侧
+`ReportSession` 在两个会话里都报**“没有注册类”**（连接是活的）。它是给微软
+自家远程桌面栈用的，那套私有 provider 上下文第三方宿主无法复现。这是实测
+结论，细节记在 `somnus/session/bridge.py`。
+
+#### 为什么不用虚拟桌面
+
+虚拟桌面与其他虚拟桌面共享同一个 input desktop、前台窗口和输入队列。因此它
+无法把 agent 的输入和用户的分开：合成按键要么去了错误的虚拟桌面，要么——
+通过把目标窗口移到当前桌面——把 agent 的窗口带到用户面前，而那正是它本要
+避免的干扰。
+
+## 五个工具
 
 | 工具 | 用途 | 返回 |
 | --- | --- | --- |
@@ -294,6 +359,7 @@ z-order 会短暂出现在屏幕上，被完全遮挡则无感）。这是无激
 | `find` | `FIND [type] "query" [in ref]` | 匹配的实体行 |
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 细节 |
 | `call` | `CALL ref.cap(args)` | `OK`/`ERR` + 增量 |
+| `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` + 窗口清单 |
 
 ## SUI-Text
 
@@ -334,16 +400,21 @@ somnus/
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
+├── session/       子会话：childsession setup credentials rdp launch
+│                  bridge wire peerprovider peerstart lifecycle
 ├── packs/         generic.py restaurant_demo.py（内置演示 pack）
 ├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
 ├── config.py      持久化设置（两个合成通道的 opt-in 写在这里）
 └── cli.py
 apps/restaurant-demo/   WPF（.NET 8）验收应用
+tools/rdp-host/         .NET（WinForms）OLE 容器，承载 RDP 控件：这是 Python
+                        无法承载的一环，嵌入控件需要 AxHost。用 dotnet build 构建。
 docs/
   interface-capability-report.md  文本写入通道的原理与实测依据
   packs.md              App Pack 编写指南
   interactive-usage.md  REPL / CLI / 脚本三种驱动方式
-  what-the-llm-sees.md  一个窗口、四个工具，附真实输出
+  child-session.md      第二个桌面：原理、代价、以及试过但不行的方案
+  what-the-llm-sees.md  一个窗口、五个工具，附真实输出
   scenario-test-plan.md 场景矩阵与通过标准
 examples/               agent 循环、契约检查、任务评估（宿主示例代码）
 bench/                  基准门槛 + LLM 控制演示

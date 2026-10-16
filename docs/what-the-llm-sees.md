@@ -1,6 +1,10 @@
 # 一个窗口，LLM 能看到什么
 
-以一个真实的 Windows 属性对话框为例，逐步展示 LLM 在四个工具下实际收到的内容。
+以一个真实的 Windows 属性对话框为例，逐步展示 LLM 在实际收到的内容。
+
+（本文只涉及四个"看和做"的工具：`observe` / `find` / `inspect` / `call`。
+第五个工具 `switch` 用于在两个 Windows 会话之间移动 agent，见
+[child-session.md](child-session.md)。）
 
 ---
 
