@@ -197,7 +197,17 @@ def send_unicode_text(text: str, *, verify=None) -> ExecResult:
         if not events:
             return 0
         array = (_INPUT * len(events))(*events)
-        return int(user32.SendInput(len(events), ctypes.byref(array), ctypes.sizeof(_INPUT)))
+        sent = int(user32.SendInput(len(events), ctypes.byref(array), ctypes.sizeof(_INPUT)))
+        # SendInput reports how many events it accepted. Fewer than given means
+        # the input was rejected (UIPI, a locked session) - and unlike "the
+        # target has not processed it yet", that will not fix itself by waiting,
+        # so it is reported rather than typed past. `send_vk` checks the same
+        # count for the same reason.
+        if sent != len(events):
+            raise OSError(
+                f"SendInput sent {sent}/{len(events)} (err {ctypes.get_last_error()})"
+            )
+        return sent
 
     def _nudge() -> None:
         """Wake the target's input pump without typing anything.
