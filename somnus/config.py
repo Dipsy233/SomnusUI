@@ -1,10 +1,14 @@
 """Persistent settings, so an opt-in stays opted in.
 
 The two synthetic-input channels (``--allow-clipboard`` / ``--allow-keyboard``)
-are **off by default** because they seize the screen's foreground and borrow the
-user's clipboard. That default is right, but a user who has decided those costs
-are acceptable should not have to pass a flag on every invocation - and an agent
-driving the CLI could not pass one at all.
+are **on by default** in this build: a semantic agent that cannot fall back to
+the clipboard or the keyboard is stopped by any control that publishes no
+writable interface (a self-drawn editor, a terminal surface, an omnibox that
+only commits on Enter), which measured as the single largest class of unfinished
+tasks. The user can turn either off (``allow_clipboard = false`` /
+``allow_keyboard = false`` in the file, or ``--no-allow-*``), because both still
+seize the foreground and the clipboard borrows a resource that belongs to the
+user.
 
 This module is where that decision is written down. It is deliberately:
 
@@ -33,9 +37,9 @@ Linux/BSD               ``$XDG_CONFIG_HOME/somnusui/config.toml`` (or
 Schema - every key optional, unknown keys ignored so a newer/older runtime and a
 hand-edited file do not fight::
 
-    # SomnusUI settings. Both channels are off unless set to true here.
-    allow_clipboard = false   # Ctrl+V channel: needs the foreground
-    allow_keyboard  = false   # SendInput channel: needs the foreground
+    # SomnusUI settings. Both channels are on unless set to false here.
+    allow_clipboard = true    # Ctrl+V channel: needs the foreground
+    allow_keyboard  = true    # SendInput channel: needs the foreground
 
     # Optional: restrict every action to these processes.
     allow_processes = []
@@ -94,10 +98,10 @@ def default_config_path() -> Path:
 class Settings:
     """Resolved settings: file values, plus whatever overrode them."""
 
-    #: The Ctrl+V channel. Off unless enabled here or by a flag/env override.
-    allow_clipboard: bool = False
-    #: The SendInput channel. Off unless enabled here or by a flag/env override.
-    allow_keyboard: bool = False
+    #: The Ctrl+V channel. On unless disabled here or by a flag/env override.
+    allow_clipboard: bool = True
+    #: The SendInput channel. On unless disabled here or by a flag/env override.
+    allow_keyboard: bool = True
     #: Optional process allow-list (empty = no restriction).
     allow_processes: tuple[str, ...] = ()
     #: The file these came from (even when it does not exist yet), so a host can
@@ -212,9 +216,10 @@ def render_toml(settings: Settings) -> str:
     return (
         "# SomnusUI settings.\n"
         "#\n"
-        "# Both synthetic-input channels are OFF unless set to true below.\n"
-        "# They seize the screen's foreground, so enable them only if you accept\n"
-        "# that the window the agent writes into will come to the front.\n"
+        "# Both synthetic-input channels are ON unless set to false below.\n"
+        "# They seize the screen's foreground (and the clipboard channel borrows\n"
+        "# your clipboard), so turn one off if you do not accept that a window\n"
+        "# the agent writes into may come to the front.\n"
         "\n"
         "# Ctrl+V channel: reaches a self-drawn editor that publishes no\n"
         "# writable interface. Borrows your clipboard, then restores it\n"

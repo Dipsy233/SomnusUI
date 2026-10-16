@@ -97,19 +97,22 @@ def build_session(args: argparse.Namespace) -> Session:
     policy = Policy(
         allow_processes=tuple(args.allow or ()) or settings.allow_processes,
         confirmed=bool(args.confirmed),
-        # Synthetic input is off unless asked for: the runtime drives the
-        # interfaces an application publishes, and an element offering none is
-        # reported rather than typed into.
-        #
-        # `settings` is the persistent answer to "I accept the cost": the flag
-        # wins for one run, the config file decides by default, and the built-in
-        # default is off. See somnus/config.py.
-        allow_keyboard=bool(getattr(args, "allow_keyboard", False)) or settings.allow_keyboard,
+        # Synthetic input is on by default in this build (see
+        # somnus/config.py): the flag is a one-run override in either
+        # direction, `settings` is the persistent answer, and None means "let
+        # the settings decide".
+        allow_keyboard=(
+            args.allow_keyboard
+            if getattr(args, "allow_keyboard", None) is not None
+            else settings.allow_keyboard
+        ),
         # The clipboard channel borrows a resource that belongs to the user, so
-        # it is opt-in for the same reason synthetic input is - and it is the
-        # route that reaches a self-drawn editor when keyboard input is the only
-        # alternative. Off unless the host asks for it.
-        allow_clipboard=bool(getattr(args, "allow_clipboard", False)) or settings.allow_clipboard,
+        # it stays overridable per run even though it is on by default.
+        allow_clipboard=(
+            args.allow_clipboard
+            if getattr(args, "allow_clipboard", None) is not None
+            else settings.allow_clipboard
+        ),
     )
     return Session(
         provider,
@@ -155,7 +158,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         # Saying "here is the file" when it does not exist is a dead end; write
         # the defaults so the user has something concrete to edit.
         written = config_module.save(settings)
-        print(f"wrote {written} (defaults; both channels off)")
+        print(f"wrote {written} (defaults; both channels on)")
 
     print(settings.render())
     return 0
@@ -283,25 +286,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--allow-keyboard",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
-            "permit synthetic keyboard input for elements that publish no "
-            "usable interface (off by default: such an element is reported "
-            "instead of typed into). Persist this in the settings file with "
-            "`somnus config --allow-keyboard`"
+            "permit synthetic keyboard input (SendInput) for elements that "
+            "publish no usable interface. ON by default; use "
+            "--no-allow-keyboard to report such an element instead of typing "
+            "into it. Persist with "
+            "`somnus config --allow-keyboard` / `--no-allow-keyboard`"
         ),
     )
     parser.add_argument(
         "--allow-clipboard",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
             "permit the clipboard channel (Ctrl+V) for elements that publish "
-            "no usable interface and map no HWND. Off by default: it needs "
-            "the target in the foreground. The user's clipboard is saved and "
-            "restored format by format - bitmaps and file lists included - so "
-            "nothing is lost; writes are marked to stay out of clipboard "
-            "history and cloud sync. Persist this in the settings file with "
-            "`somnus config --allow-clipboard`"
+            "no usable interface and map no HWND. ON by default; use "
+            "--no-allow-clipboard to refuse it. It needs the target in the "
+            "foreground. The user's clipboard is saved and restored format "
+            "by format - bitmaps and file lists included - so nothing is "
+            "lost; writes are marked to stay out of clipboard history and "
+            "cloud sync. Persist with `somnus config --allow-clipboard`"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

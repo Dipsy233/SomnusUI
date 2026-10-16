@@ -1,12 +1,13 @@
-"""持久化设置：默认关闭，用户可以一次打开并一直生效。
+"""持久化设置：默认开启，用户可以一次关闭并一直生效。
 
-前提：`--allow-clipboard` / `--allow-keyboard` 这类"会抢占焦点"的通道默认必须关闭，
-但"每次调用都要带 flag"不是一个可用的 opt-in —— agent 根本控制不了自己是怎么被
-启动的。所以开关要能写进一个**人可手改、LLM 也可改**的小文件。
+前提：`--allow-clipboard` / `--allow-keyboard` 这类"会抢占焦点"的通道**默认开启**
+（见 somnus/config.py 的理由：拒绝它们会让终端、搜索框、自绘编辑器等整类任务
+无法完成）。用户若接受不了这个代价，可以把它们关掉，并希望这个决定一直生效——
+所以开关要能写进一个**人可手改、LLM 也可改**的小文件。
 
 本文件钉住三件事：
 
-1. **默认安全**：文件不存在、读不动、内容损坏，一律回到"两个都关"；
+1. **默认可用**：文件不存在时两个通道都开；
 2. **优先级明确**：命令行 flag > 环境变量 > 文件 > 内置默认；
 3. **不静默**：坏配置降级时必须报告问题，而不是假装没这回事。
 """
@@ -38,34 +39,35 @@ def cfg(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 默认：两个都关
+# 默认：两个都开
 # ---------------------------------------------------------------------------
 
 
-def test_defaults_are_both_off(cfg):
-    """文件不存在时，两个合成通道都必须关闭。
+def test_defaults_are_both_on(cfg):
+    """文件不存在时，两个合成通道都必须开启。
 
-    这是整个项目的立身之本：agent 不假装有人在敲键盘。默认必须是关的，
-    而不是"没配置所以随便"。
+    这是本 build 的选择：一个够不到终端、搜索框、自绘编辑器的 agent 会在
+    整类任务上卡住，而拒绝键盘/剪贴板换不来别的退路。用户若要拒绝，
+    可以在文件里写 false。
     """
     assert not cfg.exists()
     settings = config_module.load(cfg)
-    assert settings.allow_clipboard is False
-    assert settings.allow_keyboard is False
+    assert settings.allow_clipboard is True
+    assert settings.allow_keyboard is True
     assert settings.path == cfg
     assert settings.problems == ()
 
 
-def test_a_broken_file_degrades_to_off_and_says_so(cfg):
-    """损坏的配置必须降级为"全关"，且把问题报告出来。
+def test_a_broken_file_says_so_and_keeps_the_build_default(cfg):
+    """损坏的配置必须报告问题，并回到内置默认（本 build 为开）。
 
-    失败方向很重要：一个读不懂的配置文件，绝不能意外变成"全部允许"。
-    降级的同时必须**说明**，否则用户以为自己打开了开关而实际没有。
+    失败方向很重要：一个读不懂的配置文件不能**静默**变成某个值。
+    降级的同时必须**说明**，否则用户以为自己关掉了开关而实际没有。
     """
     cfg.write_text("this is not = = toml", encoding="utf-8")
     settings = config_module.load(cfg)
-    assert settings.allow_clipboard is False
-    assert settings.allow_keyboard is False
+    assert settings.allow_clipboard is True
+    assert settings.allow_keyboard is True
     assert settings.problems, "a malformed file must be reported"
     assert "cannot read" in settings.problems[0]
 
@@ -78,8 +80,8 @@ def test_a_wrong_value_type_is_reported_not_coerced(cfg):
     """
     cfg.write_text('allow_clipboard = "yes"\nallow_keyboard = 1\n', encoding="utf-8")
     settings = config_module.load(cfg)
-    assert settings.allow_clipboard is False
-    assert settings.allow_keyboard is False
+    assert settings.allow_clipboard is True
+    assert settings.allow_keyboard is True
     assert len(settings.problems) == 2, settings.problems
 
 
@@ -114,8 +116,8 @@ def test_the_written_file_is_hand_editable_and_self_explanatory(cfg):
     """
     config_module.save(Settings(), cfg)
     text = cfg.read_text(encoding="utf-8")
-    assert "allow_clipboard = false" in text
-    assert "allow_keyboard = false" in text
+    assert "allow_clipboard = true" in text
+    assert "allow_keyboard = true" in text
     # 必须解释代价：这两个开关会抢占前台。
     assert "foreground" in text
     assert "#" in text, "comments are how a person knows what these do"
@@ -169,7 +171,7 @@ def test_env_can_turn_a_channel_on_without_a_file(cfg, monkeypatch):
     monkeypatch.setenv(config_module.ENV_ALLOW_KEYBOARD, "1")
     settings = config_module.load(cfg)
     assert settings.allow_keyboard is True
-    assert settings.allow_clipboard is False
+    assert settings.allow_clipboard is True
 
 
 @pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off", ""])
@@ -245,7 +247,7 @@ def test_cli_config_command_writes_defaults_on_first_use(cfg, capsys):
     )
     assert cmd_config(args) == 0
     assert cfg.exists(), "first run must create an editable file"
-    assert "both channels off" in capsys.readouterr().out
+    assert "both channels on" in capsys.readouterr().out
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -257,8 +259,8 @@ def _args(**overrides) -> argparse.Namespace:
         pack=None,
         allow=None,
         confirmed=False,
-        allow_keyboard=False,
-        allow_clipboard=False,
+        allow_keyboard=None,
+        allow_clipboard=None,
         config=None,
         no_pack=False,
     )

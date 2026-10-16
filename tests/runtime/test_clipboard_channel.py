@@ -166,9 +166,11 @@ def test_clipboard_sits_before_typing():
     assert primitives.index("paste_text") < primitives.index("type_text"), primitives
 
 
-def test_clipboard_is_disabled_by_default():
-    """默认不允许动用户的剪贴板：报错并说明开关，不偷偷用。"""
-    session = _session(_tree([_self_drawn_editor()]))  # allow_clipboard 默认 False
+def test_clipboard_can_be_disabled_by_policy():
+    """策略关掉剪贴板时，报错并说明开关，不偷偷用。"""
+    session = _session(
+        _tree([_self_drawn_editor()]), allow_clipboard=False, allow_keyboard=False
+    )
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 
@@ -190,7 +192,9 @@ def test_a_disabled_clipboard_does_not_hide_the_keyboard_route():
     每条路线各自授权（policy 按 step 检查）。若第一条被拒就终止，
     一个只开了键盘的宿主会拿到"没有可用接口"，而它的合法路线明明就在下一步。
     """
-    session = _session(_tree([_self_drawn_editor()]), allow_keyboard=True)
+    session = _session(
+        _tree([_self_drawn_editor()]), allow_keyboard=True, allow_clipboard=False
+    )
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 
@@ -475,8 +479,10 @@ def test_delivery_wait_returns_false_without_a_verifier():
 
 
 def test_all_synthetic_routes_refused_names_both_flags():
-    """两个开关都关着时，错误里同时点出剪贴板和键盘两条被拒的路线。"""
-    session = _session(_tree([_self_drawn_editor()]))  # 两个都默认 False
+    """两个开关都关时，错误里同时点出剪贴板和键盘两条被拒的路线。"""
+    session = _session(
+        _tree([_self_drawn_editor()]), allow_clipboard=False, allow_keyboard=False
+    )
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 

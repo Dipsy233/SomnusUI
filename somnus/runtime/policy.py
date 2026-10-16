@@ -32,24 +32,26 @@ class Policy:
     confirmed: bool = False
     #: Capabilities that need confirmation even if the pack did not mark them.
     extra_critical: frozenset[str] = field(default_factory=frozenset)
-    #: Whether synthesised keyboard input may be used at all. **Off by default,
-    #: and that is the point of the project**: an agent drives an application
-    #: through the interface the application publishes, not by pretending to be
-    #: a person at the keyboard. Typing reaches a control no native pattern can
-    #: reach, but it also steals focus, races the target's message pump, and
-    #: cannot be verified - all the things this runtime exists to avoid. An
-    #: element with no usable interface is therefore reported as such rather
-    #: than typed into, unless a host explicitly opts in.
-    allow_keyboard: bool = False
-    #: Whether the clipboard channel may be used. **Off by default**: it is
-    #: cheaper and far more reliable than typing (constant ~37 ms regardless of
-    #: length, no queue to stall), but it borrows a resource that belongs to the
-    #: user, needs the target in the foreground, and cannot restore a
-    #: non-text clipboard. The writes are marked opt-out so they do not enter
-    #: clipboard history or cloud sync, and the channel refuses outright when the
-    #: clipboard holds something that could not be put back
-    #: (docs/interface-capability-report.md 3.3, 6).
-    allow_clipboard: bool = False
+    #: Whether synthesised keyboard input may be used at all. **On by default
+    #: in this build.** The project's stance is still that an agent drives an
+    #: application through the interface the application publishes, not by
+    #: pretending to be a person at the keyboard - but measured against the
+    #: 50-task benchmark, refusing the keyboard left whole classes of tasks
+    #: (terminals, omniboxes that commit only on Enter, self-drawn editors)
+    #: unfinished with no alternative. Typing is still the last resort in every
+    #: `via` chain; it is merely *allowed* now, and a host can turn it off with
+    #: ``--no-allow-keyboard`` or ``allow_keyboard = false``.
+    allow_keyboard: bool = True
+    #: Whether the clipboard channel may be used. **On by default in this
+    #: build.** It is cheaper and far more reliable than typing (constant ~37 ms
+    #: regardless of length, no queue to stall), but it borrows a resource that
+    #: belongs to the user, needs the target in the foreground, and cannot
+    #: restore a non-text clipboard. The writes are marked opt-out so they do
+    #: not enter clipboard history or cloud sync, and the channel refuses
+    #: outright when the clipboard holds something that could not be put back
+    #: (docs/interface-capability-report.md 3.3, 6). Turn it off with
+    #: ``--no-allow-clipboard`` or ``allow_clipboard = false``.
+    allow_clipboard: bool = True
 
     def check_step(self, primitive: str) -> None:
         """Refuse a step the policy does not authorise.

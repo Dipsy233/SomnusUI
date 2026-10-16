@@ -98,7 +98,7 @@ def test_composer_chain_declares_the_remaining_routes(chat_session):
 
 
 # ---------------------------------------------------------------------------
-# fail loud: neither synthetic channel is on by default
+# fail loud: a policy that turns both synthetic channels off
 # ---------------------------------------------------------------------------
 
 
@@ -108,8 +108,10 @@ def test_sending_without_any_channel_is_refused_and_names_both_flags(chat_sessio
     A self-drawn editor offers no interface the runtime can use. Saying so - and
     naming the two switches that would change the answer, with each route's own
     reason - is the difference between an agent that can ask for help and one
-    that loops.
+    that loops. The channels are on by default in this build, so the test turns
+    them off explicitly to exercise the refusal path.
     """
+    _enable(chat_session, allow_clipboard=False, allow_keyboard=False)
     chat_session.observe()
     out = chat_session.dispatch(f'CALL {_composer(chat_session).ref}.set_text("hello")')
     assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out
@@ -141,7 +143,7 @@ def test_clipboard_is_preferred_over_the_keyboard(chat_session):
 
 def test_keyboard_alone_still_reaches_the_composer(chat_session):
     """Enabling only the keyboard works, through the keyboard route."""
-    _enable(chat_session, allow_keyboard=True)
+    _enable(chat_session, allow_keyboard=True, allow_clipboard=False)
     chat_session.observe()
     out = chat_session.dispatch(f'CALL {_composer(chat_session).ref}.set_text("typed")')
     assert out.startswith("OK"), out

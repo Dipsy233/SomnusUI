@@ -233,8 +233,8 @@ def test_chat_composer_is_an_input_without_a_native_write(scenario):
 
 
 def test_chat_send_without_a_channel_is_refused_honestly(scenario):
-    """No synthetic channel enabled: a real refusal naming both flags."""
-    session, _ = scenario("chat")
+    """Both synthetic channels turned off: a real refusal naming both flags."""
+    session, _ = scenario("chat", allow_clipboard=False, allow_keyboard=False)
     composer = _by_automation(session, "chat_composer")
     out = session.dispatch(f'CALL {composer.ref}.set_text("hello")')
     assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out

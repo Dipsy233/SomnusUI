@@ -252,19 +252,24 @@ def test_set_text_echo_shows_a_literal_colon_argument():
     assert r'~ ' + editor.ref + r' text="text:\"foo\""' in out, out
 
 
-def test_keyboard_fallback_is_refused_by_default():
+def test_keyboard_fallback_is_refused_when_the_policy_disables_it():
     """Without authorisation, a capability that can only type is refused.
 
     Typing is the one route that reaches a control no native pattern reaches,
     and it costs focus stealing, a race with the target's message pump, and an
-    unverifiable result. The runtime drives published interfaces, so an element
-    offering none is reported as such rather than typed into."""
+    unverifiable result. The channel is on by default in this build, so the test
+    disables it explicitly to exercise the refusal path."""
     from somnus.providers.mock import MockProvider
+    from somnus.runtime.policy import Policy
     from somnus.runtime.session import Session
 
     pack = load_pack_dict(_KEYBOARD_PACK)
     tree = _editor_tree(has_value=False)
-    session = Session(MockProvider(fixtures=[tree]), pack=pack)
+    session = Session(
+        MockProvider(fixtures=[tree]),
+        pack=pack,
+        policy=Policy(allow_keyboard=False, allow_clipboard=False),
+    )
     session.observe()
 
     editor = next(n for n in session.result.root.walk() if n.entity == "editor")

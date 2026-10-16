@@ -5,8 +5,9 @@
 QQ 的节点声称有 legacyiaccessible，方法返回 E_NOTIMPL）。
 所以判断只能发生在执行时：依次试已声明的路线，第一个真正可用的胜出。
 
-同时，键盘合成输入默认被禁止——本项目的立身之本是用应用自己发布的接口
-驱动它，而不是假装有人在敲键盘。
+两个合成通道现在**默认开启**（见 somnus/config.py）。链的顺序是
+`set_text → paste_text → type_text`，所以测键盘回退时必须显式关掉剪贴板，
+否则 paste_text 会先赢、键盘轮不到。
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ def test_missing_interface_falls_through_to_the_next_route():
     更早的版本还把"focus 成功"当成动作完成，于是根本没输入任何东西。
     """
     editor = _n("group", "editor", patterns=frozenset({"text"}), cls="ProseMirror")
-    session = _session(_tree([editor]), allow_keyboard=True)
+    session = _session(_tree([editor]), allow_keyboard=True, allow_clipboard=False)
     session.observe()
 
     node = next(n for n in session.result.root.walk() if n.role == "input")
@@ -132,14 +133,16 @@ def test_available_interface_is_not_bypassed():
 
 
 # ---------------------------------------------------------------------------
-# 默认禁止合成输入
+# 合成输入通道默认开启，但可被策略关掉
 # ---------------------------------------------------------------------------
 
 
-def test_keyboard_is_disabled_by_default():
-    """没有任何可用原生接口时，默认报错，不偷偷用键盘。"""
+def test_keyboard_can_be_disabled_by_policy():
+    """策略关掉键盘时，没有原生接口的元素如实报错，不偷偷用键盘。"""
     editor = _n("group", "editor", patterns=frozenset({"text"}), cls="ProseMirror")
-    session = _session(_tree([editor]))  # allow_keyboard 默认 False
+    session = _session(
+        _tree([editor]), allow_keyboard=False, allow_clipboard=False
+    )
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 
@@ -223,7 +226,7 @@ def test_remembered_route_cannot_break_a_call():
     the remembered route made to fail at execution time.
     """
     editor = _n("group", "editor", patterns=frozenset({"text"}), cls="ProseMirror")
-    session = _session(_tree([editor]), allow_keyboard=True)
+    session = _session(_tree([editor]), allow_keyboard=True, allow_clipboard=False)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 
@@ -308,7 +311,7 @@ def test_focus_followed_by_typing_does_not_stop_early():
     still performed - asserted through the provider's recorded calls.
     """
     editor = _n("group", "editor", patterns=frozenset({"text"}), cls="ProseMirror")
-    session = _session(_tree([editor]), allow_keyboard=True)
+    session = _session(_tree([editor]), allow_keyboard=True, allow_clipboard=False)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 

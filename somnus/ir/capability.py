@@ -66,7 +66,8 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         # Declarative keyboard fallback (v0.2): focus the target and type the
         # value. Never offered to the LLM as a capability of its own - it only
         # appears as a `via` step inside a pack capability (dev doc section 12.2).
-        "type_text",    }
+        "type_text",
+    }
 )
 
 #: Capabilities that never change application state.
