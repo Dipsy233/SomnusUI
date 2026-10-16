@@ -64,6 +64,18 @@ _OBSERVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: ``SWITCH main`` / ``SWITCH child`` - retarget the agent at another Windows
+#: session. The agent drives one session at a time; this is how it moves.
+#: ``SESSION open`` / ``SESSION close`` create and end the child session.
+_SWITCH_RE = re.compile(
+    r"^SWITCH\s+(?P<target>main|local|host|primary|child|other|remote|sub)\s*$",
+    re.IGNORECASE,
+)
+_SESSION_RE = re.compile(
+    r"^SESSION\s+(?P<op>open|close|detach)\s*$",
+    re.IGNORECASE,
+)
+
 #: Primitive verbs that must never appear in an action.
 FORBIDDEN_VERBS = frozenset(
     {
@@ -115,6 +127,14 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     if m:
         reason = m.group("reason").strip('"')
         return Action(kind="unknown", query=reason, raw=raw)
+
+    m = _SWITCH_RE.match(raw)
+    if m:
+        return Action(kind="switch", query=m.group("target").lower(), raw=raw)
+
+    m = _SESSION_RE.match(raw)
+    if m:
+        return Action(kind="session", query=m.group("op").lower(), raw=raw)
 
     m = _OBSERVE_RE.match(raw)
     if m:

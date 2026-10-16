@@ -163,15 +163,34 @@ class UiaProvider:
     # -- COM lifecycle ------------------------------------------------------
 
     def _init_com(self) -> None:
-        # comtypes initialises COM for the importing thread using
-        # ``sys.coinit_flags`` (default: STA). We need this worker thread in MTA
-        # (dev doc section 13), so set the flag *before* importing comtypes.
+        # The worker thread needs COM in MTA (dev doc section 13).
+        #
+        # comtypes initialises COM only for the thread that *imports* it first,
+        # so a second provider constructed later - which is what switching
+        # sessions does - gets a worker thread with no COM at all, and its first
+        # call fails with "CoInitialize has not been called". The import is done
+        # first (a no-op when cached) so the flag is set, then COM is
+        # initialised explicitly on *this* thread.
         import sys as _sys
 
+        # Must be set before the first import anywhere in the process, so an
+        # existing STA import is not overridden here - it is only a default.
         if not hasattr(_sys, "coinit_flags"):
             _sys.coinit_flags = 0x0  # COINIT_MULTITHREADED
 
         import comtypes
+
+        from comtypes import COINIT_MULTITHREADED
+
+        # RPC_E_CHANGED_MODE means COM is already up on this thread in another
+        # model, which is usable: the calls below do not require MTA, they
+        # require COM to be initialised at all.
+        try:
+            comtypes.CoInitializeEx(COINIT_MULTITHREADED)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != -2147417850:
+                raise
+
         from comtypes.client import GetModule
 
         # Generate the typelib wrappers for UIAutomationCore.

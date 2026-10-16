@@ -36,9 +36,11 @@ def session():
 # ---------------------------------------------------------------------------
 
 
-def test_the_four_tools_are_advertised():
+def test_the_five_tools_are_advertised():
+    # The four perception/action tools, plus ``switch``, which moves the agent
+    # between the two Windows sessions.
     names = [spec["name"] for spec in TOOL_SPECS]
-    assert names == ["observe", "find", "inspect", "call"]
+    assert names == ["observe", "find", "inspect", "call", "switch"]
 
 
 @pytest.mark.parametrize("spec", TOOL_SPECS, ids=lambda s: s["name"])

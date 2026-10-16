@@ -243,5 +243,5 @@ def test_rpc_serves_line_delimited_requests(monkeypatch):
     assert code == 0
     reply = json.loads(out.strip().splitlines()[0])
     assert [t["name"] for t in reply["result"]["tools"]] == [
-        "observe", "find", "inspect", "call"
+        "observe", "find", "inspect", "call", "switch"
     ]

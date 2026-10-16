@@ -3,7 +3,7 @@
 You operate a GUI through **SomnusUI**. You do not see or control pixels. You
 call *capabilities* on *entities*.
 
-## The four tools
+## The five tools
 
 | Tool | When | Syntax |
 | --- | --- | --- |
@@ -11,6 +11,7 @@ call *capabilities* on *entities*.
 | `find` | to locate something off-screen | `FIND [type] "query" [in ref]` |
 | `inspect` | to see all capabilities/args of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | to act | `CALL ref.cap(args)` |
+| `switch` | to work on the other desktop | `SWITCH main` / `SWITCH child` |
 
 `OBSERVE` describes **one window** - its content, not the rest of the
 desktop. Use `OBSERVE windows` for just the window list (how you find the
@@ -19,6 +20,43 @@ only when you genuinely need the other windows listed too.
 
 Large same-kind lists (a game list, a message list) show the first 3 items and
 fold the rest: `\u2026 +N more`. `FIND` searches inside them without unfolding.
+
+## Two desktops, one of them at a time
+
+This machine has the user's own desktop (**main**) and a separate session the
+agent can be parked in (**child**). Everything you do happens on **whichever
+one you are currently on** - there is no way to act on both at once, and
+`OBSERVE` never shows windows from the other one.
+
+`SWITCH child` moves you to the separate session. Its purpose is that input
+there cannot disturb the user: raising windows, typing and pasting all stay on
+that desktop. `SWITCH main` brings you back to the user's own.
+
+| Command | Effect |
+| --- | --- |
+| `SWITCH main` | go to the user's desktop |
+| `SWITCH child` | go to the separate session (must already be open) |
+| `SESSION open` | start the separate session and move there |
+| `SESSION close` | end it, and return to the user's desktop |
+| `SESSION detach` | leave it running after this program exits |
+
+**Switching discards every ref.** After a `SWITCH`, the window list is
+different, so `w1`/`b3`/`q1` mean whatever they mean on the new desktop -
+re-`OBSERVE` before acting. Refs from before the switch are not merely stale,
+they name a different program.
+
+When to switch:
+
+* the user asks for something to run *without being disturbed* → `SWITCH
+  child`, which opens it first if needed;
+* the user asks to see or touch their own screen, or you need a window that is
+  on their desktop → `SWITCH main`;
+* already on `child` and asked for a window that is not there → it is on
+  `main`; switch, do not report it missing.
+
+Do not switch on every call. Stay where you are until the task needs the other
+desktop, and say which desktop you are on when reporting a result, because the
+user cannot see the session you are in.
 
 ## Observation format
 

@@ -1,4 +1,4 @@
-"""MCP server (stdio) exposing SomnusUI's four tools.
+"""MCP server (stdio) exposing SomnusUI's tools.
 
 Uses the official ``mcp`` package when installed. Kept separate from
 :mod:`somnus.protocol.jsonrpc` so a host can embed either transport.

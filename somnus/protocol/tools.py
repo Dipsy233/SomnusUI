@@ -1,4 +1,4 @@
-"""The four tools exposed to an LLM (dev doc section 6.4).
+"""The tools exposed to an LLM (dev doc section 6.4).
 
 Model-agnostic: each tool is a thin function over a :class:`Session`. The MCP
 server and the JSON-RPC server both call :func:`call_tool`, so behaviour is
@@ -100,6 +100,36 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "required": ["action"],
         },
     },
+    {
+        "name": "switch",
+        "description": (
+            "Move this agent between the two Windows sessions, or open / close "
+            "the separate one. The agent drives ONE session at a time: after "
+            "switching, every ref (windows included) names the new desktop, "
+            "and all refs from before are gone.\n"
+            "Use `open` when the user asks for something to happen on a "
+            "separate desktop the agent can be parked in (there its input "
+            "cannot disturb the user); `close` ends it; `child` / `main` move "
+            "between them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["main", "child", "open", "close", "detach"],
+                    "description": (
+                        "main = the user's own desktop (the default); "
+                        "child = move to the separate session; "
+                        "open = start that session and move into it; "
+                        "close = end that session and return to main; "
+                        "detach = leave it running after this program exits"
+                    ),
+                }
+            },
+            "required": ["target"],
+        },
+    },
 ]
 
 
@@ -140,6 +170,15 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
 
             action = parse_action(args.get("action", ""), rev=args.get("rev"))
             return session.call(action, confirmed=args.get("confirmed")).text
+        if name == "switch":
+            target = (args.get("target") or "main").strip().lower()
+            if target == "open":
+                return session.open_child_session()
+            if target == "close":
+                return session.close_child_session()
+            if target == "detach":
+                return session.detach_child_session()
+            return session.switch_session(target)
         return SomnusError(ErrorCode.PARSE_ERROR, message=f"unknown tool {name}").render()
     except SomnusError as err:
         return err.render()

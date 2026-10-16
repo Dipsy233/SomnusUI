@@ -25,11 +25,14 @@ def test_agent_importable_without_model():
     from examples.agent import LlmClient, openai_tools, run_agent  # noqa: F401
 
     tools = openai_tools()
+    # ``switch`` moves the agent between the two Windows sessions (and opens or
+    # closes the child one); it is part of the tool surface, not an extra.
     assert {t["function"]["name"] for t in tools} == {
         "observe",
         "find",
         "inspect",
         "call",
+        "switch",
     }
 
 
