@@ -36,8 +36,9 @@ COM pointers. It sees entities, states, relations, capabilities and values.
   preference but the reason the project exists: a keystroke or a click needs
   the window focused, races the target's message pump, and cannot be verified.
   An element that publishes no usable interface is **reported as such**, not
-  typed into; `--allow-keyboard` opts in when nothing else can work, and the
-  answer says so either way.
+  typed into; `--allow-clipboard` and `--allow-keyboard` opt in when nothing
+  else can work (both seize the screen's foreground), and the answer says so
+  either way.
 - **Low Token** – observation is projected and budgeted: homogeneous lists
   preview three items, anonymous leaves fold into one summary line; L0
   typically costs tens to a few hundred tokens.
@@ -166,15 +167,42 @@ native patterns, so an application the runtime has never seen is still usable:
   | --- | --- | --- | --- |
   | 1 | `ValuePattern.SetValue` | the control publishes a Value pattern | no |
   | 2 | `WM_SETTEXT` / `EM_REPLACESEL` | **the element maps its own HWND** | no |
-  | 3 | focus and type | `--allow-keyboard` | **yes** |
+  | 3 | clipboard + `Ctrl+V` | `--allow-clipboard` | **yes** |
+  | 4 | focus and type | `--allow-keyboard` | **yes** |
+
+  **The rule is: edit through UIA first.** Routes 1 and 2 are interfaces the
+  application itself publishes, so the write happens on the application's own
+  thread: atomic, no focus taken, no synthetic input, invisible to the user.
+  Only when neither applies - typically a self-drawn editor (QQ's or Doubao's
+  rich-text box) - does the chain fall back to the last two, and **both of those
+  seize the screen's foreground**, because being foreground is their
+  precondition rather than a side effect.
 
   Route 2 is a focus-free write: measured against Notepad with its window in the
   **background**, 3/3 exact writes including CJK and a 50-character string, with
-  the foreground window never changing. The keyboard route cannot do this under
-  any settings (same conditions: `SendInput` landed 0/20 complete, always as a
+  the foreground window never changing. Synthetic input cannot do this under any
+  settings (same conditions: `SendInput` landed 0/20 complete, always as a
   truncated prefix). Its criterion is the **element's own HWND** - not "does the
   process own a native `Edit` child window", which wrongly rules out controls in
   the same process that can in fact be written.
+
+  Route 3 (clipboard) needs the foreground too, but on a self-drawn control it is
+  **far better than typing**: the text travels in the clipboard instead of the
+  input queue, so delivery costs the same regardless of length (measured:
+  constant ~37 ms from 10 to 3000 characters), while per-character `SendInput`
+  parks 2N queue entries that the target stalls on.
+
+  It borrows the user's clipboard but **hands every format back losslessly**: the
+  snapshot stores each format's raw bytes (not just the text) and the restore
+  rebuilds them one by one - text, RTF, HTML, file lists, and **images** (a
+  bitmap is serialised through `GetDIBits` and rebuilt with `CreateDIBitmap`).
+  Measured: all 8 formats on a live clipboard, bitmap included, come back
+  byte-identical; after a real paste into QQ the user's image was still there.
+  The payload also carries four opt-out formats so it **never enters clipboard
+  history or cloud sync**. Only a few formats cannot be rebuilt (`CF_PALETTE`,
+  the OLE carrier formats), and those are **named in the result** rather than
+  dropped silently. See
+  [docs/interface-capability-report.md](docs/interface-capability-report.md) 3.3.
 
   Which route works is decided **at execution time**, because no static
   inspection can settle it - UIA reports interfaces an element then refuses
@@ -184,20 +212,55 @@ native patterns, so an application the runtime has never seen is still usable:
   CALL q1.set_text("x")
   ERR ACTION_NOT_SUPPORTED q1 hint=report-user
       msg="the element offers no interface this runtime can use, and synthetic
-           keyboard input is disabled; enable it with --allow-keyboard"
+           keyboard input is disabled; enable it for one run with
+           --allow-keyboard, or persistently with `somnus config --allow-keyboard`"
   ```
 
-  So Notepad is written natively and a field that publishes no interface (QQ's
-  self-drawn box, Steam, VS Code) is **reported, not typed into**. Which route
+  Both synthetic routes are separately authorised and off by default. So Notepad
+  is written natively, while a field that publishes no interface (QQ's
+  self-drawn box, Steam, VS Code) is **reported rather than silently written**
+  unless the host explicitly enables the clipboard or keyboard route. Which route
   answered is remembered for the rest of the session, so a repeated call on the
   same element does not re-probe it. The model still sees only the one name
   `set_text`; which channel runs underneath is the runtime's decision.
 
-  Which interfaces actually work - and which are dead ends - is measured, not
-  assumed: see [docs/interface-capability-report.md](docs/interface-capability-report.md)
-  for the live data (including why a self-drawn Chromium editor cannot be
-  written by any UIA, MSAA or `WM_SETTEXT` route, and the second-round findings
-  on `TextEditPattern`, `ValuePattern2` and element-level HWND).
+  Each channel's principle, measurements and the routes already proven dead are
+  in [docs/interface-capability-report.md](docs/interface-capability-report.md)
+  (including why a self-drawn Chromium editor cannot be written by any UIA,
+  MSAA or `WM_SETTEXT` route).
+
+#### The settings file: an opt-in you can write down
+
+A switch that only exists as a command-line flag is not really an opt-in - **an
+MCP client launches this process itself, so there is nowhere for the user to pass
+one**. Both switches can therefore be written to a small config file:
+
+```bash
+somnus config --path              # where the file is
+somnus config                     # show state (writes defaults on first run)
+somnus config --allow-clipboard   # turn on the clipboard channel, persistently
+somnus config --allow-keyboard    # turn on the keyboard channel
+```
+
+The file is plain TOML: **commented, hand-editable, and small enough for an LLM
+to edit**:
+
+```toml
+# Both synthetic-input channels are OFF unless set to true below.
+# They seize the screen's foreground, ...
+allow_clipboard = false
+allow_keyboard  = false
+allow_processes = []
+```
+
+Precedence: **flag > environment (`SOMNUS_ALLOW_CLIPBOARD` /
+`SOMNUS_ALLOW_KEYBOARD`) > file > built-in default (both off)**. A one-off
+override therefore never has to edit state, and the file's decision applies to
+MCP, JSON-RPC and the CLI alike.
+
+A malformed file neither stops the runtime nor silently becomes "allow
+everything": it degrades to the defaults and reports the problem in
+`somnus config`.
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself
@@ -318,6 +381,7 @@ somnus/
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── packs/         generic.py restaurant_demo.py (built-in demo pack)
 ├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
+├── config.py      persistent settings (the opt-in switches live here)
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 docs/

@@ -115,8 +115,9 @@ caps:
 * **`via`** names a member and a primitive: `$self.activate`,
   `$add_btn.activate`, `$self.set_text`. The primitive vocabulary is fixed
   (`activate, focus, read, set_text, toggle, select, expand, collapse,
-  increment, decrement, scroll, open, close`). `type_text` exists only as a
-  conditional fallback step - see below.
+  increment, decrement, scroll, open, close`). `type_text`, `set_text_hwnd`
+  and `paste_text` exist only as routing steps inside a capability, never as
+  capabilities the LLM can call - see below.
 * **`effects`** is how the verifier knows an action worked. Supported forms:
   `ref.field += N`, `-=`, `=`, `!=`, `contains`, `startswith`. Effects on
   fields the runtime cannot observe are treated as *unverifiable*, and the
@@ -128,7 +129,7 @@ The `key` field is the fingerprint primary key: prefer `$self.automation_id`
 or a pack member's automation id. When `key` resolves, volatile names are
 excluded from the fingerprint, so a changing label never invalidates a ref.
 
-### Conditional steps and the keyboard fallback
+### Conditional steps and the synthetic-input fallbacks
 
 A `via` entry may be a mapping instead of a string, gating the step on the
 native patterns the target exposes. The condition is evaluated at **compile
@@ -142,8 +143,12 @@ caps:
     via:
       # Prefer the native Value pattern ...
       - { target: "$self", primitive: set_text, value: "$text", when_has: value }
-      # ... otherwise focus the control and type (declarative keyboard fallback,
-      # declarative keyboard fallback). `type_text` is not a capability the LLM can call.
+      # ... then the element's own HWND (no focus, no clipboard) ...
+      - { target: "$self", primitive: set_text_hwnd, value: "$text", when_missing: value }
+      # ... then the clipboard channel (--allow-clipboard) ...
+      - { target: "$self", primitive: paste_text, value: "$text", when_missing: value }
+      # ... otherwise focus the control and type (declarative keyboard fallback).
+      # `type_text` and `paste_text` are not capabilities the LLM can call.
       - { target: "$self", primitive: type_text, value: "$text", when_missing: value }
 ```
 
@@ -151,6 +156,14 @@ caps:
 `text`, ...). Only one of the two steps survives compilation for any given
 target, which is how the same pack works on both a native edit control and a
 custom-drawn one that only accepts keystrokes.
+
+The built-in `set_text` chain is exactly this shape, in the order the runtime
+tries them: `set_text` (Value pattern) → `set_text_hwnd` (element-level HWND) →
+`paste_text` (clipboard) → `type_text` (keyboard). The last two need a host flag
+(`--allow-clipboard` / `--allow-keyboard`) because they seize the screen's
+foreground; see
+[interface-capability-report.md](interface-capability-report.md) for why that
+ordering is the one that costs the user least.
 
 ## Writing a pack for a new app
 

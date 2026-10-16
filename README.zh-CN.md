@@ -33,10 +33,10 @@ LLM 永远不会看到像素、坐标、截图、句柄、`AutomationId` 或 COM
 
 - **无视觉（No Vision）** – 无障碍树是唯一的感知通道。
 - **不使用合成输入（No Synthetic Input）** – 通过应用自己发布的接口驱动它，
-  绝不假装有人在敲键盘。这不是偏好，而是这个项目存在的理由：一次按键或点击
+  绝不假装有人在敲键盘。这不是偏好，而是这个项目存在的理由：一次按键或粘贴
   要求窗口前台、与目标的消息泵竞争，而且无法验证。发布不出可用接口的元素会被
-  **明确报错**，而不是被偷偷输入；`--allow-keyboard` 用于确实别无他法时，
-  两种情况下回复都会说明。
+  **明确报错**，而不是被偷偷输入；`--allow-clipboard` / `--allow-keyboard`
+  用于确实别无他法时（两者都会抢占屏幕焦点），两种情况下回复都会说明。
 - **低 token（Low Token）** – 观察经过投影与预算控制；同名类列表只展示前
   3 个样例，匿名叶子折叠为一行汇总，L0 概览通常几十到三百 token。
 - **语义优先（Semantic First）** – LLM 调用 `CALL p1.add()`，而非 `click(312, 528)`。
@@ -157,32 +157,80 @@ pack 是优化手段，不是必要条件。使用 `--no-pack`（或窗口本来
   | --- | --- | --- | --- |
   | 1 | `ValuePattern.SetValue` | 控件发布 Value 模式 | 否 |
   | 2 | `WM_SETTEXT` / `EM_REPLACESEL` | **元素自己有非零 HWND** | 否 |
-  | 3 | 聚焦 + 键入 | 需 `--allow-keyboard` | **是** |
+  | 3 | 剪贴板 + `Ctrl+V` | 需 `--allow-clipboard` | **是** |
+  | 4 | 聚焦 + 键入 | 需 `--allow-keyboard` | **是** |
+
+  **原则是优先走 UIA 编辑**：前两条是应用自己发布的接口，写入在应用自己的线程上完成，
+  原子、不抢焦点、不产生任何合成输入，用户完全无感。只有前两条都用不上时——
+  典型就是自绘输入框（QQ / 豆包的富文本编辑器）——才回退到后两条，
+  而它们**都会抢占屏幕焦点**（后缀两类的前提就是目标必须在前台）。
 
   哪条路真的能用**在执行时**才能判定：静态检查不可能准确——UIA 会报告元素其实
   拒绝的接口（实测：可编辑控件声称有 `value`，setter 却是空壳）。
 
   第 2 条是无焦点写入，实测（记事本窗口置后台）：**3/3 精确写入，焦点一次未被抢走**，
-  含 CJK 与 50 字符长串。这正是键盘通道做不到的（同条件下 `SendInput` 0/20 完整）。
+  含 CJK 与 50 字符长串。这正是合成输入做不到的（同条件下 `SendInput` 0/20 完整）。
   判据是**元素自己映射的 HWND**，而不是“进程里有没有原生 Edit 子窗口”——
   后者会把同进程内本来可写的控件一起误杀。
+
+  第 3 条（剪贴板）虽要抢焦点，但在自绘控件上是**远优于键盘**的选择：
+  文本走剪贴板而非输入队列，投递耗时与长度无关（实测 10~3000 字符恒定 ~37ms），
+  而逐字符 `SendInput` 会把 2N 个事件堆进队列被目标滞留。
+
+  它虽然借用了用户的剪贴板，但**用完逐格式无损还回去**：快照保存的是每一种格式的
+  原始字节（不只是文本），还原时逐个重建——文本、RTF、HTML、文件列表，
+  以及**图片**（位图经 `GetDIBits` 序列化、`CreateDIBitmap` 重建）。
+  实测：含位图在内的 8 种格式全部字节级一致；QQ 输入框投递后用户的图片仍在。
+  写入的内容附带四条 opt-out 格式，**不会进入剪贴板历史或云同步**。
+  仅少数格式无法重建（`CF_PALETTE`、OLE 承载格式），且会**列出名字**而非静默丢弃。
+  细节见 [docs/interface-capability-report.md](docs/interface-capability-report.md) 3.3。
 
   ```
   CALL q1.set_text("x")
   ERR ACTION_NOT_SUPPORTED q1 hint=report-user
       msg="the element offers no interface this runtime can use, and synthetic
-           keyboard input is disabled; enable it with --allow-keyboard"
+           keyboard input is disabled; enable it for one run with
+           --allow-keyboard, or persistently with `somnus config --allow-keyboard`"
   ```
 
-  因此记事本走原生写入，而发布不出接口的自绘控件（QQ/Steam/VS Code）会被**如实报错，
-  而不是被输入**。哪条路奏效会被记住整个会话，重复调用同一元素不再重新探测。
+  两条合成通道各自授权、默认关闭。因此记事本走原生写入，而发布不出接口的
+  自绘控件（QQ/Steam/VS Code）默认会被**如实报错**，只有显式开启对应开关后
+  才走剪贴板或键盘。哪条路奏效会被记住整个会话，重复调用同一元素不再重新探测。
 
   **LLM 只会看到 `set_text` 一个名字**，看不到哪条通道在跑。
 
-  哪些接口真的能用、哪些是死路，都是实测得出的：见
-  [docs/interface-capability-report.md](docs/interface-capability-report.md)
-  （包含为什么 Chromium 自绘编辑器用 UIA / MSAA / `WM_SETTEXT` 都写不进去，
-  以及第二轮探测对 `TextEditPattern`、`ValuePattern2`、元素级 HWND 的补测结论）。
+  每条通道的原理、实测数据与已否定的路线（为什么 Chromium 自绘编辑器用
+  UIA / MSAA / `WM_SETTEXT` 都写不进去）详见
+  [docs/interface-capability-report.md](docs/interface-capability-report.md)。
+
+#### 设置文件：把 opt-in 写下来
+
+两个开关如果只能当命令行参数传，就不算真正的 opt-in —— **MCP 客户端是自己
+启动这个进程的，用户根本没有地方传 flag**。所以它们可以写进一个小配置文件：
+
+```bash
+somnus config --path              # 文件在哪
+somnus config                     # 看当前状态（首次会写出默认文件）
+somnus config --allow-clipboard   # 只开剪贴板，持久生效
+somnus config --allow-keyboard    # 只开键盘
+```
+
+文件是普通 TOML，**带注释、可直接手改，也足够小，可以交给 LLM 改**：
+
+```toml
+# Both synthetic-input channels are OFF unless set to true below.
+# They seize the screen's foreground, ...
+allow_clipboard = false
+allow_keyboard  = false
+allow_processes = []
+```
+
+优先级：**命令行 flag > 环境变量（`SOMNUS_ALLOW_CLIPBOARD` /
+`SOMNUS_ALLOW_KEYBOARD`）> 文件 > 内置默认（全关）**。
+所以一次性的覆盖不需要改文件，而文件里的决定对 MCP、JSON-RPC、CLI 都生效。
+
+坏文件不会让运行时启动失败，也不会意外变成“全部允许”：降级为默认值并在
+`somnus config` 里报告问题。
 - **`context_menu`** 在“可能有菜单”的控件上提供（即暴露了可操作内容的元素）。
   它是面对"忽略原生模式的应用"时的出口：菜单通过 UIA 自身打开
   （`ShowContextMenu`），指针不会移动、不发送任何按键，而菜单项本身是标准菜单项，
@@ -280,16 +328,19 @@ CALL b5.submit()         →  ERR CONFIRMATION_REQUIRED b5 hint=ask-user
 somnus/
 ├── ir/            节点 / 能力 / 动作值对象（平台无关）
 ├── providers/     base.py  mock.py
-│                  windows/{uia,cache,executor,events,keyboard,workspace}.py
+│                  windows/{uia,cache,executor,events,keyboard,clipboard,
+│                            workspace}.py
 ├── compiler/      normalize → caps → relations → simplify → match → compile
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── packs/         generic.py restaurant_demo.py（内置演示 pack）
 ├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
+├── config.py      持久化设置（两个合成通道的 opt-in 写在这里）
 └── cli.py
 apps/restaurant-demo/   WPF（.NET 8）验收应用
 docs/
+  interface-capability-report.md  文本写入通道的原理与实测依据
   packs.md              App Pack 编写指南
   interactive-usage.md  REPL / CLI / 脚本三种驱动方式
   what-the-llm-sees.md  一个窗口、四个工具，附真实输出
