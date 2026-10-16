@@ -41,8 +41,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 #: Clipboard-free way to read a Win32 control's text back.
 WM_GETTEXT = 0x000D
+#: Overwrite a control's text (used to *empty* it before closing).
+WM_SETTEXT = 0x000C
+WM_CLOSE = 0x0010
 #: `SetForegroundWindow` needs a nudge on Windows 11; try a few times.
 _FG_ATTEMPTS = 5
+
+#: How long to wait for the Notepad window to appear. WPF/WinUI's first paint
+#: plus UIA registration is not instant; a fixed sleep would be either slow or
+#: flaky, so the fixture polls instead.
+_WINDOW_TIMEOUT = 15.0
+#: How long to keep closing Notepad windows in `_close_notepad` before giving
+#: up on the graceful path (each round clears and closes every live window).
+_CLOSE_TIMEOUT = 12.0
 
 
 def _user32():
@@ -70,6 +81,87 @@ def _text_of(hwnd: int, cap: int = 8192) -> str:
         wintypes.HWND(hwnd), WM_GETTEXT, cap, ctypes.byref(buf), 0x0002, 2000, None
     )
     return buf.value
+
+
+# ---------------------------------------------------------------------------
+# Notepad lifecycle
+#
+# Windows 11's Notepad restores the previous session's tabs - unsaved ones
+# included - when it starts. A test that `terminate()`s the process therefore
+# leaves the *next* run showing stale text (observed live: a fresh launch came
+# up as `*dirty - Notepad`). The fix is to close Notepad the way a user would:
+# empty the editor, then close the window, and wait until it is really gone.
+# ---------------------------------------------------------------------------
+
+
+def _window_title(hwnd: int) -> str:
+    user32 = _user32()
+    length = user32.GetWindowTextLengthW(wintypes.HWND(hwnd))
+    buf = ctypes.create_unicode_buffer(length + 2)
+    user32.GetWindowTextW(wintypes.HWND(hwnd), buf, length + 2)
+    return buf.value
+
+
+def _class_name(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    _user32().GetClassNameW(wintypes.HWND(hwnd), buf, 256)
+    return buf.value
+
+
+def _top_levels(predicate) -> list[int]:
+    """Top-level window handles matching ``predicate(hwnd)``."""
+    user32 = _user32()
+    found: list[int] = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lparam):
+        if predicate(int(hwnd)):
+            found.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    return found
+
+
+def _children(hwnd: int) -> list[int]:
+    user32 = _user32()
+    found: list[int] = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(child, _lparam):
+        found.append(int(child))
+        return True
+
+    user32.EnumChildWindows(wintypes.HWND(hwnd), WNDENUMPROC(_cb), 0)
+    return found
+
+
+def _notepad_windows() -> list[int]:
+    return _top_levels(lambda h: "notepad" in _window_title(h).lower())
+
+
+def _close_notepad() -> bool:
+    """Close every Notepad window, emptying its editor first.
+
+    Returns True when none remain. Each round empties the editor (so the window
+    is not dirty when it closes) and posts ``WM_CLOSE``; a window that is still
+    busy next round gets the same treatment. Windows appear and close one per
+    tab, so this loops rather than acting once.
+    """
+    user32 = _user32()
+    deadline = time.monotonic() + _CLOSE_TIMEOUT
+    while time.monotonic() < deadline:
+        windows = _notepad_windows()
+        if not windows:
+            return True
+        for hwnd in windows:
+            for child in _children(hwnd):
+                cls = _class_name(child)
+                if "RichEdit" in cls or cls == "Edit":
+                    user32.SendMessageW(wintypes.HWND(child), WM_SETTEXT, 0, "")
+            user32.PostMessageW(wintypes.HWND(hwnd), WM_CLOSE, 0, 0)
+        time.sleep(0.4)
+    return not _notepad_windows()
 
 
 @pytest.fixture
@@ -107,26 +199,39 @@ def notepad():
     """A real Notepad window, and its editor element.
 
     Notepad is the fixture because its editor is a native ``RichEditD2DPT`` with
-    a real HWND, which is exactly the case the route serves. It is started fresh
-    so the test does not depend on whatever the developer had open.
+    a real HWND, which is exactly the case the route serves. Any windows left
+    over from an earlier run are closed first - Notepad restores unsaved tabs on
+    start, so without that a previous run's text would be this run's content.
     """
     _windows_only()
+    # A clean session: close anything already open (emptying the editors) so the
+    # window this fixture starts cannot inherit stale text.
+    _close_notepad()
     try:
         proc = subprocess.Popen(["notepad.exe"])
     except OSError as exc:  # pragma: no cover - environment
         pytest.skip(f"cannot start notepad: {exc}")
-    time.sleep(3.0)
 
     from somnus.providers.windows.uia import UiaProvider
     from somnus.runtime.session import Session
 
     provider = UiaProvider()
     try:
-        windows = provider._executor.submit(provider._list_windows_sync).result(timeout=60)
-        target = next(
-            (w for w in windows if "notepad" in (w.process or "").lower() and w.title),
-            None,
-        )
+        # Poll for the window instead of a fixed sleep: it is usually ready in
+        # well under a second, and a fixed wait is pure added test time.
+        target = None
+        deadline = time.monotonic() + _WINDOW_TIMEOUT
+        while time.monotonic() < deadline:
+            windows = provider._executor.submit(
+                provider._list_windows_sync
+            ).result(timeout=60)
+            target = next(
+                (w for w in windows if "notepad" in (w.process or "").lower() and w.title),
+                None,
+            )
+            if target is not None:
+                break
+            time.sleep(0.2)
         if target is None:
             pytest.skip("notepad window not found")
 
@@ -151,11 +256,15 @@ def notepad():
         }
     finally:
         provider.close()
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except Exception:  # noqa: BLE001 - teardown
-            proc.kill()
+        # Close cleanly (empty the editor, then close the window). Only if that
+        # leaves something behind - a hung window, a build with a modal prompt -
+        # is the process killed, and this one process only.
+        if not _close_notepad():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - teardown
+                proc.kill()
 
 
 def test_editor_element_maps_an_hwnd(notepad):

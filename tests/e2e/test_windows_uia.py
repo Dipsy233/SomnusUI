@@ -35,11 +35,44 @@ def _windows_only():
 def demo_app():
     _windows_only()
     proc = subprocess.Popen([str(APP)])
-    time.sleep(3.0)
+    # Poll for the window instead of a fixed sleep: the app is usually ready in
+    # well under a second, and a fixed wait is pure added test time.
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if _demo_window_present():
+            break
+        time.sleep(0.2)
     try:
         yield proc
     finally:
         proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001 - teardown
+            proc.kill()
+
+
+def _demo_window_present() -> bool:
+    """True when the demo's main window is up, without paying for a full tree."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32")
+    found = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lparam):
+        length = user32.GetWindowTextLengthW(wintypes.HWND(hwnd))
+        if not length:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 2)
+        user32.GetWindowTextW(wintypes.HWND(hwnd), buf, length + 2)
+        if "restaurant" in buf.value.lower():
+            found.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    return bool(found)
 
 
 def test_uia_observe_and_add(demo_app):

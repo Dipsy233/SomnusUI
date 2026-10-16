@@ -49,6 +49,21 @@ def _require_app():
         pytest.skip(f"scenario suite not built: {APP} (dotnet build apps/scenario-suite)")
 
 
+#: The observation taken when a session was launched, keyed by session id. On a
+#: large window the first observe is by far the most expensive step (a UIA walk
+#: of every row), so a test that only inspects that first observation reuses it
+#: rather than paying for an identical second walk.
+_LAUNCH_OBSERVATION: dict[int, object] = {}
+
+
+def _observe_once(session):
+    """Return the launch observation, taking it on first use."""
+    key = id(session)
+    if key not in _LAUNCH_OBSERVATION:
+        _LAUNCH_OBSERVATION[key] = session.observe()
+    return _LAUNCH_OBSERVATION[key]
+
+
 @pytest.fixture
 def scenario():
     """Launch a scenario and return a session bound to it.
@@ -80,8 +95,9 @@ def scenario():
             time.sleep(0.4)
         else:
             raise AssertionError(f"scenario window {name!r} did not appear")
-        # Observe once so the session targets it, then return.
-        session.observe()
+        # Observe once so the session targets it and `session.result` is built,
+        # then return.
+        _observe_once(session)
         created.append((name, session, proc))
         return session, proc
 
@@ -93,6 +109,7 @@ def scenario():
                 session.close()
             except Exception:  # noqa: BLE001 - teardown
                 pass
+            _LAUNCH_OBSERVATION.pop(id(session), None)
         for proc in procs:
             proc.terminate()
         for proc in procs:
@@ -144,7 +161,7 @@ def test_store_search_filters_the_catalog(scenario):
 def test_store_is_bounded_on_a_live_window(scenario):
     """240 live rows must still produce a small observation."""
     session, _ = scenario("store")
-    obs = session.observe()
+    obs = _observe_once(session)
     assert obs.tokens <= 300, obs.tokens
     assert "240" in obs.text or "count=" in obs.text
 
