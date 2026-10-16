@@ -229,7 +229,7 @@ def test_remembered_route_cannot_break_a_call():
 
     steps = [
         PrimitiveStep(primitive="set_text", target="$self", value="$text"),
-        PrimitiveStep(primitive="set_text_hwnd", target="$self", value="$text"),
+        PrimitiveStep(primitive="paste_text", target="$self", value="$text"),
         PrimitiveStep(primitive="type_text", target="$self", value="$text"),
     ]
 

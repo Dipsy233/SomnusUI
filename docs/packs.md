@@ -115,8 +115,8 @@ caps:
 * **`via`** names a member and a primitive: `$self.activate`,
   `$add_btn.activate`, `$self.set_text`. The primitive vocabulary is fixed
   (`activate, focus, read, set_text, toggle, select, expand, collapse,
-  increment, decrement, scroll, open, close`). `type_text`, `set_text_hwnd`
-  and `paste_text` exist only as routing steps inside a capability, never as
+  increment, decrement, scroll, open, close`). `type_text` and `paste_text`
+  exist only as routing steps inside a capability, never as
   capabilities the LLM can call - see below.
 * **`effects`** is how the verifier knows an action worked. Supported forms:
   `ref.field += N`, `-=`, `=`, `!=`, `contains`, `startswith`. Effects on
@@ -143,8 +143,6 @@ caps:
     via:
       # Prefer the native Value pattern ...
       - { target: "$self", primitive: set_text, value: "$text", when_has: value }
-      # ... then the element's own HWND (no focus, no clipboard) ...
-      - { target: "$self", primitive: set_text_hwnd, value: "$text", when_missing: value }
       # ... then the clipboard channel (--allow-clipboard) ...
       - { target: "$self", primitive: paste_text, value: "$text", when_missing: value }
       # ... otherwise focus the control and type (declarative keyboard fallback).
@@ -158,8 +156,8 @@ target, which is how the same pack works on both a native edit control and a
 custom-drawn one that only accepts keystrokes.
 
 The built-in `set_text` chain is exactly this shape, in the order the runtime
-tries them: `set_text` (Value pattern) → `set_text_hwnd` (element-level HWND) →
-`paste_text` (clipboard) → `type_text` (keyboard). The last two need a host flag
+tries them: `set_text` (Value pattern) → `paste_text` (clipboard) → `type_text`
+(keyboard). The last two need a host flag
 (`--allow-clipboard` / `--allow-keyboard`) because they seize the screen's
 foreground; see
 [interface-capability-report.md](interface-capability-report.md) for why that

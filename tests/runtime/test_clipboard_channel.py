@@ -132,26 +132,25 @@ def _self_drawn_editor():
 
 
 def test_clipboard_route_is_in_the_set_text_chain():
-    """链里声明了剪贴板路线，且门控是 no-hwnd（正是自绘输入框的形状）。"""
+    """链里声明了剪贴板路线，排在 Value 写入之后（正是自绘输入框的形状）。"""
     session = _session(_tree([_self_drawn_editor()]), allow_clipboard=True)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
     steps = [(s.primitive, s.condition) for s in node.get_cap("set_text").via]
-    assert ("paste_text", "no-hwnd") in steps, steps
+    assert ("paste_text", None) in steps, steps
 
 
-def test_clipboard_sits_after_the_focus_free_routes():
-    """粘贴排在两条无焦点通道之后：它们不碰用户的焦点和剪贴板。
+def test_clipboard_sits_after_the_focus_free_route():
+    """粘贴排在 Value 写入之后：那条通道不碰用户的焦点和剪贴板。
 
-    顺序不是风格问题——ValuePattern 和元素级 HWND 让应用在自己的线程上完成写入，
-    原子、不抢焦点、不借剪贴板。让粘贴排到它们前面，等于每次都去动用户的剪贴板。
+    顺序不是风格问题——ValuePattern 让应用在自己的线程上完成写入，原子、
+    不抢焦点、不借剪贴板。让粘贴排到它前面，等于每次都去动用户的剪贴板。
     """
     session = _session(_tree([_self_drawn_editor()]), allow_clipboard=True)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
     primitives = [s.primitive for s in node.get_cap("set_text").via]
     assert primitives.index("paste_text") > primitives.index("set_text"), primitives
-    assert primitives.index("paste_text") > primitives.index("set_text_hwnd"), primitives
 
 
 def test_clipboard_sits_before_typing():

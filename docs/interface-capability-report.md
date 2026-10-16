@@ -18,7 +18,7 @@
 | **抢占前台焦点** | 用户的正在用的窗口会被切走。这不是副作用，是前提条件——`Ctrl+V` 和 `SendInput` 都只发给前台窗口。 |
 | **借用用户资源** | 粘贴通道会占用用户的剪贴板（哪怕只是短暂地写入再恢复）。 |
 
-而应用自己的接口（`ValuePattern`、元素级 HWND）**不需要前台**，
+而应用自己的接口（`ValuePattern`）**不需要前台**，
 可以在用户完全无感的情况下完成写入。实测数据见第四节。
 
 因此通道链的顺序不是"哪个先试哪个"，而是**按对用户的打扰程度排序**。
@@ -33,9 +33,8 @@
 | 顺序 | primitive | 门控条件 | 前置要求 | 抢焦点 | 借用剪贴板 |
 |---|---|---|---|---|---|
 | 1 | `set_text` | `has:value` | 控件实现 `ValuePattern` | 否 | 否 |
-| 2 | `set_text_hwnd` | `hwnd` | **元素自己**的 `NativeWindowHandle != 0` | 否 | 否 |
-| 3 | `paste_text` | `no-hwnd` | 需 `--allow-clipboard` | **是** | **是** |
-| 4 | `type_text` | `no-hwnd` | 需 `--allow-keyboard` | **是** | 否 |
+| 2 | `paste_text` | — | 需 `--allow-clipboard` | **是** | **是** |
+| 3 | `type_text` | — | 需 `--allow-keyboard` | **是** | 否 |
 
 链的执行规则（`runtime/session.py`）：
 
@@ -48,8 +47,17 @@
 > "授权被拒"必须**跳过而非终止**：一个宿主可能只开了键盘没开剪贴板，
 > 若第一条被拒就整个失败，它会拿到"没有可用接口"，而它合法的路线就在下一步。
 
-**前两条通道互斥**（有 HWND 就不必粘贴），后两条同理。
-真实自绘控件通常落在 3 或 4。
+第一条通道代价为零（不抢焦点、不借剪贴板），后两条都需要前台且是合成输入，
+所以永远排在后面。真实自绘控件（无 `ValuePattern`）落在第 2/3 条，默认被拒，
+除非宿主显式授权。
+
+> **已删除的 `set_text_hwnd` 通道。** 曾经在 1 和 2 之间还有一条：当元素**自己**
+> 映射了 HWND 时，用 `EM_REPLACESEL`/`WM_SETTEXT` 写入。它被删除了其门控是"元素有
+> HWND"，而一个能承载可编辑文本且有 HWND 的控件**总是**同时提供 `ValuePattern`
+> （在原生 `EDIT`、WinForms `TextBox`、多行 `TextBox`、`RichTextBox` 上实测），
+> 于是第一条总是命中，这条从未被执行过。要造出"有 HWND 但无 Value 接口"的控件，
+> 只能把文本面从 UIA 完全隐藏——真实应用没有这种形状。它被认为覆盖的场景
+> （UIA 能看见但写不了）由第 2/3 条承担。
 
 ---
 
@@ -62,31 +70,7 @@
 
 **实测**（Windows 11 24H2 记事本 RichEdit）：20/20 成功，含 CJK 与长字符串。
 
-### 3.2 `set_text_hwnd` — 元素级 HWND
-
-当元素**自己**映射了一个真实 HWND 时，用 Win32 消息写入：
-
-* `EM_REPLACESEL`（先试）—— RichEdit/Edit 的"替换选区"动词，保留撤销栈；
-* `WM_SETTEXT`（后试）—— 通用窗口文本消息。
-
-每次调用都走 `SendMessageTimeout`：跨进程的裸 `SendMessage` 会阻塞到目标
-消息泵响应，一个模态对话框就能把 agent 卡死。
-
-**关键判据是"元素自己的 HWND"**，不是"进程里有原生 Edit 子窗口"。
-后者判据过宽且会误杀同进程内可写的原生控件；正确的问法是
-`element.CurrentNativeWindowHandle != 0`。
-
-**实测**（记事本，窗口**故意置后台**）：
-
-```
-sent_len=3   got='后台一'          exact=True fg_still_background=True
-sent_len=14  got='background-two' exact=True fg_still_background=True
-sent_len=50  got='中中中…中'        exact=True fg_still_background=True
-```
-
-3/3 精确写入，**焦点一次未被抢走**。对比键盘路径在同样条件下的 0/20 完整。
-
-### 3.3 `paste_text` — 剪贴板通道
+### 3.2 `paste_text` — 剪贴板通道
 
 自绘控件（Electron/Chromium 的富文本）既没有 `ValuePattern`，也没有元素级
 HWND。够得着它们的是 `Ctrl+V`：文本走**剪贴板**，由应用自己的 `WM_PASTE`
@@ -180,13 +164,13 @@ HWND。够得着它们的是 `Ctrl+V`：文本走**剪贴板**，由应用自己
 | ControlType | `Group` (50026) —— **不是 `Edit`** |
 | ClassName | `ProseMirror ExEditor-qq-msg-editor`（QQ）<br>`tiptap ProseMirror`（豆包） |
 | 元素级 HWND | **无**（`CurrentNativeWindowHandle == 0`） |
-| 声称的 patterns | `legacyiaccessible`, `text`, `window` —— **没有 `value`** |
+| 声称的 patterns | `legacyiaccessible`, `text` —— **没有 `value`** |
 
-实测中两者都正确地把前两条通道过滤掉，直接从 `paste_text` 开始：
+实测中它被第一条通道过滤掉，直接从 `paste_text` 开始：
 
 ```
-declared steps : [('set_text','has:value'), ('set_text_hwnd','hwnd'),
-                  ('paste_text','no-hwnd'), ('type_text','no-hwnd')]
+declared steps : [('set_text','has:value'),
+                  ('paste_text',None), ('type_text',None)]
 resolver steps : ['paste_text', 'type_text']
 >>> 运行时实际尝试的第一条路线: paste_text
 ```
@@ -217,16 +201,15 @@ Chromium 应用的**根 document 节点**会声称自己实现了 `value`，
 | 虚拟桌面隔离 + 键盘 | 窗口移不动，且切桌面比抢焦点更打扰 |
 | `ValuePattern2` | **不存在**（避免一个伪造结论） |
 
-### 4.4 判断一个控件能否写入，只需问四个问题
+### 4.4 判断一个控件能否写入，只需问三个问题
 
 ```
-1. 元素自己有非零的 NativeWindowHandle？  → set_text_hwnd
-2. 元素实现了 UIA ValuePattern？           → set_text
-3. 应用启动时带了 Chromium 调试端口？      → CDP（已运行的应用不要期待）
-4. 以上皆无                               → 应用没暴露写入能力
+1. 元素实现了 UIA ValuePattern？           → set_text（首选）
+2. 应用启动时带了 Chromium 调试端口？      → CDP（已运行的应用不要期待）
+3. 以上皆无                               → 应用没暴露写入能力
 ```
 
-**四者皆无时，可选方案只剩**：粘贴（需前台+剪贴板）、合成键盘（需前台）、
+**三者皆无时，可选方案只剩**：粘贴（需前台+剪贴板）、合成键盘（需前台）、
 或应用专用集成。
 
 SomnusUI 的选择是：**如实报告这个事实**，而不是用合成输入掩盖它。
@@ -333,7 +316,7 @@ allow_processes = []
 |---|---|
 | `tests/runtime/test_capability_routing.py` | 链的推进规则：缺失接口继续、失败终止、授权被拒跳过、路线记忆 |
 | `tests/runtime/test_clipboard_channel.py` | opt-out 格式、非文本拒用、恢复如实上报、通道顺序、授权默认值 |
-| `tests/e2e/test_hwnd_write.py` | HWND 通道的端到端写入与**焦点未被抢占**；校验器选面 |
+| `tests/runtime/test_text_verifier.py` | 校验器选面：Value 真能读时用它，否则退到 Text pattern |
 
 手工复现某条通道是否真的可用，最直接的方式是开 `SOMNUS_TRACE_STATES=1`
 跑一次 `CALL`，它会打出每一步 primitive 的结果与目标的前后状态。

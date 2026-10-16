@@ -85,16 +85,15 @@ def test_an_unknown_class_name_is_not_guessed_to_be_writable(make_session):
     assert "set_text" not in node.cap_names(), node.cap_names()
 
 
-def test_composer_chain_declares_all_four_routes(chat_session):
+def test_composer_chain_declares_the_remaining_routes(chat_session):
     """The chain is complete and ordered by cost to the user."""
     chat_session.observe()
     node = _composer(chat_session)
     steps = [(s.primitive, s.condition) for s in node.get_cap("set_text").via]
     assert steps == [
         ("set_text", "has:value"),
-        ("set_text_hwnd", "hwnd"),
-        ("paste_text", "no-hwnd"),
-        ("type_text", "no-hwnd"),
+        ("paste_text", None),
+        ("type_text", None),
     ], steps
 
 

@@ -239,35 +239,42 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # Routes are tried in order of how much they cost the user, and each is a
     # conditional `via` step so the resolver picks from the live element:
     #
-    #   1. `set_text`      - ValuePattern::SetValue. The application's own write
-    #                        interface: atomic, no focus, no keystrokes.
-    #   2. `set_text_hwnd` - the element maps a real HWND, so the text is written
-    #                        with EM_REPLACESEL / WM_SETTEXT. Measured zero-focus
-    #                        (Notepad stays in the background, 4/4 runs including
-    #                        CJK and 300 chars) and unlike SendInput it cannot
-    #                        drop trailing characters. This is the route the
-    #                        capability report's wrong criterion had hidden.
-    #   3. `paste_text`    - put the text on the clipboard and send Ctrl+V.
-    #                        Needs the foreground and borrows the user's
-    #                        clipboard, but reaches a control that publishes
-    #                        nothing and maps no HWND, because the application's
-    #                        own WM_PASTE handler reads the text. Measured: a
-    #                        constant ~37 ms from 10 to 3000 characters, since
-    #                        the text never enters the input queue (report 3.1).
-    #                        Gated on `--allow-clipboard`.
-    #   4. `type_text`     - focus and type. Last resort, gated on
-    #                        `--allow-keyboard`, because it steals focus and
-    #                        provably loses characters.
+    #   1. `set_text`   - ValuePattern::SetValue. The application's own write
+    #                     interface: atomic, no focus, no keystrokes. Every
+    #                     control that can be written natively exposes it -
+    #                     measured on WPF, WinForms, RichEdit and Notepad's
+    #                     RichEditD2DPT alike - so this is the normal path.
+    #   2. `paste_text` - put the text on the clipboard and send Ctrl+V.
+    #                     Needs the foreground and borrows the user's
+    #                     clipboard, but reaches a control that publishes no
+    #                     Value interface, because the application's own
+    #                     WM_PASTE handler reads the text. Measured: a constant
+    #                     ~37 ms from 10 to 3000 characters, since the text never
+    #                     enters the input queue (report 3.1). Gated on
+    #                     `--allow-clipboard`.
+    #   3. `type_text`  - focus and type. Last resort, gated on
+    #                     `--allow-keyboard`, because it steals focus and
+    #                     provably loses characters.
     #
-    # The ordering is the whole point: a self-drawn editor that maps no HWND and
-    # has no Value pattern (QQ's ProseMirror box) falls through to 3 and 4 and is
-    # refused unless a host explicitly enabled one, while a control that maps an
-    # HWND is written without touching the user's focus or clipboard at all.
+    # There used to be a `set_text_hwnd` route between 1 and 2, writing through
+    # EM_REPLACESEL / WM_SETTEXT to the element's own HWND. It was removed: its
+    # gate was "the element maps an HWND", and a control with an HWND that can
+    # hold editable text always also publishes a Value pattern (measured on a
+    # raw Win32 EDIT, a WinForms TextBox, a multiline one and a RichTextBox), so
+    # route 1 always won and route 2 was never reached. Constructing a control
+    # with an HWND and no Value interface is possible only by hiding the text
+    # surface from UIA entirely - a shape no real application has. The route was
+    # therefore unreachable in practice; what it was believed to cover (an
+    # element UIA can see but not write) is served by routes 2 and 3.
+    #
+    # The ordering is the whole point: a self-drawn editor with no Value pattern
+    # (QQ's ProseMirror box) falls through to 2 and 3 and is refused unless a
+    # host explicitly enabled one.
     #
     # `paste_text` sits *before* `type_text` because the report measures it as
     # strictly better where both apply: no queue stall, length-independent cost,
     # and a real delivery signal when the element can be read back. Both stay
-    # behind the two focus-free routes, which cost the user nothing.
+    # behind the focus-free route, which costs the user nothing.
     if _is_text_entry(node):
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
         cap.via = [
@@ -278,22 +285,14 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
                 condition="has:value",
             ),
             PrimitiveStep(
-                primitive="set_text_hwnd",
-                target="$self",
-                value="$text",
-                condition="hwnd",
-            ),
-            PrimitiveStep(
                 primitive="paste_text",
                 target="$self",
                 value="$text",
-                condition="no-hwnd",
             ),
             PrimitiveStep(
                 primitive="type_text",
                 target="$self",
                 value="$text",
-                condition="no-hwnd",
             ),
         ]
         caps.setdefault("set_text", cap)

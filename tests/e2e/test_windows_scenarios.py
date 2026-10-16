@@ -225,11 +225,11 @@ def test_chat_composer_is_an_input_without_a_native_write(scenario):
     assert composer is not None, "composer not found"
     assert composer.role == "input"
     assert "set_text" in composer.cap_names()
-    # It publishes no Value pattern, so the two focus-free routes are gated out
-    # and the call must be refused unless a channel is enabled.
+    # It publishes no Value pattern, so the Value route is gated out and the
+    # call must be refused unless a synthetic channel is enabled.
     steps = [(s.primitive, s.condition) for s in composer.get_cap("set_text").via]
     assert ("set_text", "has:value") in steps
-    assert ("paste_text", "no-hwnd") in steps
+    assert ("paste_text", None) in steps
 
 
 def test_chat_send_without_a_channel_is_refused_honestly(scenario):

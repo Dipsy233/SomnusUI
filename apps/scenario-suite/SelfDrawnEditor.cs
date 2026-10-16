@@ -93,7 +93,7 @@ public class SelfDrawnEditor : FrameworkElement
         e.Handled = true;
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    protected override void OnKeyDown(System.Windows.Input.KeyEventArgs e)
     {
         base.OnKeyDown(e);
         switch (e.Key)
@@ -135,7 +135,7 @@ public class SelfDrawnEditor : FrameworkElement
             Brushes.Black,
             VisualTreeHelper.GetDpi(this).PixelsPerDip
         );
-        dc.DrawText(formatted, new Point(6, 6));
+        dc.DrawText(formatted, new System.Windows.Point(6, 6));
     }
 }
 
@@ -190,7 +190,7 @@ public class SelfDrawnEditorPeer : FrameworkElementAutomationPeer, ITextProvider
     ITextRangeProvider? ITextProvider.RangeFromChild(IRawElementProviderSimple childElement) =>
         new SelfDrawnTextRange((SelfDrawnEditor)Owner);
 
-    ITextRangeProvider? ITextProvider.RangeFromPoint(Point screenLocation) =>
+    ITextRangeProvider? ITextProvider.RangeFromPoint(System.Windows.Point screenLocation) =>
         new SelfDrawnTextRange((SelfDrawnEditor)Owner);
 
     ITextRangeProvider ITextProvider.DocumentRange =>

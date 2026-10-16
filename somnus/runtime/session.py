@@ -54,9 +54,9 @@ _PREPARATORY_PRIMITIVES = frozenset({"focus", "scroll_into_view"})
 #: Primitives that write text into a control. After one of these succeeds the
 #: response echoes the exact value written, so the agent can confirm what
 #: landed without a follow-up `inspect`: the delta only shows a `value` change
-#: when the value actually differed, and a routed write (`set_text_hwnd`,
-#: `paste_text`) may not be readable back through UIA at all.
-_WRITE_PRIMITIVES = frozenset({"set_text", "set_text_hwnd", "type_text", "paste_text"})
+#: when the value actually differed, and a synthetic write (`paste_text`,
+#: `type_text`) may not be readable back through UIA at all.
+_WRITE_PRIMITIVES = frozenset({"set_text", "paste_text", "type_text"})
 
 
 @dataclass(slots=True)
@@ -1115,7 +1115,7 @@ class Session:
             body = f"{body}\n{tree_body}" if body else tree_body
         # Echo the value a write actually put into the control. The delta shows
         # a `value` change only when it differs from what was there, and a
-        # routed write (`set_text_hwnd`, `paste_text`) may leave a value UIA
+        # synthetic write (`paste_text`, `type_text`) may leave a value UIA
         # cannot read back - so without this line the agent cannot tell "wrote
         # the same text" from "wrote nothing", nor spot that a bad argument
         # became the literal text. This is data, so it is quoted, like every

@@ -14,6 +14,8 @@ namespace ScenarioSuite;
 ///              visible send log (send + verify)
 ///   tree     - deeply nested, expandable tree (compression by expansion level)
 ///   console  - conversation list + message pane (simulated chat, no rich text)
+///   native   - real Win32 EDIT controls (an HWND, no Value pattern): the
+///              Win32-message write route, with no external program needed
 /// </summary>
 public partial class App : Application
 {
@@ -27,6 +29,7 @@ public partial class App : Application
             "chat" => new ChatWindow(),
             "tree" => new TreeWindow(),
             "console" => new ConsoleWindow(),
+            "native" => new NativeWindow(),
             _ => new StoreWindow(),
         };
         window.Title = "Scenario Suite - " + scenario;
