@@ -150,12 +150,28 @@ def raise_window(hwnd: int) -> bool:
        ``AttachThreadInput``, which makes this thread count as the foreground
        owner for the duration of the call;
     4. an inert ``Alt`` tap followed by ``SetForegroundWindow``. The lock is
-       released by *any* input event and an Alt tap is the least intrusive one
-       there is - no character is typed, no button is pressed, and the menu bar
-       of the foreground window is not entered because the key down and up are
-       delivered back to back.
+       released by *any* input event, and an Alt tap is the least intrusive one
+       there is: no character is typed and no button is pressed.
 
-    Rungs 2 and 4 both defeat the same lock, and 2 does it without touching the
+       It is **not** free, and the cost is visible to the user. An earlier
+       version of this docstring claimed the menu bar was not entered because
+       the key down and key up are delivered back to back. That was wrong - it
+       was inferred, never measured. Measured afterwards on Windows 11: a
+       single Alt tap on Notepad makes the window enter its key-tip mode and
+       pop one tooltip window (class ``Xaml_WindowedPopupClass``) per toolbar
+       button - four of them in that test. They stay on screen until the
+       foreground changes, and they appear inside the window's accessibility
+       tree, so an agent observing afterwards sees ``主机弹出窗口`` /
+       ``弹出窗口`` nodes that were not there before.
+
+       What this costs is the foreground window's *own mode*: an application
+       that consumes Alt itself - a menu accelerator, a key-tip overlay, a
+       XAML tooltip host - will react, and the reaction outlives the raise.
+       That is why this rung exists only as a last resort, and why
+       :func:`raise_stats` counts it: a run where ``alt`` is non-zero is a run
+       that disturbed the user.
+
+    Rungs 2 and 4 defeat the same lock, and 2 does it without touching the
     user's input at all, so 4 exists only as a last resort - which
     :func:`raise_stats` is there to confirm rather than assume.
 
