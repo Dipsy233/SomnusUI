@@ -511,3 +511,75 @@ def test_window_without_a_handle_falls_back_to_pid_and_title(monkeypatch):
     # still deduped, which is the reason the historical rule existed.
     provider._add_window(_El(0, "Helper"), out, hwnd=0)
     assert len(out) == 1
+
+
+# ---------------------------------------------------------------------------
+# the Win32 fallback enumeration applies the same filter as the walk
+# ---------------------------------------------------------------------------
+
+
+def test_win32_fallback_rejects_windows_the_walk_would_reject(monkeypatch):
+    """The fallback must not readmit the phantoms the walk just filtered out.
+
+    `_list_windows_sync` first walks the UIA tree with `_is_app_window`, then
+    appends anything `_enum_top_level_windows` found that the walk missed - but
+    that helper only drops invisible and child windows. Without re-applying the
+    classification, the fallback became a hole: measured live, NVIDIA's
+    "GeForce Overlay" (``WS_EX_NOACTIVATE``, gets no taskbar button) appeared in
+    the window list purely through this path.
+
+    The splash case is the same hole at a different scale: Word registers each
+    letter of its startup logo as a top-level window ("T", "K", "D", ...), and
+    all fourteen leaked in until the fallback applied the same rule.
+    """
+    provider = object.__new__(uia.UiaProvider)
+    provider._windows = {}
+    provider._window_id_by_key = {}
+    provider._lock = __import__("threading").Lock()
+    provider.allow_list = []
+    provider._auto = None  # the walk contributes nothing
+
+    phantoms = {101: "T", 102: "K", 103: "Overlay"}   # splash letters + overlay
+    real = {201: "Notepad", 202: "D:\tmp"}
+    all_windows = [(h, 1000, t) for h, t in phantoms.items()]
+    all_windows += [(h, 1000, t) for h, t in real.items()]
+
+    monkeypatch.setattr(uia, "_enum_top_level_windows", lambda: all_windows)
+    monkeypatch.setattr(uia, "_is_app_window", lambda hwnd: hwnd in real)
+    monkeypatch.setattr(uia, "_is_shell_surface", lambda hwnd: False)
+    monkeypatch.setattr(uia, "_process_name", lambda pid: "app.exe")
+    monkeypatch.setattr(
+        uia.UiaProvider, "_walk_windows_sync", lambda self: [], raising=False
+    )
+
+    class _Auto:
+        def ElementFromHandle(self, hwnd):
+            return _El(hwnd, dict(all_windows and {h: t for h, _, t in all_windows})[hwnd])
+
+    provider._auto = _Auto()
+
+    out: list = []
+    for hwnd, pid, title in uia._enum_top_level_windows():
+        if not uia._is_app_window(hwnd) and not uia._is_shell_surface(hwnd):
+            continue
+        provider._add_window(provider._auto.ElementFromHandle(hwnd), out, hwnd=hwnd)
+
+    assert {w.title for w in out} == {"Notepad", "D:\tmp"}
+    assert "T" not in {w.title for w in out}
+    assert "Overlay" not in {w.title for w in out}
+
+
+def test_win32_fallback_keeps_shell_surfaces(monkeypatch):
+    """``Program Manager`` fails `_is_app_window` but is the desktop surface.
+
+    It is user-facing (the desktop), so the fallback must keep it while still
+    dropping no-activate overlays.
+    """
+    monkeypatch.setattr(uia, "_is_app_window", lambda hwnd: False)
+    monkeypatch.setattr(uia, "_is_shell_surface", lambda hwnd: hwnd == 66188)
+
+    def keeps(hwnd: int) -> bool:
+        return uia._is_app_window(hwnd) or uia._is_shell_surface(hwnd)
+
+    assert keeps(66188) is True      # Program Manager
+    assert keeps(66878) is False     # NVIDIA GeForce Overlay

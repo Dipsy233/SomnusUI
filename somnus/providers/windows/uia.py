@@ -330,8 +330,23 @@ class UiaProvider:
 
         # The walker can stop early on a dead element; Win32 enumeration fills
         # in anything it missed (and is how UWP frames are reached reliably).
+        #
+        # The same taskbar-visibility rules must hold here as in the walk above.
+        # `_enum_top_level_windows` only filters invisible and child windows, so
+        # without this check the fallback readmitted exactly the phantoms the
+        # walk had just rejected - measured: NVIDIA's "GeForce Overlay" (a
+        # WS_EX_NOACTIVATE overlay that gets no taskbar button, so no user can
+        # select it) appeared in the window list purely through this path.
+        #
+        # A splash animation is the other case: Word registers each letter of
+        # its startup logo as a separate top-level window ("T", "K", "D", ...
+        # fourteen of them), and they stay in the list until something forces a
+        # foreground change. They are tool/no-activate windows, so the same rule
+        # drops them.
         for hwnd, pid, title in _enum_top_level_windows():
             if hwnd in seen_hwnds:
+                continue
+            if not _is_app_window(hwnd) and not _is_shell_surface(hwnd):
                 continue
             try:
                 el = self._auto.ElementFromHandle(hwnd)
