@@ -1,4 +1,4 @@
-"""Benchmark harness: the v0.1 acceptance metrics (dev doc section 19).
+"""Benchmark harness: the v0.1 acceptance metrics.
 
 Runs the acceptance scenario N times against the mock provider and reports:
 
@@ -27,7 +27,7 @@ from somnus.providers.mock import MockProvider, raw_tree_to_dict
 from somnus.runtime.session import Session
 
 #: Patterns for the *shapes* of native identity that must never appear in
-#: LLM-facing text (dev doc section 19).
+#: LLM-facing text.
 #:
 #: A bare run of digits is deliberately **not** here. A four-digit number is
 #: ambiguous - the form screen's own record id is `REQ-0001`, which is
@@ -335,7 +335,7 @@ def _raw_tokens() -> int:
 
     Measured on the *fully expanded* scenario tree: the compression metric has to
     compare the observation against an application that really is large, or it
-    measures nothing (dev doc section 19).
+    measures nothing.
     """
     from tests.fixtures import scenarios as S
 

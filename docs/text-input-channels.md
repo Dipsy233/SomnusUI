@@ -1,4 +1,4 @@
-# 文本写入通道：原理与实现
+# Text input channels: how text reaches a control
 
 本文档说明 SomnusUI **如何把文本写进一个控件**，为什么是这个顺序，
 以及每条通道的代价。它是实现文档，不是实验日志——每条结论都注明了

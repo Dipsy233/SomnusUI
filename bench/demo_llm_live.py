@@ -1,7 +1,9 @@
-"""同一套 LLM 工具接口驱动 *真实* Windows GUI（WPF Restaurant Demo）。
+"""The same LLM tool interface driving a *real* Windows GUI (the WPF demo app).
 
-与 demo_llm.py 完全相同，只是后端换成真实 UIA Provider。
-用法：先启动 RestaurantDemo.exe，再运行本脚本。
+Identical to ``demo_llm.py`` except that the backend is the real UIA provider.
+Usage: start ``RestaurantDemo.exe`` first, then run::
+
+    python bench/demo_llm_live.py
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ def main() -> int:
     try:
         from somnus.providers.windows.uia import UiaProvider
     except Exception as exc:  # pragma: no cover
-        print(f"需要 Windows UIA: {exc}")
+        print(f"the Windows UIA provider is unavailable: {exc}")
         return 1
     from somnus.runtime.session import Session
 

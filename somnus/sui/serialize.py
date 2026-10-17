@@ -40,7 +40,7 @@ INDENT = "  "
 #: disabled field is exactly the case an agent must be able to see - hiding
 #: `set_text` behind the role made a writable field and a read-only one render
 #: identically (`INPUT q2 "Path" readonly`), so neither could be told apart and
-#: a text box was unidentifiable as one (dev doc section 7.1). `set_text` is
+#: a text box was unidentifiable as one. `set_text` is
 #: therefore printed on every input that has it.
 DEFAULT_CAP = {
     "button": "activate",
@@ -96,7 +96,7 @@ class RenderOptions:
     show_layers: bool = True
     max_string: int = 80
     compact: bool = False  # single space separators (default already compact)
-    #: Emit semantic relations (dev doc section 4.6). Off for L0/L1 to save
+    #: Emit semantic relations. Off for L0/L1 to save
     #: tokens, on for INSPECT (L2) where the caller wants the full picture.
     show_relations: bool = False
 
@@ -150,7 +150,7 @@ def render_node_line(
 
     # 2. Name (quoted) or UNKNOWN marker.
     #    A node whose *content* cannot be read without vision is emitted as
-    #    `? ref role reason=visual` (dev doc sections 6.1 and 11.2): unnamed
+    #    `? ref role reason=visual`: unnamed
     #    canvas / image nodes and explicit `unknown` roles. An `unknown` role
     #    that nevertheless carries a name stays a normal primitive line.
     if _is_unreadable(node):
@@ -162,7 +162,7 @@ def render_node_line(
 
     # 2b. Long text: emit `len=N preview="…"` instead of the full value so a
     #     5000-char document does not blow the budget; read it in slices with
-    #     `INSPECT t1 range=0:2000` (dev doc section 5).
+    #     `INSPECT t1 range=0:2000`.
     if _is_long_text_node(node):
         value = str(node.value)
         parts.append(f"len={len(value)}")
@@ -173,7 +173,7 @@ def render_node_line(
     for key, value in _ordered_attrs(node):
         if key == "count_min":
             # A virtualised collection only realises part of its rows, so the
-            # count is a lower bound (dev doc section 13): `count>=N`.
+            # count is a lower bound: `count>=N`.
             parts.append(f"count>={value}")
             continue
         parts.append(f"{key}={_render_value(value, key, options)}")
@@ -229,7 +229,7 @@ def render_delta(
 # ---------------------------------------------------------------------------
 
 
-#: Values longer than this are rendered as `len=` + `preview=` (section 5).
+#: Values longer than this are rendered as `len=` + `preview=`.
 LONG_TEXT_THRESHOLD = 160
 
 
@@ -244,7 +244,7 @@ def _is_long_text_node(node: SemanticNode) -> bool:
 def _is_unreadable(node: SemanticNode) -> bool:
     """True when the node's content is only knowable through vision.
 
-    Per dev doc section 11.2, UNKNOWN is reserved for content that is itself
+    UNKNOWN is reserved for content that is itself
     unreadable (canvas, unnamed image, custom-drawn control) - never for a node
     we merely failed to upgrade to an entity.
     """

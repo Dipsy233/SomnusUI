@@ -1,6 +1,6 @@
 """Windows UIAutomation provider.
 
-Design notes (dev doc section 13):
+Design notes:
 
 * All UIA work runs on a dedicated MTA thread. COM interfaces are *never*
   touched from the caller's thread - cross-apartment marshalling of UIA objects
@@ -146,7 +146,7 @@ class UiaProvider:
         self.allow_list = [p.lower() for p in (allow_list or [])]
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uia")
         # Initialise COM in MTA on the worker thread *before* any comtypes call
-        # can auto-initialise it in STA (dev doc section 13).
+        # can auto-initialise it in STA.
         self._executor.submit(self._init_com).result(timeout=10)
         self._windows: dict[str, Any] = {}
         #: (pid, title) -> "wN", so window ids persist across enumerations.
@@ -167,7 +167,7 @@ class UiaProvider:
     # -- COM lifecycle ------------------------------------------------------
 
     def _init_com(self) -> None:
-        # The worker thread needs COM in MTA (dev doc section 13).
+        # The worker thread needs COM in MTA.
         #
         # comtypes initialises COM only for the thread that *imports* it first,
         # so a second provider constructed later - which is what switching
@@ -295,7 +295,7 @@ class UiaProvider:
         (notification icons, service hosts) UIA also exposes at the root.
 
         Missing UWP windows would make whole applications invisible to the agent
-        (dev doc section 5: L0 always lists windows).
+        (L0 always lists windows).
         """
         out: list[WindowInfo] = []
         seen_hwnds: set[int] = set()
@@ -890,9 +890,9 @@ class UiaProvider:
                         )
                     )
                 # A virtualising container only realises its visible items, so
-                # the child count is a lower bound, not the true total (dev doc
-                # section 13). Mark it unknown rather than reporting a wrong
-                # number: -1 renders as `count>=N`.
+                # the child count is a lower bound, not the true total. Mark it
+                # unknown rather than reporting a wrong number: -1 renders as
+                # `count>=N`.
                 if "itemcontainer" in patterns and n > 0:
                     virtual_count = -1
             except Exception as exc:  # pragma: no cover - platform

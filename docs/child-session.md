@@ -136,6 +136,14 @@ point of detaching is that the desktop keeps running for a later run.
 
 ## What was tried first, and why it is not here
 
+### Giving the agent both desktops at once
+
+Not done, by design: the agent drives **one desktop at a time**. Every ref
+(`w1`, `b3`, `q1`) is a bare name that only means something relative to a
+desktop, so exposing two at once would make every call ambiguous, and asking
+the model to disambiguate each one would cost more than the feature is worth.
+`SWITCH` swaps the provider; it does not merge the two trees.
+
 ### `Windows.UI.UIAutomation.Core` - the documented way
 
 This is the supported API for bridging UIA across a session boundary, and the

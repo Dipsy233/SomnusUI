@@ -1,7 +1,7 @@
 """Golden tests: fixture -> SUI-Text output compared verbatim.
 
 Any token change requires an explicit golden update (``--update-golden``), which
-keeps the LLM-facing surface stable across refactors (dev doc section 14).
+keeps the LLM-facing surface stable across refactors.
 """
 
 from __future__ import annotations

@@ -1,8 +1,7 @@
-"""Tests for dev-doc clauses added after the first implementation pass.
+"""The contract clauses the SUI-Text surface promises, one section per clause.
 
-Covers: UNKNOWN rendering (section 11.2), long-text preview (section 5),
-the six relations (section 4.6), rev semantics (section 9.1),
-TARGET_AMBIGUOUS (section 10) and the plain-text protocol (section 6.4).
+Covers: UNKNOWN rendering, long-text preview, the six relations, rev
+semantics, TARGET_AMBIGUOUS and the plain-text protocol.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ def _n(wid, path, role, name=None, patterns=frozenset(), children=None, value=No
     )
 
 
-# --------------------------------------------------------------- UNKNOWN (§11.2)
+# -------------------------------------------------------------- UNKNOWN
 
 
 def test_unknown_canvas_rendered_with_reason():
@@ -46,14 +45,14 @@ def test_named_image_is_not_unknown():
 
 
 def test_unknown_role_with_name_is_a_normal_line():
-    # section 11.2: UNKNOWN is only for unreadable *content*, never for a node
+    # UNKNOWN is only for unreadable *content*, never for a node
     # that merely failed to upgrade to an entity.
     line = render_node_line(SemanticNode(ref="g1", role="unknown", name="Panel"))
     assert line.startswith("UNKNOWN g1") or line.startswith("GROUP g1")
     assert "reason=" not in line
 
 
-# --------------------------------------------------------------- long text (§5)
+# -------------------------------------------------------------- long text
 
 
 def test_long_text_uses_len_and_preview():
@@ -70,7 +69,7 @@ def test_short_text_is_unchanged():
     assert render_node_line(node).strip() == "TEXT t1"
 
 
-# --------------------------------------------------------------- relations (§4.6)
+# -------------------------------------------------------------- relations
 
 
 def test_all_relation_kinds_are_produced():
@@ -130,7 +129,7 @@ def test_relations_only_rendered_on_inspect():
     assert "acts_on=" in detail
 
 
-# --------------------------------------------------------------- rev (§9.1)
+# -------------------------------------------------------------- rev
 
 
 def test_rev_only_moves_on_semantic_change():
@@ -145,7 +144,7 @@ def test_rev_only_moves_on_semantic_change():
     assert f"rev={r1 + 1}" in out
 
 
-# --------------------------------------------------------------- ambiguous (§10)
+# -------------------------------------------------------------- ambiguous
 
 
 def test_ambiguous_fingerprint_reports_error():
@@ -169,7 +168,7 @@ def test_ambiguous_fingerprint_reports_error():
     assert len(refs) == len(set(refs))
 
 
-# --------------------------------------------------------------- plain text (§6.4)
+# -------------------------------------------------------------- plain text
 
 
 def test_find_tool_accepts_find_syntax():

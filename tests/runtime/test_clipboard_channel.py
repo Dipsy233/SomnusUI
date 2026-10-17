@@ -1,6 +1,6 @@
 """剪贴板通道：给"没有可写接口"的自绘输入框写入文本，且不污染用户的剪贴板。
 
-前提（见 docs/interface-capability-report.md 3.3、四节）：自绘输入框（QQ 的
+前提（见 docs/text-input-channels.md 3.3、四节）：自绘输入框（QQ 的
 ProseMirror、豆包的 tiptap、Chromium/Electron 的富文本）既没有 Value 模式，
 也没有元素级 HWND，ValuePattern 和 EM_REPLACESEL 都够不着它们。够得着的
 是 Ctrl+V——应用自己的 WM_PASTE 把剪贴板里的文本一次性读走，所以投递量与
@@ -452,7 +452,7 @@ def test_paste_reports_restore_as_unconfirmed_when_there_is_no_read_signal():
 
     延迟渲染（promise）本该提供"目标已读取"的信号，但实测在本环境不可用：
     OLE 会在发布后 ~3-5ms 抢先实体化承诺，且无人索取，于是目标真正粘贴时
-    不再产生第二次 WM_RENDERFORMAT（见 docs/interface-capability-report.md 3.3）。
+    不再产生第二次 WM_RENDERFORMAT（见 docs/text-input-channels.md 3.3）。
     诚实标注是唯一正确选项。
     """
     from somnus.providers.windows.clipboard import PasteOutcome

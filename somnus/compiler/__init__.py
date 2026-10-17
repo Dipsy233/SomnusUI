@@ -1,6 +1,6 @@
 """Semantic compiler (deterministic; never calls an LLM).
 
-Pipeline (dev doc section 11.1)::
+Pipeline::
 
     RawTree -> Normalize -> Primitive caps -> Relations -> Structural simplify
             -> Pattern match -> Entity -> Fingerprint -> Projection

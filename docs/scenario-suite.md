@@ -1,6 +1,6 @@
-# 真实场景测试方案（Scenario Test Plan)
+# 验收界面与测试方案（Scenario Suite）
 
-目标：用贴近真实用户/Agent 使用的端到端场景，验证 SomnusUI
+目标：用贴近真实用户与 Agent 使用的端到端场景，验证 SomnusUI
 「GUI → 语义 API」全链路的正确性、鲁棒性与指标承诺。
 分层：**S1 纯 mock 回放（任意平台、CI 必跑）→ S2 真实窗口 UIA（Windows 标记）→ S3 LLM-in-the-loop（夜间/手动）**。
 

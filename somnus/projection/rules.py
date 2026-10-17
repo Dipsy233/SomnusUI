@@ -1,4 +1,4 @@
-"""Projection rules: keep / flatten / prune / collapse (dev doc section 7.1).
+"""Projection rules: keep / flatten / prune / collapse.
 
 A :class:`Projection` is a *view* of the semantic tree produced by the engine.
 It annotates nodes with a :class:`Disposition`; the serializer then renders
@@ -145,7 +145,7 @@ def apply_projection(
 def _generic_rule(node: SemanticNode, depth: int, default_prune: bool) -> Rule:
     # An anonymous structural container is transparent: promote its children.
     # `focus`/`read` are present on every node, so they must not count as
-    # "capable" here or nothing would ever flatten (dev doc section 7.1).
+    # "capable" here or nothing would ever flatten.
     meaningful_caps = node.cap_names() - {"focus", "read"}
     if (
         node.role in ("group", "pane", "region")

@@ -2,7 +2,7 @@
 
 This pack never produces domain entities with confidence 1.0 - it only encodes
 widely-applicable *projection* rules and one soft entity family (``dialog``),
-which is exactly the behaviour dev doc section 11.3 calls "Generic Mode".
+which is exactly the behaviour of "Generic Mode".
 """
 
 from __future__ import annotations

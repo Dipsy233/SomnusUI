@@ -1,4 +1,4 @@
-"""Session Registry: stable refs across revisions (dev doc section 8).
+"""Session Registry: stable refs across revisions.
 
 The v0.1 mistake was binding refs to native (RuntimeId) objects, so every repaint
 invalidated everything. Here refs are bound to *fingerprints*:

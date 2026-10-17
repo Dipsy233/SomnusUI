@@ -1,6 +1,6 @@
 """Settle: wait for the UI to become stable after an action.
 
-Rule (dev doc section 9.2): consider the UI settled when no event has arrived
+Rule: consider the UI settled when no event has arrived
 for ``quiet_ms`` and no observed node carries the ``loading`` state - or when
 ``timeout_s`` elapses, in which case we return ``settled=False`` but still report
 whatever delta we observed.

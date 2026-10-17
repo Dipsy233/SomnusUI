@@ -1,4 +1,4 @@
-"""YAML App Pack loader (dev doc section 15, v0.2).
+"""YAML App Pack loader.
 
 A pack is a single YAML file that replaces the v0.1 Python module. The loader
 produces the exact same :class:`~somnus.compiler.pack_schema.Pack` objects the
@@ -175,7 +175,7 @@ def load_pack_file(path: str | Path) -> Pack:
     problems = validate_pack(pack)
     if problems:
         # Fail loud: a pack that claims capabilities the app cannot perform is
-        # worse than one that claims too few (dev doc section 11.2).
+        # worse than one that claims too few.
         raise PackLoadError(f"{path}: " + "; ".join(problems))
     register(pack)
     return pack

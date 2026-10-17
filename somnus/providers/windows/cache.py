@@ -1,7 +1,7 @@
 """IUIAutomationCacheRequest construction for batched property/pattern fetches.
 
 Fetching one property at a time over COM is the dominant cost in UIA
-automation (dev doc section 13). A single cache request + ``BuildUpdatedCache``
+automation. A single cache request + ``BuildUpdatedCache``
 turns "one round trip per node per property" into "one round trip per batch".
 
 This module owns the *set* of properties and patterns SomnusUI consumes, so the
@@ -30,7 +30,7 @@ CACHED_PROPERTIES: dict[int, str] = {
     # The element's own Win32 HWND (0 when it maps none). Needed because the
     # WM_SETTEXT / EM_REPLACESEL write channel is gated on *this* value, not on
     # whether the process owns an Edit child window. See
-    # docs/interface-capability-report.md 3.2 and NativeRef.native_window_handle.
+    # docs/text-input-channels.md 3.2 and NativeRef.native_window_handle.
     30020: "native_window_handle",
 }
 

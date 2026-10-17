@@ -1,4 +1,4 @@
-"""Policy: allow-list, risk gating, confirmation, UIPI awareness (section 12).
+"""Policy: allow-list, risk gating, confirmation, UIPI awareness.
 
 Policy is *authorization*, deliberately separate from pack projection (which is
 observation policy only). Three responsibilities:
@@ -27,8 +27,7 @@ class Policy:
     #: Process names (lower-case) the runtime may attach to. Empty = all.
     allow_processes: tuple[str, ...] = ()
     #: False by default: critical actions return CONFIRMATION_REQUIRED until the
-    #: host (CLI flag / MCP confirmation) explicitly confirms (dev doc section
-    #: 12.3 - zero unconfirmed critical actions).
+    #: host (CLI flag / MCP confirmation) explicitly confirms them.
     confirmed: bool = False
     #: Capabilities that need confirmation even if the pack did not mark them.
     extra_critical: frozenset[str] = field(default_factory=frozenset)
@@ -49,7 +48,7 @@ class Policy:
     #: restore a non-text clipboard. The writes are marked opt-out so they do
     #: not enter clipboard history or cloud sync, and the channel refuses
     #: outright when the clipboard holds something that could not be put back
-    #: (docs/interface-capability-report.md 3.3, 6). Turn it off with
+    #: (docs/text-input-channels.md 3.3, 6). Turn it off with
     #: ``--no-allow-clipboard`` or ``allow_clipboard = false``.
     allow_clipboard: bool = True
 

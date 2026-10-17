@@ -145,7 +145,7 @@
 - H2：深层导航任务（G2）差距最大——vision 需要多次截图滚动探索；
 - H3：SomnusUI 在 G4 的 CEF/自绘应用上有短板（树萎缩），vision 可能反超——如实报告；
 - H4：耗时主要由模型推理决定；SomnusUI 文本延迟更低，但若 vision 用更快的小模型则另计（保持同模型）；
-- H5：G5 窗口切换组，两者都必须把窗口带到前台（SomnusUI 也会，见 README“The window is raised before it is used”）；差异在于 SomnusUI 只需一次 UIA 切换，不需要指针移动和等待渲染。
+- H5：G5 窗口切换组，两者都必须把窗口带到前台（SomnusUI 也会，见 [interactive-usage.md](interactive-usage.md) 的“使用前先把窗口提到前台”）；差异在于 SomnusUI 只需一次 UIA 切换，不需要指针移动和等待渲染。
 
 ### 公平性红线
 

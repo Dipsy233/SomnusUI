@@ -11,7 +11,7 @@ import re
 
 from somnus.ir.node import RawNode
 
-#: Portable primitive roles (dev doc section 4.3).
+#: Portable primitive roles.
 ROLES: frozenset[str] = frozenset(
     {
         "button",

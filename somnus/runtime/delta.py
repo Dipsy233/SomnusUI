@@ -1,4 +1,4 @@
-"""Delta computation between two compiled revisions (dev doc section 9.4).
+"""Delta computation between two compiled revisions.
 
 Three line kinds: ``~`` changed, ``+`` added, ``-`` removed. Identity is the
 fingerprint, so a node that merely got re-referenced does not show as add/remove.

@@ -2,14 +2,14 @@
 
 This is the stage that turns "a group containing a text, a text and a button"
 into "``product`` with ``+add``". It is the heart of SomnusUI's value
-proposition (dev doc section 11.1, "the key step").
+proposition.
 
 Two sources of entity knowledge, in priority order:
 
 1. **Packs** - declarative :class:`EntityDef` rules, confidence 1.0.
 2. **Generic heuristics** - weak structural signals, confidence < 1.0. These
    never upgrade a node to an entity unless the score exceeds ``threshold``;
-   otherwise the node stays a primitive (dev doc section 11.2).
+   otherwise the node stays a primitive.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def _eval_key(expr: str | None, members: dict[str, RawNode]) -> str | None:
 
     * ``$member.attr`` - an attribute of a captured ``as`` member (or ``$self``).
     * ``descendant(role=text)`` / ``descendant(role=text, name=/re/)`` - the
-      first descendant matching an inline predicate (dev doc section 15).
+      first descendant matching an inline predicate.
     """
     if not expr:
         return None
@@ -237,7 +237,7 @@ def entity_capabilities(em: EntityMatch) -> list[Capability]:
     Steps whose pattern condition is not met by the matched node are dropped
     here, at compile time - the resolver never sees a step it cannot run. This
     is what makes the keyboard fallback deterministic: a ``type_text`` step is
-    only present when the target really lacks a Value pattern (dev doc §12.2).
+    only present when the target really lacks a Value pattern.
     """
     caps: list[Capability] = []
     for name, cdef in em.def_.caps.items():
@@ -421,9 +421,9 @@ def heuristic_entities(root: RawNode) -> dict[int, EntityMatch]:
       becomes a ``listitem`` entity.
 
     Confidence is a sum of signals compared against :data:`HEURISTIC_THRESHOLD`.
-    A node below it stays a primitive - never guessed into an entity (dev doc
-    section 11.2). Both detectors inspect only structure, names and patterns, so
-    no app-specific knowledge is involved.
+    A node below it stays a primitive - never guessed into an entity. Both
+    detectors inspect only structure, names and patterns, so no app-specific
+    knowledge is involved.
     """
     out: dict[int, EntityMatch] = {}
     for node in root.walk():

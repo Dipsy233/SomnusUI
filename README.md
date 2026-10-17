@@ -2,50 +2,48 @@
 
 **Do language models dream of pixels?**
 
-[English](README.md) | 中文
+English | [中文](README.zh-CN.md)
 
-**Compile a native GUI into a pure-text, no-vision, low-token Semantic API** so
-an LLM can operate software by *capability calls* instead of *pixel clicks*.
+SomnusUI compiles a native GUI into a plain-text semantic API so that a language
+model can operate desktop software by **capability calls** instead of pixel
+clicks. The model receives a compact description of what each control *is* and
+what can be done with it; it never receives screenshots, coordinates, or native
+identifiers.
 
 ```
-User Intent
+User intent
    ↓
-LLM (planner, 5 tools only)
+LLM planner (five tools)
    ↓
-Somnus Runtime ─ observe / find / inspect / call / switch
-   ├─ Session Registry   (ref ↔ fingerprint ↔ native element)
-   ├─ Resolver           (semantic capability → native primitives)
-   ├─ Verifier           (settle + effects + delta)
-   └─ Policy             (risk, confirmation, allow-list)
+Somnus runtime ─ observe / find / inspect / call / switch
+   ├─ Session registry   ref ↔ fingerprint ↔ native element
+   ├─ Resolver           semantic capability → native primitives
+   ├─ Verifier           settle + effects + delta
+   └─ Policy             risk, confirmation, allow-list
    ↓
-Semantic Graph
+Semantic graph
    ↑
-Semantic Compiler (deterministic: normalize → infer → match → project → compress)
+Semantic compiler (deterministic: normalize → infer → match → project → compress)
    ↑
-AccessibilityProvider (Windows UIA; AX / AT-SPI later)
-   └─ peer provider: a Session on the far side of the session boundary
+AccessibilityProvider (Windows UI Automation; AX / AT-SPI planned)
+   └─ peer provider: a session on the far side of the session boundary
 ```
-
-The LLM never sees pixels, coordinates, screenshots, handles, `AutomationId`s or
-COM pointers. It sees entities, states, relations, capabilities and values.
 
 ## Principles
 
-- **No Vision** – the accessibility tree is the only perception channel.
-- **No Synthetic Input** – an application is driven through the interfaces it
-  publishes, never by pretending to be a person at the keyboard. This is not a
-  preference but the reason the project exists: a keystroke or a click needs
-  the window focused, races the target's message pump, and cannot be verified.
-  An element that publishes no usable interface is **reported as such**, not
-  typed into; `--allow-clipboard` and `--allow-keyboard` opt in when nothing
-  else can work (both seize the screen's foreground), and the answer says so
-  either way.
-- **Low Token** – observation is projected and budgeted: homogeneous lists
-  preview three items, anonymous leaves fold into one summary line; L0
-  typically costs tens to a few hundred tokens.
-- **Semantic First** – the LLM calls `CALL p1.add()`, never `click(312, 528)`.
-- **Deterministic Compiler** – no LLM runs inside the runtime or compiler.
-- **Fail Loud** – anything not expressible via the accessibility API is
+- **No vision.** The accessibility tree is the only perception channel.
+- **No synthetic input by default.** Applications are driven through the
+  interfaces they publish. An element that publishes no usable interface is
+  reported as such rather than typed into. The clipboard and keyboard channels
+  (`--allow-clipboard`, `--allow-keyboard`) are available when nothing else can
+  work and seize the foreground, and the response states which channel answered.
+- **Low token cost.** Observation is projected and budgeted: homogeneous lists
+  preview a few items, anonymous leaves fold into one summary line. An L0
+  overview typically costs tens to a few hundred tokens.
+- **Semantics first.** The model calls `CALL p1.add()`, never `click(312, 528)`.
+- **Deterministic compiler.** No language model runs inside the runtime or the
+  compiler.
+- **Fail loud.** Anything the accessibility API cannot express is reported as
   `UNKNOWN`, never guessed.
 
 ## Quick start
@@ -58,26 +56,26 @@ somnus --demo observe
 somnus --demo call 'CALL p1.add()'
 somnus --demo bench --runs 100
 
-# Against a real Windows app (requires the [windows] extra):
+# Against a real Windows application (requires the [windows] extra):
 pip install -e ".[windows]"
 somnus windows                     # list windows
 somnus observe                     # what the target window offers
 somnus observe w1                  # one window
 somnus call 'CALL b1.activate()'
-somnus --no-pack repl              # multi-step session, no App Pack
+somnus --no-pack repl              # multi-step session with no App Pack
 somnus record w1 -o fixture.json
-somnus mcp                         # MCP server (stdio), 5 tools
+somnus mcp                         # MCP server (stdio), five tools
 
-# A second desktop the agent can work in without disturbing you (Windows Pro+):
+# A second desktop the agent can work in without disturbing the user (Windows Pro+):
 somnus child-session status        # is the feature available here?
 somnus child-session setup         # once, elevated
 somnus child-session start         # open it
 somnus child-session close         # end it and clean up
 ```
 
-### As an MCP server for any client
+### As an MCP server
 
-Claude Desktop, Cursor, pi and any other MCP client can connect:
+Any MCP client can connect — Claude Desktop, Cursor, pi and others:
 
 ```json
 {
@@ -87,30 +85,30 @@ Claude Desktop, Cursor, pi and any other MCP client can connect:
 }
 ```
 
-The server exposes the `observe` / `find` / `inspect` / `call` tools; the
-provider is picked automatically (real windows via UIA when the `[windows]`
-extra is installed, mock fixtures otherwise).
+The server exposes `observe` / `find` / `inspect` / `call` / `switch`. The
+provider is selected automatically: real windows through UI Automation when
+the `[windows]` extra is installed, recorded fixtures otherwise.
 
-## What the LLM sees
+## What the model sees
 
-One real window, four tool calls. Nothing else is ever shown to the model.
+One real window, four tool calls. Nothing else is shown to the model.
 
-**① `observe`** - the current screen as capabilities:
+**① `observe`** — the current screen as capabilities:
 
 ```
 @rev 1
 WINDOW w1 "agent 属性" +scroll_into_view
   SCREEN s1 "网络文件和文件夹共享"
   TEXT tx3 "网络路径(N):"
-  INPUT q1 "网络路径(N):" +set_text(text)    ← a text box: it can be written
-  INPUT q2 "只读路径" readonly               ← an input with no +set_text: not writable
+  INPUT q1 "网络路径(N):" +set_text(text)    ← a writable text box
+  INPUT q2 "只读路径" readonly               ← an input with no +set_text: read-only
   BUTTON b1 "共享(S)..."                      ← clickable (activate is implicit)
   BUTTON b2 "高级共享(D)..."
   BUTTON b5 "应用(A)" disabled                ← currently unavailable
   TAB t3 "共享"
 ```
 
-**② `find`** - locate by keyword, returning whole entity lines:
+**② `find`** — locate by keyword; each hit is a complete entity line:
 
 ```
 FIND "共享"
@@ -120,15 +118,15 @@ BUTTON b2 "高级共享(D)..."
 LINK lnk1 "网络和共享中心"
 ```
 
-**③ `inspect`** - everything about one node (implicit caps and relations
-included):
+**③ `inspect`** — everything about one node, including implicit capabilities
+and relations:
 
 ```
 INSPECT mi2
 → MENUITEM mi2 "编辑" +activate +collapse +expand +focus +read selected_in=mn1
 ```
 
-**④ `call`** - act, and get a delta instead of a fresh observation:
+**④ `call`** — act, and receive a delta instead of a fresh observation:
 
 ```
 CALL tx1.set_text("Hello SomnusUI")
@@ -138,7 +136,7 @@ CALL tx1.set_text("Hello SomnusUI")
   - t2                                          removed
 ```
 
-Failures are one line with a recovery hint, never a stack trace:
+Failures are a single line with a recovery hint, never a stack trace:
 
 ```
 ERR TARGET_DISABLED b5 hint=inspect
@@ -146,74 +144,46 @@ ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
 ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 ```
 
-The model never sees a handle, a coordinate, an `AutomationId`, a process id,
-a COM pointer, a raw `control_type`, or the stacks of unnamed `Pane` wrappers a
-UIA dump contains. Full walkthrough: [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md).
+The model never sees a handle, a coordinate, an `AutomationId`, a process id, a
+COM pointer, a raw `control_type`, or the stacks of unnamed `Pane` wrappers that
+a UIA dump contains. A full walkthrough is in
+[docs/what-the-llm-sees.md](docs/what-the-llm-sees.md).
 
 ## Generic mode
 
-A pack is an optimisation, not a requirement. With `--no-pack` (or a window
-that simply has no pack) the compiler derives everything from structure and
-native patterns, so an application the runtime has never seen is still usable:
+A pack is an optimisation, not a requirement. With `--no-pack` — or for a window
+that has no pack — the compiler derives everything from structure and native
+patterns, so an application it has never seen is still usable:
 
-- **Controls** are defined by the platform - an element that exposes an
-  interaction pattern (`invoke`, `selectionitem`, `toggle`, `value`, …). An
-  inert label or container is offered nothing.
-- **Capabilities are proven, never guessed from the role.** `activate` appears
-  only when the platform really offers a default action (an `Invoke` pattern, or
-  the `LegacyIAccessible` fallback). A button exposing only `ExpandCollapse`
-  shows `+expand +collapse` and no `activate`, so the gesture that works is the
-  one on the line; a control exposing nothing gets no action at all instead of
-  one that can only fail.
+- **Controls** are defined by the platform: an element that exposes an
+  interaction pattern (`invoke`, `selectionitem`, `toggle`, `value`, …). Inert
+  labels and layout containers are offered no actions.
+- **Capabilities are proven, never inferred from the role.** `activate` appears
+  only when the platform offers a default action (an `Invoke` pattern, or the
+  `LegacyIAccessible` fallback). A button that exposes only `ExpandCollapse`
+  shows `+expand +collapse` and no `activate`; a control that exposes nothing
+  gets no action at all rather than one that can only fail.
 - **`set_text`** is derived for every text-entry surface, and its route is
-  chosen by the control's own interface, never by its class name or its role.
-  Routes are ordered by how much they cost the user and the first that actually
-  works wins:
+  chosen by the control's own interface — never by its class name or role.
+  Routes are ordered by how much they cost the user; the first that works wins:
 
-  | # | Route | Requires | Steals focus |
+  | # | Route | Requires | Seizes the foreground |
   | --- | --- | --- | --- |
   | 1 | `ValuePattern.SetValue` | the control publishes a Value pattern | no |
-  | 2 | `WM_SETTEXT` / `EM_REPLACESEL` | **the element maps its own HWND** | no |
-  | 3 | clipboard + `Ctrl+V` | `--allow-clipboard` | **yes** |
-  | 4 | focus and type | `--allow-keyboard` | **yes** |
+  | 2 | `WM_SETTEXT` / `EM_REPLACESEL` | the element maps its own HWND | no |
+  | 3 | clipboard + `Ctrl+V` | `--allow-clipboard` | yes |
+  | 4 | focus and type | `--allow-keyboard` | yes |
 
-  **The rule is: edit through UIA first.** Routes 1 and 2 are interfaces the
-  application itself publishes, so the write happens on the application's own
-  thread: atomic, no focus taken, no synthetic input, invisible to the user.
-  Only when neither applies - typically a self-drawn editor (QQ's or Doubao's
-  rich-text box) - does the chain fall back to the last two, and **both of those
-  seize the screen's foreground**, because being foreground is their
-  precondition rather than a side effect.
+  Routes 1 and 2 write through interfaces the application itself publishes, so
+  the write happens on the application's own thread: atomic, no focus taken, no
+  synthetic input. Only when neither applies — typically a self-drawn editor —
+  does the chain use routes 3 and 4, both of which require the target in the
+  foreground. Route selection is decided at execution time, because static
+  inspection cannot settle it: UIA reports interfaces an element then refuses.
+  The route that answered is remembered for the rest of the session.
 
-  Route 2 is a focus-free write: measured against Notepad with its window in the
-  **background**, 3/3 exact writes including CJK and a 50-character string, with
-  the foreground window never changing. Synthetic input cannot do this under any
-  settings (same conditions: `SendInput` landed 0/20 complete, always as a
-  truncated prefix). Its criterion is the **element's own HWND** - not "does the
-  process own a native `Edit` child window", which wrongly rules out controls in
-  the same process that can in fact be written.
-
-  Route 3 (clipboard) needs the foreground too, but on a self-drawn control it is
-  **far better than typing**: the text travels in the clipboard instead of the
-  input queue, so delivery costs the same regardless of length (measured:
-  constant ~37 ms from 10 to 3000 characters), while per-character `SendInput`
-  parks 2N queue entries that the target stalls on.
-
-  It borrows the user's clipboard but **hands every format back losslessly**: the
-  snapshot stores each format's raw bytes (not just the text) and the restore
-  rebuilds them one by one - text, RTF, HTML, file lists, and **images** (a
-  bitmap is serialised through `GetDIBits` and rebuilt with `CreateDIBitmap`).
-  Measured: all 8 formats on a live clipboard, bitmap included, come back
-  byte-identical; after a real paste into QQ the user's image was still there.
-  The payload also carries four opt-out formats so it **never enters clipboard
-  history or cloud sync**. Only a few formats cannot be rebuilt (`CF_PALETTE`,
-  the OLE carrier formats), and those are **named in the result** rather than
-  dropped silently. See
-  [docs/interface-capability-report.md](docs/interface-capability-report.md) 3.3.
-
-  Which route works is decided **at execution time**, because no static
-  inspection can settle it - UIA reports interfaces an element then refuses
-  (measured: an editable advertises `value` and its setter is a no-op shell).
+  A call that cannot be served by an enabled route is reported rather than
+  silently redirected:
 
   ```
   CALL q1.set_text("x")
@@ -223,61 +193,36 @@ native patterns, so an application the runtime has never seen is still usable:
            --allow-keyboard, or persistently with `somnus config --allow-keyboard`"
   ```
 
-  Both synthetic routes are separately authorised and off by default. So Notepad
-  is written natively, while a field that publishes no interface (QQ's
-  self-drawn box, Steam, VS Code) is **reported rather than silently written**
-  unless the host explicitly enables the clipboard or keyboard route. Which route
-  answered is remembered for the rest of the session, so a repeated call on the
-  same element does not re-probe it. The model still sees only the one name
-  `set_text`; which channel runs underneath is the runtime's decision.
+  The model still sees only the name `set_text`; which channel runs underneath
+  is the runtime's decision. Measurements, clipboard-restore guarantees and the
+  routes already proven unusable are documented in
+  [docs/text-input-channels.md](docs/text-input-channels.md).
 
-  Each channel's principle, measurements and the routes already proven dead are
-  in [docs/interface-capability-report.md](docs/interface-capability-report.md)
-  (including why a self-drawn Chromium editor cannot be written by any UIA,
-  MSAA or `WM_SETTEXT` route).
+### Settings
 
-#### The settings file: an opt-in you can write down
-
-A switch that only exists as a command-line flag is not really an opt-in - **an
-MCP client launches this process itself, so there is nowhere for the user to pass
-one**. Both switches can therefore be written to a small config file:
+Because an MCP client launches the process itself, a command-line flag is not
+a practical opt-in. Both channels can be configured in a small TOML file:
 
 ```bash
 somnus config --path              # where the file is
 somnus config                     # show state (writes defaults on first run)
-somnus config --allow-clipboard   # turn on the clipboard channel, persistently
-somnus config --allow-keyboard    # turn on the keyboard channel
+somnus config --allow-clipboard   # turn the clipboard channel on, persistently
+somnus config --allow-keyboard    # turn the keyboard channel on
 ```
 
-The file is plain TOML: **commented, hand-editable, and small enough for an LLM
-to edit**:
+Precedence: **flag > environment variable (`SOMNUS_ALLOW_CLIPBOARD` /
+`SOMNUS_ALLOW_KEYBOARD`) > file > built-in default**. A malformed file degrades
+to the defaults and reports the problem in `somnus config`; it never becomes
+"allow everything".
 
-```toml
-# Both synthetic-input channels are OFF unless set to true below.
-# They seize the screen's foreground, ...
-allow_clipboard = false
-allow_keyboard  = false
-allow_processes = []
-```
-
-Precedence: **flag > environment (`SOMNUS_ALLOW_CLIPBOARD` /
-`SOMNUS_ALLOW_KEYBOARD`) > file > built-in default (both off)**. A one-off
-override therefore never has to edit state, and the file's decision applies to
-MCP, JSON-RPC and the CLI alike.
-
-A malformed file neither stops the runtime nor silently becomes "allow
-everything": it degrades to the defaults and reports the problem in
-`somnus config`.
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
   ignores the native patterns: the menu is opened through UIA itself
   (`ShowContextMenu`), so the pointer never moves and no keystroke is sent, and
-  the menu's own items are ordinary menu items whose `activate` works. An
-  application whose default action only highlights a row (a chat list) is
-  driven this way, without synthetic input. UIA cannot be asked whether an
-  element *has* a menu, so the call reports the truth afterwards: a menu that
-  appeared is `OK`, one that did not is `OK_UNVERIFIED` and the response names
-  the gesture that does work.
+  the menu's own items are ordinary menu items whose `activate` works. UIA
+  cannot be asked whether an element *has* a menu, so the call reports the truth
+  afterwards: a menu that appeared is `OK`, one that did not is `OK_UNVERIFIED`
+  and the response names the gesture that does work.
 - **Entities** are detected structurally: a titled row with a verb button, or
   three or more titled rows under one container (a list, a toolbar, a
   navigation pane).
@@ -288,13 +233,13 @@ somnus --no-pack observe w4
 ```
 
 Packs remain useful for encoding a domain vocabulary the generic path cannot
-guess (`PRODUCT p1 +add`, `+submit!`), but they are never needed just to reach
+infer (`PRODUCT p1 +add`, `+submit!`), but they are never needed merely to reach
 and operate a control.
 
 ## Providers
 
-The runtime talks to one `AccessibilityProvider`. Three exist, and the compiler,
-projection and runtime are identical for all of them.
+The runtime talks to a single `AccessibilityProvider`. The compiler, projection
+and runtime are identical for all of them.
 
 | Provider | Source | Status |
 | --- | --- | --- |
@@ -306,74 +251,37 @@ projection and runtime are identical for all of them.
 somnus --provider uia windows          # native windows
 ```
 
-The `peer` provider is the point of the child-session work below: window
-enumeration, the accessibility tree and synthetic input are all confined to the
-caller's Windows session, so a second desktop is reached only by running a
-provider where those windows actually are.
+The `peer` provider backs the child session described below: window enumeration,
+the accessibility tree and synthetic input are all confined to the caller's
+Windows session, so a second desktop is reached by running a provider where
+those windows actually are.
 
-## The window is raised before it is used
+## Windows are raised before use
 
-`OBSERVE` and `CALL` put the target window in the **foreground**. That is a
-deliberate choice, and it is the one that makes observations complete:
-
-- A window that is **covered**, minimized or on another virtual desktop is not
-  reliably *rendered*. Ordinary Win32/WPF/UWP apps usually still publish a full
-  tree, but self-drawn surfaces (Chromium, Electron, Qt Quick - QQ, Doubao,
-  Steam) render nothing until they are actually visible: their tree collapses to
-  a bare shell and the agent silently sees an application with no controls.
-- **Minimized** is the extreme case: CEF apps lay out nothing at all.
-
-So every path that reads or acts on a window raises it first - the provider's
-`snapshot` and every non-trivial `execute` (both funnel through
-`UiaProvider._enter_foreground_sync`), plus `CALL wN.focus()`. The raise is
-skipped while the window is already in front, so a run of calls on one window
-(snapshot, primitive, settle snapshot) costs one activation, not four.
-
-`SetForegroundWindow` alone is not enough for a tool that was not clicked:
-Windows' foreground lock answers 0 and leaves the current window in front
-(verified live). `workspace.raise_window` tries, in order: a plain
-`SetForegroundWindow`; `AttachThreadInput` to the foreground thread; and an
-inert **Alt tap** followed by a retry - the lock is released by any input event,
-and an Alt press/release pair types nothing and presses nothing.
-
-What is still not raised:
-
-- **`OBSERVE windows`** (the window list). Answering "what is on my desktop"
-  needs no window rendered, so it never seizes the foreground. It is the
-  entry point of every workflow, and it stays free.
-- the **post-action settle** re-raises the target only because the action (or
-  the user) may have moved the foreground away.
-
-State is still restored: the prior state of every window touched (minimized?
-which desktop?) is recorded once per window, and provider `close()` re-minimizes
-what was minimized.
+`OBSERVE` and `CALL` put the target window in the foreground. Covered,
+minimized or off-desktop windows are not reliably rendered — self-drawn surfaces
+(Chromium, Electron, Qt Quick) publish an empty shell until they are actually
+visible. Every path that reads or acts on a window therefore raises it first,
+skipping the raise when the window is already in front. `OBSERVE windows` (the
+window list) is the exception and never seizes the foreground. The prior state
+of every touched window is recorded and restored when the provider closes.
 
 ### When that is not enough: a child session
 
-Raising a window takes the user's focus, and `--allow-clipboard` /
-`--allow-keyboard` additionally send synthetic input. Those channels exist
-because an application that publishes no writable interface (a self-drawn
-editor, a terminal surface, an omnibox that only commits on Enter) is otherwise
-unreachable, and they were measured as the single largest class of unfinished
-tasks. But `SendInput` and `Ctrl+V` go to the **foreground window**, and a
-desktop has exactly one - so when the agent uses them it is competing with the
-person at the keyboard.
-
-What removes the interference is a **child session**: a second interactive logon
-for the same account, with its own input desktop, its own foreground window and
-its own input queue. An agent parked there can raise windows, type and paste
-freely; the user, in the console session, is unaffected - not because the agent
-is polite, but because the two sessions do not share the thing they used to
-fight over.
+Raising a window takes the user's focus, and the clipboard and keyboard channels
+additionally send synthetic input to whatever is in the foreground. A **child
+session** — a second interactive logon for the same account, with its own input
+desktop, foreground window and input queue — removes the interference entirely:
+work there cannot disturb the console session.
 
 ```bash
-somnus child-session setup     # once, elevated: feature, listener, delegation
+somnus child-session setup     # once, elevated
 somnus child-session start     # open the loopback
-somnus child-session close     # end it and clear anything left behind
+somnus child-session close     # end it and clean up
 ```
 
-For the agent it is one tool. The agent stays on one desktop at a time; `SWITCH`
-moves it.
+For the agent this is one tool; it stays on one desktop at a time and `SWITCH`
+moves it:
 
 | Command | Effect |
 | --- | --- |
@@ -383,50 +291,12 @@ moves it.
 | `SESSION close` | end it, and return |
 | `SESSION detach` | leave it running after this process exits |
 
-Everything intelligent stays on the main side: the compiler, projection,
-registry, resolver, policy and the ref namespace. The far session runs a thin
-peer that owns a `Session` and answers tool calls over a named pipe - perception
-and actuation, no model, no policy of its own. That is what keeps it one agent
-rather than two, and it is why switching is cheap: it swaps the provider
-(`peerprovider.py`), not the runtime.
-
-Under the hood, and worth knowing before relying on it:
-
-- **A session exists only as long as its RDP connection does.** Closing the
-  loopback ends it, and the programs in it.
-- **Sign-in.** Credential delegation is set up first, so the loopback usually
-  signs in with the credentials the user already used and no password is stored.
-  When policy refuses that (measured: a local account marked
-  "password not required" is refused), the fallback is a password stored with
-  `somnus child-session credential --save` - DPAPI-encrypted for this machine
-  and account, never in `config.toml`.
-- **Requirements.** Windows Pro / Enterprise / Education (Home has no child
-  sessions), one elevated setup, and one child session at a time system-wide.
-- **No security isolation.** The two sessions are the same account, so the
-  agent can reach every file the user can. This separates *input*, not
-  *privilege*.
-- **Cleanup.** A session the process opened is cleaned up when the process
-  exits, unless `SESSION detach` said otherwise; a session left by a crash is
-  detected and cleared by the next `close` or `status`.
-
-#### Why not the supported cross-session UIA API
-
-The documented mechanism for this is `Windows.UI.UIAutomation.Core`
-(`RemoteAutomationClientSession` / `RemoteAutomationServer`). It was implemented
-against a live loopback and does not work here: the client session constructs
-and `Start()`s from the RDP host, but `ConnectionRequested` never fires, and the
-provider half answers "class not registered" from both sessions while the
-connection is up. It is aimed at Microsoft's own remote-desktop stack, which
-sets up a private UIA provider context this program cannot reproduce. Measured,
-not assumed - the details are in `somnus/session/bridge.py`.
-
-#### Why not a virtual desktop
-
-A virtual desktop shares the session's input desktop, foreground window and
-input queue with every other virtual desktop. So it cannot separate the agent's
-input from the user's: a synthetic keystroke either goes to the wrong virtual
-desktop or, by moving the target, brings the agent's window onto the user's -
-which is the disturbance it was supposed to avoid.
+The compiler, projection, registry, resolver, policy and ref namespace all stay
+on the main side; the far session runs a thin peer that answers tool calls over
+a named pipe. Requirements: Windows Pro / Enterprise / Education, one elevated
+setup, one child session at a time. There is no security isolation — the two
+sessions are the same account. Design notes, measurements and the approaches
+that were tried and rejected are in [docs/child-session.md](docs/child-session.md).
 
 ## The five tools
 
@@ -440,7 +310,7 @@ which is the disturbance it was supposed to avoid.
 
 ## SUI-Text
 
-The single LLM-facing format. Capabilities live on the node line; default
+The single model-facing format. Capabilities live on the node line; default
 capabilities and default states are omitted (the system prompt carries the
 table).
 
@@ -486,17 +356,18 @@ somnus/
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 apps/scenario-suite/    WPF (.NET 8) acceptance app: five screens covering the
                         shapes a real GUI throws at an agent (see below)
-tools/rdp-host/         .NET (WinForms) OLE container for the RDP control: the
-                        one piece Python cannot host, since embedding the
-                        control needs AxHost. Built with `dotnet build`.
+tools/rdp-host/         .NET (WinForms) OLE container for the RDP control, the
+                        one piece Python cannot host. Built with `dotnet build`.
 docs/
-  packs.md              how to write an App Pack
-  interactive-usage.md  REPL vs one-shot CLI vs script
-  child-session.md      the second desktop: why, how, and what did not work
-  what-the-llm-sees.md  one window, five tools, with real output
-  scenario-test-plan.md the scenario matrix and its pass criteria
-examples/               agent loop, contract check, task evaluation (host examples)
-bench/                  benchmark gates + LLM control demos
+  what-the-llm-sees.md      one window, five tools, with real output
+  interactive-usage.md      REPL vs one-shot CLI vs script
+  packs.md                  how to write an App Pack
+  child-session.md          the second desktop: design, costs, rejected options
+  text-input-channels.md    how text reaches a control, and at what cost
+  scenario-suite.md         the acceptance screens and their pass criteria
+  benchmark-50-tasks.md     the proposed semantic-vs-vision benchmark
+examples/               agent loop, contract check, task evaluation (host code)
+bench/                  benchmark gates and LLM control demos
 tests/{
   fixtures/             raw-tree builders, incl. `scenarios.py` (the suite)
   scenarios/            S1: scenario suite on fixtures — runs anywhere
@@ -508,27 +379,24 @@ tests/{
 Dependency direction: `providers → compiler → projection → serialization →
 protocol`; `runtime` depends on all of them; nothing imports an LLM.
 
-### The acceptance app: one app, five real-world shapes
+### The acceptance app: one app, five screens
 
-A GUI agent is only as tested as the screen it was tested on. A three-row demo
-proves nothing about folding, routing or verification, so the acceptance app is
-a *suite* of screens, each aimed at one class of difficulty:
+A GUI agent is only as tested as the screen it was tested on, so the acceptance
+app is a suite of screens, each aimed at one class of difficulty:
 
-| Screen | What it is | What it forces the runtime to get right |
+| Screen | What it is | What it exercises |
 | --- | --- | --- |
-| `store` | search box + a **240-row** scrollable catalog + cart | large data: folding, `FIND` into a folded list, a search field written natively |
-| `form` | labelled fields (one writable, one read-only), checkbox, combo, disabled button, gated submit | a form's shape: writable vs read-only is visible on the line, validation is a real outcome, the submit **record** is the verification surface |
-| `chat` | a **self-drawn** rich-text composer, message history, send button, visible send log | the `set_text` fallback: a control that publishes nothing writable at all (no ValuePattern, no element HWND, reported as a `Group` with the toolkit's class name) - so the runtime must refuse honestly or use an opt-in channel, then record the send |
-| `console` | a **plain** text box composer and a contact list | the routing contrast: a control with its own write interface must never fall back to the synthetic channels |
-| `tree` | a nested, expandable tree (thousands of nodes) | compression by expansion level: a bounded overview, and a detailed view that costs what was actually unfolded |
+| `store` | search box + a 240-row scrollable catalog + cart | large data: folding, `FIND` into a folded list, a search field written natively |
+| `form` | labelled fields (one writable, one read-only), checkbox, combo, disabled button, gated submit | writable vs read-only on the line, validation as a real outcome, the submit record as the verification surface |
+| `chat` | a self-drawn rich-text composer, message history, send button, visible send log | `set_text` with a control that publishes nothing writable: refuse honestly, or use an opt-in channel, then record the send |
+| `console` | a plain text box composer and a contact list | routing contrast: a control with its own write interface must never fall back to the synthetic channels |
+| `tree` | a nested, expandable tree (thousands of nodes) | compression by expansion level: a bounded overview, detail paid for only where it was unfolded |
 
 Each screen exists twice: as a real WPF window (`apps/scenario-suite`, run with
-`ScenarioSuite.exe <screen>`) and as a fixture (`tests/fixtures/scenarios.py`).
-The fixtures mirror the live accessibility shape - including the parts that are
-easy to get wrong, such as the chat composer, which is a hand-drawn control that
-UIA reports as a `Group` called `ProseMirror ExEditor` (no value pattern, no
-HWND) exactly as QQ's and 豆包's are - so `tests/scenarios/` runs anywhere while
-`tests/e2e/test_windows_scenarios.py` proves the fixtures are faithful.
+`ScenarioSuite.exe <screen>`) and as a fixture (`tests/fixtures/scenarios.py`)
+that mirrors the live accessibility shape. `tests/scenarios/` therefore runs
+anywhere, while `tests/e2e/test_windows_scenarios.py` proves the fixtures are
+faithful.
 
 Replay any screen without Windows:
 
@@ -543,7 +411,7 @@ somnus --scenario tree --allow-clipboard repl
 A pack gives an application a domain vocabulary, turning the control tree into
 entities with capabilities (`PRODUCT p1 +add`). It is an optimisation, not a
 requirement: a window with no matching pack is compiled generically and stays
-fully operable - see [Generic mode](#generic-mode).
+fully operable — see [Generic mode](#generic-mode).
 
 ```python
 from somnus.packs.restaurant_demo import build_pack
@@ -568,13 +436,13 @@ pytest -m windows
 ```
 
 Two layers, on purpose. **S1** (`tests/scenarios/`) drives the five acceptance
-screens replayed from fixtures, so it runs on any platform and every commit.
+screens replayed from fixtures, so it runs on any platform and on every commit.
 **S2** (`tests/e2e/test_windows_scenarios.py`) drives the same screens as real
-WPF windows through the real UIA provider, and is what makes S1 trustworthy: a
+WPF windows through the real UIA provider, and is what keeps S1 trustworthy: a
 fixture that drifted from the live control would pass S1 and fail S2.
 
-The `MockProvider` replays recorded `RawTree` fixtures and applies scripted
-mutations - including real per-row behaviour through a named callback - so the
+`MockProvider` replays recorded `RawTree` fixtures and applies scripted
+mutations — including per-row behaviour through a named callback — so the
 compiler, projection, resolver, delta, routing-chain and verification paths are
 all exercised without a desktop.
 
@@ -582,18 +450,18 @@ all exercised without a desktop.
 
 | Metric | Target | Current (`somnus --demo bench --runs 100`) |
 | --- | --- | --- |
-| Zero Vision | 0 vision/coordinate calls | ✓ (structural) |
-| Information isolation | 0 native ids in LLM context | ✓ (leak scan = 0) |
+| Zero vision | 0 vision/coordinate calls | ✓ (structural) |
+| Information isolation | 0 native ids in model context | ✓ (leak scan = 0) |
 | Compression ratio | ≥ 10× | ≥ 1500× (fully expanded tree) |
 | Action success | ≥ 99% | 100% |
 | Task success | ≥ 90% | 100% |
 | L0 observation | ≤ 300 tokens | 80 tokens (240-row catalog, expanded tree) |
 
-Run with `somnus --demo bench --runs 100`. The isolation check is evidence-based
-rather than a regex guess: it enumerates the actual automation ids, class names
-and runtime ids of the tree under test and asserts none appears in the text the
-model would receive, so application data that merely *looks* like an id (a form's
-`REQ-0001`) is not mistaken for a leak.
+Run them with `somnus --demo bench --runs 100`. The isolation check is
+evidence-based rather than a regex guess: it enumerates the actual automation
+ids, class names and runtime ids of the tree under test and asserts that none
+appears in the text the model would receive, so application data that merely
+looks like an id (a form's `REQ-0001`) is not mistaken for a leak.
 
 ## License
 

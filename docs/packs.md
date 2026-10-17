@@ -160,7 +160,7 @@ tries them: `set_text` (Value pattern) → `paste_text` (clipboard) → `type_te
 (keyboard). The last two need a host flag
 (`--allow-clipboard` / `--allow-keyboard`) because they seize the screen's
 foreground; see
-[interface-capability-report.md](interface-capability-report.md) for why that
+[text-input-channels.md](text-input-channels.md) for why that
 ordering is the one that costs the user least.
 
 ## Writing a pack for a new app

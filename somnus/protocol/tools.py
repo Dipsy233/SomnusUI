@@ -1,4 +1,4 @@
-"""The tools exposed to an LLM (dev doc section 6.4).
+"""The tools exposed to an LLM.
 
 Model-agnostic: each tool is a thin function over a :class:`Session`. The MCP
 server and the JSON-RPC server both call :func:`call_tool`, so behaviour is

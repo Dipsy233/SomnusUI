@@ -1,4 +1,4 @@
-"""Provider abstraction (dev doc section 4.1).
+"""Provider abstraction.
 
 Providers are the *only* platform-specific layer. They:
 

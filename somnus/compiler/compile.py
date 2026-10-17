@@ -237,7 +237,7 @@ class Compiler:
             if node.entity:
                 continue
             # A virtualised container may have no realised rows yet; annotate it
-            # so the agent sees an unknown/lower-bound count (dev doc section 13).
+            # so the agent sees an unknown/lower-bound count.
             if not node.children and node.virtual_count != -1:
                 continue
             child_entities = {c.entity for c in node.children if c.entity}
@@ -341,7 +341,7 @@ class Compiler:
         # Fingerprint.
         # A window's identity is its process, never its title: the title changes
         # with the open document ("*file - Notepad") and must not invalidate all
-        # refs on every edit (dev doc section 8, rule 4).
+        # refs on every edit.
         #
         # A pack's primary key wins when there is one. Otherwise the native
         # automation id is used, and when that is absent the class name stands
@@ -398,7 +398,7 @@ class Compiler:
         new_ancestors = ancestors + [(node, ref)]
         # Children that share a (role, name) would otherwise hash identically and
         # make each other ambiguous; only those get a disambiguating index, so
-        # uniquely-named nodes stay position independent (dev doc section 8).
+        # uniquely-named nodes stay position independent.
         dup_key = _duplicate_keys(raw.children)
         # Same for children sharing a *stable identity* (automation id / class
         # name): a tray area hands every button the same automation id

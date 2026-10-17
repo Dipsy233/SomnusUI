@@ -1,6 +1,6 @@
 """App Packs: domain vocabulary on top of the primitive role tree.
 
-v0.1 ships packs as Python modules (dev doc section 15). A pack declares
+v0.1 ships packs as Python modules. A pack declares
 *entities* - named domain objects matched by a deterministic rule set - and the
 semantic capabilities each entity exposes.
 
@@ -109,8 +109,9 @@ def _descendants(node: RawNode) -> Iterable[RawNode]:
 def regex_search(pattern: str, text: str | None) -> bool:
     """Match ``text`` against ``pattern``.
 
-    Accepts a bare regex, or the documented ``/regex/flags`` form
-    (dev doc section 15: ``name: "/^(add|\\u52a0\\u5165)$/i"``).
+    Accepts a bare regex, or the ``/regex/flags`` form with ``i`` (case
+    insensitive), ``s`` (dot matches newline) and ``m`` (multiline) - for
+    example ``name: "/^(add|\\u52a0\\u5165)$/i"``.
     """
     if text is None:
         return False
@@ -234,7 +235,7 @@ def select_pack(process: str, window_class: str = "", forced: str | None = None)
     """Pick the most specific pack for a window.
 
     Exact (non-wildcard) process matches win over the catch-all generic pack, so
-    a dedicated app pack is never shadowed by it (dev doc sections 11.3, 15).
+    a dedicated app pack is never shadowed by it.
     """
     if forced:
         return get_pack(forced)
@@ -252,7 +253,7 @@ def _load_builtin() -> None:
     # v0.1 Python packs (kept for the acceptance demo) ...
     from somnus.packs import generic, restaurant_demo  # noqa: F401
 
-    # ... plus v0.2 YAML packs (dev doc section 15). Loading is best-effort:
+    # ... plus v0.2 YAML packs. Loading is best-effort:
     # a missing PyYAML simply leaves the Python packs in place.
     try:
         from somnus.compiler.yaml_pack import load_builtin_packs

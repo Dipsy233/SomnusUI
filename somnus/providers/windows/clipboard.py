@@ -8,7 +8,7 @@ handler reads the text out of the clipboard in one piece. Measured on Windows 11
 24H2, the delivery cost is **constant ~37 ms for 10 to 3000 characters**,
 because the input queue only ever carries four key events - unlike per-character
 ``SendInput``, whose N characters become 2N queue entries that the target parks
-(``docs/interface-capability-report.md`` 3.3).
+(``docs/text-input-channels.md`` 3.3).
 
 **The user's clipboard is restored losslessly.** Borrowing the clipboard is only
 acceptable if it can be handed back exactly as it was, so the snapshot captures
@@ -55,7 +55,7 @@ re-registered **by name** on restore rather than reusing a stale id.
    ``WM_RENDERFORMAT`` trick that would signal "the target has read it") is
    measured *unusable here*: the OLE layer materialises the promise ~3-5 ms after
    publication with nobody asking, so no later render ever arrives to observe
-   (see docs/interface-capability-report.md 3.3). The restore is therefore a
+   (see docs/text-input-channels.md 3.3). The restore is therefore a
    timed wait and is reported as unconfirmed, never as verified.
 
 **Deliberately not implemented.** Delayed rendering (no advantage, real
@@ -216,7 +216,7 @@ _VK_V = 0x56
 
 #: How long to wait for the target to consume the paste before restoring the
 #: user's clipboard. A guess by construction - the read signal that would make
-#: it exact is unavailable here (docs/interface-capability-report.md 3.3) - so every
+#: it exact is unavailable here (docs/text-input-channels.md 3.3) - so every
 #: caller is told the restore is unconfirmed.
 _SETTLE_S = 0.12
 #: How long to keep trying to open the clipboard before giving up. Another

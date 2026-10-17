@@ -59,8 +59,8 @@ def simplify(root: RawNode) -> RawNode:
     Deliberately conservative: it removes empty leaves and transparent
     single-child wrappers, but keeps named or otherwise *addressable* structure
     intact, because pack matching runs right after and needs to see it. The
-    aggressive flattening of anonymous containers is a projection concern
-    (dev doc section 7.1), applied when the tree is rendered.
+    aggressive flattening of anonymous containers is a projection concern,
+    applied when the tree is rendered.
     """
     root.children = _promote_children(root.children, inline_anonymous=False)
     return root
@@ -74,7 +74,7 @@ def _promote_children(
     ``inline_anonymous`` is the aggressive mode used by the projection stage:
     an unnamed container with no identity of its own is replaced by its children,
     so many identical unnamed wrappers cannot hash to one fingerprint and make a
-    subtree ambiguous (dev doc sections 7.1, 8).
+    subtree ambiguous.
     """
     out: list[RawNode] = []
     for child in children:

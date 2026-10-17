@@ -1,4 +1,4 @@
-"""Token accounting and observation budgets (dev doc section 7.3).
+"""Token accounting and observation budgets.
 
 Token counting uses a real tokenizer when one is installed (``tiktoken`` for
 o200k/cl100k), otherwise a documented estimator: ASCII ~4 chars/token, CJK

@@ -3,7 +3,7 @@
 The mock provider is a first-class component, not a test stub:
 
 * :mod:`somnus.providers.mock` can *record* a real provider's snapshots to JSON
-  and *replay* them on any platform (dev doc section 14).
+  and *replay* them on any platform.
 * It can execute a small scripted action model so actions produce real deltas
   during compiler / runtime tests without Windows.
 
@@ -435,7 +435,7 @@ def _cart_add(root: RawNode, price: float) -> None:
 
 def _open_screen(root: RawNode, name: str, count_text: str) -> None:
     """Add (or refresh) a named child screen, so an `open` shows up in the
-    delta as ``+ SCREEN s? "<name>"`` (dev doc section 19.1).
+    delta as ``+ SCREEN s? "<name>"``.
 
     Idempotent: opening twice does not add the screen again.
     """

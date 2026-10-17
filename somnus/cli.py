@@ -23,8 +23,9 @@ Global options::
     --allow-keyboard             permit synthetic typing for this run
     --config PATH                read settings from PATH
 
-The two synthetic-input switches are off by default and can be made persistent
-(``somnus config --allow-clipboard``) - see :mod:`somnus.config`.
+The two synthetic-input switches are ON by default and can be turned off for
+one run (``--no-allow-clipboard`` / ``--no-allow-keyboard``) or persistently
+(``somnus config --no-allow-clipboard``) - see :mod:`somnus.config`.
 """
 
 from __future__ import annotations

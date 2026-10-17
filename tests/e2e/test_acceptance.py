@@ -1,8 +1,8 @@
 """End-to-end acceptance test (mock provider).
 
-Reproduces dev doc section 19.1 exactly: the LLM-facing transcript for
-"order a Big Mac and fries, then open the cart". Runs anywhere; the Windows
-E2E variant (``-m windows``) drives the real WPF app.
+Reproduces the LLM-facing transcript for "order a Big Mac and fries, then open
+the cart". Runs anywhere; the Windows E2E variant (``-m windows``) drives the
+real WPF app.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def test_acceptance_transcript(session):
 
 
 def test_acceptance_repeatable_100x():
-    """100 fresh runs must all succeed (dev doc section 19.1)."""
+    """100 fresh runs must all succeed."""
     for _ in range(100):
         provider = MockProvider(
             fixtures=[restaurant_demo_tree()], scripts=demo_scripts()

@@ -1,7 +1,7 @@
 """A minimal LLM agent loop for SomnusUI (host/example code).
 
-Dev doc section 17 keeps the agent loop *outside* the core library: the runtime
-only provides the tools; planning belongs to the host. This file is that
+The agent loop stays *outside* the core library: the runtime only provides the
+tools; planning belongs to the host. This file is that
 host, driving a local OpenAI-compatible model (tested against qwen3-4b on
 http://127.0.0.1:8000).
 

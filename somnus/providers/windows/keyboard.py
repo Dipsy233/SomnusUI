@@ -1,4 +1,4 @@
-"""Declarative keyboard fallback (dev doc section 12.2).
+"""Declarative keyboard fallback.
 
 Keyboard input is **never** exposed to the LLM. It exists only as an explicitly
 authorized ``via`` step inside a capability, used when the target has no

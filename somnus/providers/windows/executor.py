@@ -3,7 +3,7 @@
 ``InvokePattern.Invoke`` can block indefinitely when it opens a modal dialog, so
 every pattern call runs on the provider's MTA worker with a hard timeout. On
 timeout we return ``undetermined=True``; the runtime then settles and re-observes
-instead of hanging (dev doc sections 9.2, 13).
+instead of hanging.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def run_primitive(
             # because the text is read by the application's own WM_PASTE handler
             # rather than pushed through the input queue - measured constant
             # ~37 ms from 10 to 3000 characters, where per-character SendInput
-            # parks most of a fast burst (docs/interface-capability-report.md 3.3).
+            # parks most of a fast burst (docs/text-input-channels.md 3.3).
             #
             # It needs the foreground and it disturbs the user's clipboard, so it
             # is gated on --allow-clipboard and ordered *after* both focus-free
@@ -137,8 +137,8 @@ def run_primitive(
             return ExecResult(ok=False, error=outcome.error, message=outcome.message)
         elif primitive == "type_text":
             # Declarative keyboard fallback: focus the target, then type. Only
-            # reached because a pack declared it as a conditional `via` step
-            # (dev doc section 12.2); the LLM never sees this primitive.
+            # reached because a pack declared it as a conditional `via` step;
+            # the LLM never sees this primitive.
             fg = _bring_to_foreground(element)
             if not fg.ok:
                 return ExecResult(
@@ -200,7 +200,7 @@ def run_primitive(
                 element, UIA.UIA_WindowPatternId, UIA.IUIAutomationWindowPattern
             ).Close()
         else:
-            # Last-resort standard fallback (dev doc section 13).
+            # Last-resort standard fallback.
             _pattern(
                 element,
                 UIA.UIA_LegacyIAccessiblePatternId,
@@ -468,7 +468,7 @@ def _classify(exc: Exception) -> ExecResult:
     # A NULL COM pointer means the element we held is gone: the UIA element was
     # released when the UI re-rendered. That is exactly the stale case, and
     # reporting it as such lets the caller re-find instead of retrying a dead
-    # pointer (dev doc section 10).
+    # pointer.
     if "NULL COM pointer" in text:
         return ExecResult(ok=False, error="STALE_TARGET", message=text)
     if "ELEMENTNOTAVAILABLE" in text or "ElementNotAvailable" in name:

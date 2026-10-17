@@ -1,4 +1,4 @@
-"""YAML App Pack tests (dev doc section 15, v0.2).
+"""YAML App Pack tests.
 
 Exercises the loader, the attribute/selector expressions and the two real-app
 packs (Notepad, Explorer) against recorded fixtures so they run on any platform.
@@ -120,7 +120,7 @@ def test_has_patterns_match_rule():
 
 
 # ---------------------------------------------------------------------------
-# keyboard fallback (dev doc section 12.2)
+# keyboard fallback
 # ---------------------------------------------------------------------------
 
 _KEYBOARD_PACK = {

@@ -1,4 +1,4 @@
-"""Verifier: check declared effects against the settled state (section 9.3).
+"""Verifier: check declared effects against the settled state.
 
 Outcomes:
 

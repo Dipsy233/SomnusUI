@@ -1,4 +1,4 @@
-"""SUI-Text action parsing (dev doc section 6.2).
+"""SUI-Text action parsing.
 
 The *only* action syntax is::
 

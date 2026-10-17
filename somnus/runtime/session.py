@@ -283,7 +283,7 @@ class Session:
         report = self.registry.reconcile(result)
         self.result = result
         # A fingerprint shared by several nodes cannot be resolved to one ref;
-        # remember them so `call` can return TARGET_AMBIGUOUS (dev doc section 10).
+        # remember them so `call` can return TARGET_AMBIGUOUS.
         self._ambiguous_refs = {
             node.ref for node in result.root.walk() if node.fingerprint in set(report.ambiguous)
         }
@@ -299,8 +299,8 @@ class Session:
                     self._menu_owner,
                     [n.ref for n in result.root.walk() if n.role == "menu"],
                 )
-        # `rev` increments only when the *semantic projection* changes (dev doc
-        # section 9.1): a raw tree that repaints identically keeps the same rev.
+        # `rev` increments only when the *semantic projection* changes: a raw
+        # tree that repaints identically keeps the same rev.
         signature = self._projection_signature(result)
         if signature != self._last_signature:
             self._last_signature = signature
@@ -493,7 +493,7 @@ class Session:
         window's own tree may be unchanged, yet the screen the agent is looking
         at has changed and it must be told. Leaving the window set out of the
         signature means such a change never bumps ``rev`` and never shows up in
-        a delta (dev doc sections 5, 9.1).
+        a delta.
         """
         parts: list[tuple] = []
         for node in result.root.walk():
@@ -546,11 +546,11 @@ class Session:
 
         Observation is read-only and side-effect free, so an unknown window ref
         must not dead-end the agent: fall back to the default window and let the
-        resulting overview show the real refs (dev doc section 6.4).
+        resulting overview show the real refs.
 
         ``windows_only`` answers "what is on my desktop right now" without
         dumping any tree, which is what a cross-window workflow needs before it
-        decides where to go (dev doc section 5). It is also the one path that
+        decides where to go. It is also the one path that
         raises nothing: a window *list* needs no window rendered, so it does not
         seize the foreground just to answer.
 
@@ -657,7 +657,7 @@ class Session:
         changes what the agent can act on even when the target window's own tree
         is untouched. Reporting it as ``+ WINDOW w5 "Cart"`` / ``- WINDOW w3``
         is what lets a cross-window workflow continue without an explicit
-        re-observation (dev doc section 5: L0 always lists windows).
+        re-observation (L0 always lists windows).
         """
         current = {w.window_id: w.title for w in self.windows}
         previous = self._prev_windows
@@ -696,7 +696,7 @@ class Session:
         """Header lines for *other* windows (the target is rendered as the root).
 
         Window refs are assigned from the compiler's allocator so they never
-        collide with node refs (dev doc section 5: window switching via
+        collide with node refs (window switching via
         ``CALL w2.focus()``). The target window uses the tree's root ref.
         """
         target_ref = result.root.ref if result.root else None
@@ -1787,9 +1787,9 @@ class Session:
     ) -> str:
         """Execute a plain-text block of SUI-Text commands, one per line.
 
-        This is the transport for models without function calling (dev doc
-        section 6.4): the same syntax and the same parser, just line-delimited
-        instead of a tool call. Blank lines and ``#`` comments are ignored.
+        This is the transport for models without function calling: the same
+        syntax and the same parser, just line-delimited instead of a tool call.
+        Blank lines and ``#`` comments are ignored.
         """
         out: list[str] = []
         for raw in block.splitlines():

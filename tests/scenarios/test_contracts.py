@@ -37,7 +37,7 @@ SCREENS = [
     ("tree", lambda: S.tree_tree(), S.scenario_scripts),
 ]
 
-#: Patterns that must never appear in LLM-facing text (dev doc section 19).
+#: Patterns that must never appear in LLM-facing text.
 LEAK_PATTERNS = [
     re.compile(r"\bAutomationId\b", re.IGNORECASE),
     re.compile(r"\bRuntimeId\b", re.IGNORECASE),

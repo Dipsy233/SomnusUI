@@ -1,10 +1,12 @@
-"""LLM 控制 GUI 的完整演示（无需 Windows / 真实桌面）。
+"""A complete walkthrough of an LLM driving a GUI (no Windows, no desktop).
 
-模拟一个 LLM Agent 通过 SomnusUI 的 4 个工具完成任务：
-「帮我点一个巨无霸和一份薯条，然后打开购物车」。
+A simulated agent completes one task with SomnusUI's tools: "order a Big Mac
+and a portion of fries, then open the cart". Each step prints the SUI-Text the
+model actually receives and the call it makes from it, showing that the model
+only ever sees semantic entities and capabilities - never pixels, coordinates
+or native ids.
 
-每一步都打印 LLM *实际看到*的 SUI-Text，以及它据此发出的下一步调用，
-从而展示：LLM 只看语义实体 + 能力，从不接触像素 / 坐标 / 原生 id。
+The real-window counterpart is ``demo_llm_live.py``.
 """
 
 from __future__ import annotations

@@ -43,7 +43,7 @@ class NativeRef:
     #: channel, and it is *per element* - not "does the process have an Edit
     #: child window", which is the wrong question that made the capability
     #: report rule the channel out for whole applications at once
-    #: (docs/interface-capability-report.md 3.2). Measured zero-focus: Notepad
+    #: (docs/text-input-channels.md 3.2). Measured zero-focus: Notepad
     #: stays in the background and its text is still replaced, 4/4 runs
     #: including CJK and a 300-character string.
     #:
@@ -276,7 +276,7 @@ def compute_fingerprint(
     fallback for elements that expose no id at all.
 
     The runtime deliberately excludes ``value`` and mutable state: those change
-    constantly and would make every ref stale (see dev doc section 8).
+    constantly and would make every ref stale.
     """
 
     def norm(value: str | None) -> str:

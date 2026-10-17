@@ -3,7 +3,7 @@
 Every portable capability that is *directly* supported by a native pattern is
 created here with ``confidence == 1.0``. Heuristic upgrades (e.g. "this button
 in a group probably means Add") happen later in :mod:`somnus.compiler.match`
-and must lower confidence (dev doc section 11.2).
+and must lower confidence.
 """
 
 from __future__ import annotations
@@ -156,7 +156,7 @@ def _prefers_keyboard_entry(node: RawNode) -> bool:
     Note the answer is now slightly wider than before: a node that maps a native
     HWND (``native_window_handle != 0``) also has a non-keyboard write route, so
     it is *not* keyboard-only either. That is the correction from
-    docs/interface-capability-report.md 3.2 - the HWND route was hidden by the
+    docs/text-input-channels.md 3.2 - the HWND route was hidden by the
     report's "does the process own an Edit child window?" criterion, which asked
     about the process instead of the element.
 
@@ -338,8 +338,8 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         )
 
     # A ScrollItem (a row in a virtualised list) can be brought into view; this
-    # is how an off-screen item is reached without scrolling blindly (dev doc
-    # section 13). It is a real native capability, not a heuristic.
+    # is how an off-screen item is reached without scrolling blindly. It is a
+    # real native capability, not a heuristic.
     if "scrollitem" in patterns:
         caps.setdefault(
             "scroll_into_view",

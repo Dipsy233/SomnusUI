@@ -1,8 +1,8 @@
 """Resolver: semantic capability call -> ordered native primitive steps.
 
 The resolver is the only place that knows how a semantic capability maps onto
-native elements. It never invents coordinates or keystrokes (dev doc section
-12.2): every step must be a declared Native Pattern.
+native elements. It never invents coordinates or keystrokes: every step must be
+a declared native pattern.
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ class Resolver:
         positional = sorted(k for k in args if k.startswith("_"))
         # A positional argument may satisfy the single required parameter, so the
         # documented ``CALL q1.set_text("Big Mac")`` form works even when the
-        # pack names the parameter (dev doc section 6.2).
+        # pack names the parameter.
         required = [n for n, s in cap.params.items() if s.required]
         implicit = (
             positional[0] if len(positional) == 1 and len(required) == 1 else None

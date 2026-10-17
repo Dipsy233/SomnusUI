@@ -217,7 +217,7 @@ def test_non_virtualised_collection_count_is_exact():
 def test_generic_mode_grants_capabilities_from_patterns_only():
     """Without any pack, capabilities come from native patterns alone.
 
-    This is the compatibility story (dev doc sections 4.5, 11.3): a new app is
+    This is the compatibility story: a new app is
     usable the moment its controls expose standard UIA patterns.
     """
     from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
@@ -279,8 +279,7 @@ def test_duplicate_siblings_get_distinct_fingerprints():
     """Two identically named siblings must not share a fingerprint.
 
     QQ has several buttons named "更多"; without disambiguation they collide and
-    the registry reports each as ambiguous, making the app inoperable
-    (dev doc section 8).
+    the registry reports each as ambiguous, making the app inoperable.
     """
     from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
 

@@ -1,4 +1,4 @@
-"""SUI-Text: the single LLM-facing serialization format (dev doc section 6)."""
+"""SUI-Text: the single LLM-facing serialization format."""
 
 from somnus.sui.serialize import (
     RenderOptions,

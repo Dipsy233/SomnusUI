@@ -1,4 +1,4 @@
-"""Restaurant Demo pack - the v0.1 acceptance pack (dev doc sections 15, 19.1).
+"""Restaurant Demo pack - the v0.1 acceptance pack.
 
 The demo app is a WPF order screen with this accessibility shape::
 

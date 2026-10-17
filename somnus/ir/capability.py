@@ -7,7 +7,7 @@ A capability has two levels:
   resolved to primitive steps via :attr:`Capability.via`.
 
 Every capability may declare :class:`Effect` post-conditions, which is how the
-verifier knows what "success" means (dev doc section 9.3).
+verifier knows what "success" means.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any, Literal
 CapLevel = Literal["primitive", "semantic"]
 Risk = Literal["safe", "normal", "critical"]
 
-#: The complete primitive capability vocabulary (dev doc section 4.5).
+#: The complete primitive capability vocabulary.
 #:
 #: Two of these are easy to confuse, and the difference matters:
 #:
@@ -43,7 +43,7 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         # application's own WM_PASTE handler. Gated on `--allow-clipboard`: it
         # needs the foreground and it borrows the user's clipboard. Like
         # `type_text` it is a routing detail, never a capability the LLM calls
-        # (docs/interface-capability-report.md 3.3).
+        # (docs/text-input-channels.md 3.3).
         "paste_text",
         "toggle",
         "select",
@@ -65,7 +65,7 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         "context_menu",
         # Declarative keyboard fallback (v0.2): focus the target and type the
         # value. Never offered to the LLM as a capability of its own - it only
-        # appears as a `via` step inside a pack capability (dev doc section 12.2).
+        # appears as a `via` step inside a pack capability.
         "type_text",
     }
 )
@@ -146,7 +146,7 @@ class PrimitiveStep:
     #: ``"has:<pattern>"`` (run only if the target exposes it) and
     #: ``"missing:<pattern>"`` (run only if it does not). This is how a pack
     #: declares a declarative keyboard fallback, e.g.
-    #: ``set_text`` via ValuePattern, else focus + ``type_text`` (dev doc §12.2).
+    #: ``set_text`` via ValuePattern, else focus + ``type_text``.
     condition: str | None = None
 
 

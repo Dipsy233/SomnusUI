@@ -1,4 +1,4 @@
-"""Unified error model (dev doc section 10).
+"""Unified error model.
 
 Every failure the LLM can see is one of these codes, rendered as a single
 ``ERR CODE ref hint=...`` line. Stack traces go to the log only.

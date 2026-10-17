@@ -1,4 +1,4 @@
-"""Relation inference (dev doc section 4.6).
+"""Relation inference.
 
 Exactly six relations are produced, all derived deterministically from the raw
 tree - no heuristics, no LLM:
@@ -104,7 +104,7 @@ def build_relations(
         rels.append(Relation(kind="opens", target=opens_ref))
 
     # contains: emitted only for entities (their member refs), since structural
-    # containment is already expressed by indentation (dev doc section 7.2).
+    # containment is already expressed by indentation.
     if node.entity:
         for member_ref in members.values():
             if member_ref == node.ref:
