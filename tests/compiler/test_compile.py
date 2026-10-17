@@ -494,3 +494,179 @@ def test_fingerprint_falls_back_to_position_without_a_runtime_id():
         ancestor_path="window#0", role_index=1, runtime_id=(),
     )
     assert a != b
+
+
+# ---------------------------------------------------------------------------
+# Generic widget class names must not become identity
+# ---------------------------------------------------------------------------
+
+
+def _toolbar(class_name: str | None) -> RawTree:
+    """Eight differently-named toolbar buttons sharing one class name.
+
+    This is Explorer's toolbar, reproduced: 新建 / 剪切 / 复制 / 粘贴 / 重命名 /
+    共享 / 删除 / 查看 all report class ``Button`` and no automation id.
+    """
+    names = ["新建", "剪切", "复制", "粘贴", "重命名", "共享", "删除", "查看"]
+    root = RawNode(
+        native=NativeRef(window_id="w1", runtime_id=(42, 100), control_type="Window"),
+        role="window",
+        name="tmp",
+        children=[],
+    )
+    toolbar = RawNode(
+        native=NativeRef(window_id="w1", runtime_id=(42, 100, 4), class_name="Toolbar"),
+        role="toolbar",
+        children=[
+            RawNode(
+                native=NativeRef(
+                    window_id="w1",
+                    runtime_id=(42, 100, 4, i),
+                    class_name=class_name,
+                    control_type="Button",
+                ),
+                role="button",
+                name=name,
+                patterns=frozenset({"invoke"}),
+            )
+            for i, name in enumerate(names)
+        ],
+    )
+    root.children.append(toolbar)
+    return RawTree(
+        window=WindowInfo(
+            window_id="w1", title="tmp", process="explorer.exe", pid=42, hwnd=1
+        ),
+        root=root,
+    )
+
+
+def _button_fingerprints(class_name: str | None) -> set[str]:
+    result = Compiler().compile(_toolbar(class_name))
+    return {
+        n.fingerprint for n in result.root.walk() if n.role == "button"
+    }
+
+
+def test_generic_widget_class_does_not_collapse_siblings():
+    """A shared class name must not exclude the element's own name.
+
+    Regression, found live: every button on Explorer's toolbar reports class
+    ``Button``. ``_identity_class`` returned that as a *stable identity*, which
+    made ``compute_fingerprint`` drop ``name`` as volatile evidence - all eight
+    buttons then hashed identically, eleven refs were flagged
+    ``TARGET_AMBIGUOUS``, and the toolbar became unoperable (新建 could not be
+    clicked at all).
+
+    The check is fingerprint *distinctness*, not the identity string: that is
+    what the agent actually experiences.
+    """
+    assert len(_button_fingerprints("Button")) == 8
+
+
+def test_prefixed_generic_widget_classes_are_also_generic():
+    """``XAMLButton``/``WinUIButton``/``ToolbarButton`` name the type too."""
+    for class_name in ("XAMLButton", "WinUIButton", "ToolbarButton", "Button"):
+        assert len(_button_fingerprints(class_name)) == 8, class_name
+
+
+def test_no_class_name_still_works():
+    """The fallback: no class at all leaves name-based identity intact."""
+    assert len(_button_fingerprints(None)) == 8
+
+
+def test_distinctive_class_names_are_still_identity():
+    """A class that names *one* element must keep acting as identity.
+
+    The fix must not turn every class name into noise: QQ's message box and a
+    self-drawn send button publish no automation id, and their class name is
+    the only stable evidence they have.
+    """
+    from somnus.compiler.compile import _identity_class
+
+    assert _identity_class("ExEditor-qq-msg-editor") == "exeditor-qq-msg-editor"
+    assert _identity_class("send-msg") == "send-msg"
+    # A class that is *only* a state modifier carries no identity - that is the
+    # pre-existing `_VOLATILE_CLASS_TOKENS` rule and this fix does not touch it.
+    assert _identity_class("ProseMirror-focused") is None
+    assert _identity_class("ProseMirror") == "prosemirror"
+
+
+def test_generic_class_detection():
+    from somnus.compiler.compile import _is_generic_class
+
+    for generic in (
+        "Button", "button", "CheckBox", "ComboBox", "Edit", "SysListView32",
+        "XAMLButton", "WinUIButton", "ToolbarButton", "toolbar_button",
+        "MenuFlyoutItem", "ListViewItem",
+    ):
+        assert _is_generic_class(generic), generic
+    for specific in ("ExEditor-qq-msg-editor", "send-msg", "q-button--primary", "x"):
+        # `q-button--primary` is BEM: the state modifier separates it from the
+        # generic tail, and `_identity_class` strips the modifier, so the
+        # generic test may or may not fire - what matters is that the two
+        # distinctive names survive.
+        if specific in ("ExEditor-qq-msg-editor", "send-msg", "x"):
+            assert not _is_generic_class(specific), specific
+
+
+def test_shared_type_class_among_siblings_adds_role_index():
+    """Breadcrumb items share a control *type*, so they need the index.
+
+    Regression, found live in Explorer: the crumb bar hands every item class
+    ``fileexplorerextensions.breadcrumbbaritemcontrol``. That reached
+    ``compute_fingerprint`` as a stable identity, which excluded each item's own
+    name (此电脑 / Data (D:) / tmp), and since `_duplicate_identities` only
+    looked at automation ids - which are None here - the compiler saw no reason
+    to add the role index either. Result: three crumbs, one fingerprint.
+
+    The general rule is that a stable identity shared by siblings is not an
+    identity. This test pins it independently of any class-name list.
+    """
+    names = ["此电脑", "Data (D:)", "tmp"]
+    parent = RawNode(
+        native=NativeRef(window_id="w1", runtime_id=(1,), class_name="Group"),
+        role="group",
+        children=[
+            RawNode(
+                native=NativeRef(
+                    window_id="w1",
+                    runtime_id=(1, i),
+                    class_name="fileexplorerextensions.breadcrumbbaritemcontrol",
+                ),
+                role="button",
+                name=name,
+            )
+            for i, name in enumerate(names)
+        ],
+    )
+    tree = RawTree(
+        window=WindowInfo(window_id="w1", title="t", process="explorer.exe", pid=1),
+        root=RawNode(
+            native=NativeRef(window_id="w1", runtime_id=(0,)), role="window", children=[parent]
+        ),
+    )
+    result = Compiler().compile(tree)
+    fps = {n.fingerprint for n in result.root.walk() if n.role == "button"}
+    assert len(fps) == 3
+
+
+def test_duplicate_identities_includes_class_derived_identity():
+    from somnus.compiler.compile import _duplicate_identities
+
+    children = [
+        RawNode(
+            native=NativeRef(window_id="w1", runtime_id=(i,), class_name="fileexplorerextensions.breadcrumbbaritemcontrol"),
+            role="button",
+            name=n,
+        )
+        for i, n in enumerate(("此电脑", "Data (D:)", "tmp"))
+    ]
+    assert "fileexplorerextensions.breadcrumbbaritemcontrol" in _duplicate_identities(children)
+
+    # A class unique among its siblings is *not* a duplicate.
+    alone = [
+        RawNode(native=NativeRef(window_id="w1", runtime_id=(0,), class_name="send-msg"), role="button", name="a"),
+        RawNode(native=NativeRef(window_id="w1", runtime_id=(1,), class_name="other-widget"), role="button", name="b"),
+    ]
+    assert _duplicate_identities(alone) == set()

@@ -440,6 +440,14 @@ class Compiler:
         # ("SystemTrayIcon") and class while the names differ (network, volume,
         # clock). Names there are volatile telemetry, so siblings are told
         # apart by index, not by name.
+        #
+        # The class-derived identity is included here, not just the automation
+        # id. A shared *type* name (Explorer's breadcrumb items all report
+        # `fileexplorerextensions.breadcrumbbaritemcontrol`) is exactly the same
+        # situation, and it only reached the fingerprint through
+        # `_identity_class`, so an automation-id-only check left those siblings
+        # with one shared fingerprint and made each other unaddressable. This is
+        # the general rule; the class-name lists below are the belt to it.
         dup_identity = _duplicate_identities(raw.children)
         role_counts: dict[str, int] = {}
         for child in raw.children:
@@ -451,6 +459,7 @@ class Compiler:
             needs_index = (
                 (child.role, _name_key(child)) in dup_key
                 or (child.native.automation_id or "") in dup_identity
+                or _identity_class(child.native.class_name) in dup_identity
             )
             self._build(
                 child,
@@ -586,6 +595,97 @@ _GENERIC_ITEM_CLASSES = frozenset(
     }
 )
 
+#: Plain widget-class names handed to *every* control of a type by a toolkit or
+#: by the OS accessibility bridge. They are the same disease as
+#: ``_GENERIC_ITEM_CLASSES`` but at a coarser grain: every toolbar button of an
+#: Explorer window reports class ``Button``, every checkbox ``CheckBox``, and so
+#: on. Treating one as stable identity excludes the element's own name from the
+#: fingerprint, which collapses the whole toolbar into a single fingerprint and
+#: makes every button on it unaddressable.
+#:
+#: Measured on Explorer's toolbar: eight siblings (新建 / 剪切 / 复制 / 粘贴 /
+#: 重命名 / 共享 / 删除 / 查看), all class ``Button``, no automation id, ended up
+#: with one shared fingerprint and 11 refs were flagged TARGET_AMBIGUOUS. The
+#: same tree with ``class_name=None`` compiled to eight distinct fingerprints -
+#: which is what proved the class name was the cause and not the names.
+#:
+#: These names carry no information the *role* does not already carry, so
+#: dropping them loses nothing: the node still has its role, its name and its
+#: position among same-role siblings.
+_GENERIC_WIDGET_CLASSES = frozenset(
+    {
+        "button",
+        "checkbox",
+        "radiobutton",
+        "combobox",
+        "edit",
+        "textbox",
+        "static",
+        "text",
+        "image",
+        "pane",
+        "group",
+        "window",
+        "toolbar",
+        "toolbarbutton",
+        "statusbar",
+        "listbox",
+        "listview",
+        "treeview",
+        "syslistview32",
+        "systreeview32",
+        "systabcontrol32",
+        "msctls_statusbar32",
+        "msctls_trackbar32",
+        "msctls_progress32",
+        "splashscreen",
+    }
+)
+
+
+#: Splits a class name into words for :func:`_is_generic_class`: on
+#: non-alphanumerics (``Toolbar_Button``, ``winui-button``) and on camel-case
+#: boundaries (``XAMLButton`` -> ``xaml`` ``button``).
+#:
+#: Written with explicit character classes rather than ``re.IGNORECASE``: under
+#: IGNORECASE the negated class ``[^a-z0-9]`` also matches ``A-Z``, which splits
+#: every capital letter into its own token (``Button`` -> ``b u t t o n``) and
+#: makes the whole test useless.
+_CLASS_TOKEN_RE = re.compile(
+    r"[^a-zA-Z0-9]+"
+    r"|(?<=[a-z0-9])(?=[A-Z])"
+    r"|(?<=[A-Z])(?=[A-Z][a-z])"
+)
+
+
+def _is_generic_class(class_name: str) -> bool:
+    """True when ``class_name`` names a widget type, not an individual element.
+
+    Two spellings have to be caught, and the second is why an exact-set test is
+    not enough:
+
+    * the whole name is a known generic class (``Button``, ``CheckBox``);
+    * the name *contains* one as a word, with a toolkit prefix attached
+      (``XAMLButton``, ``WinUIButton``, ``ToolbarButton``). Every button in such
+      a UI reports the same string, so it identifies the type, not the element.
+
+    A name that merely happens to end in a generic word is treated as generic
+    too. That direction is deliberate: misjudging a real identity as generic
+    costs a position-dependent fingerprint (recoverable, and the name still
+    distinguishes siblings), while the opposite collapses an entire toolbar
+    into one unaddressable fingerprint.
+    """
+    folded = class_name.casefold()
+    if folded in _GENERIC_ITEM_CLASSES or folded in _GENERIC_WIDGET_CLASSES:
+        return True
+    # Split the *original* spelling: the camel-case boundary needs the capitals
+    # that `casefold` just removed. Only the resulting tokens are folded.
+    for token in _CLASS_TOKEN_RE.split(class_name):
+        low = token.casefold()
+        if low and (low in _GENERIC_ITEM_CLASSES or low in _GENERIC_WIDGET_CLASSES):
+            return True
+    return False
+
 
 def _identity_class(class_name: str | None) -> str | None:
     """Derive a stable identity from a class name, or None.
@@ -609,14 +709,25 @@ def _identity_class(class_name: str | None) -> str | None:
     # collapsing the whole list to one fingerprint. Siblings that share such a
     # class are told apart by name/index instead (the parent loop detects the
     # shared class and adds the role index).
-    if class_name.casefold() in _GENERIC_ITEM_CLASSES:
+    #
+    # The same argument applies one grain coarser to plain widget classes
+    # (``Button``, ``CheckBox``, ``SysListView32``): every toolbar button of an
+    # Explorer window reports ``Button``, so the class says nothing about which
+    # button it is. See ``_GENERIC_WIDGET_CLASSES``.
+    #
+    # Matched on whole tokens *and* on the class name as a substring, because
+    # the problem shape is not limited to the exact spelling: ``XAMLButton``,
+    # ``ToolbarButton`` and ``WinUIButton`` are all one shared class for every
+    # button of their UI. A class name whose tokens are all generic carries no
+    # identity whatsoever.
+    if _is_generic_class(class_name):
         return None
     kept: list[str] = []
     for token in class_name.split():
         low = token.casefold()
         if low in _VOLATILE_CLASS_TOKENS:
             continue
-        if low in _GENERIC_ITEM_CLASSES:
+        if low in _GENERIC_ITEM_CLASSES or low in _GENERIC_WIDGET_CLASSES:
             return None
         # BEM state modifiers (`q-button--primary`) and framework state suffixes
         # are markup for a state, not a name.
@@ -638,18 +749,27 @@ def _duplicate_keys(children: list[RawNode]) -> set[tuple[str, str]]:
 
 
 def _duplicate_identities(children: list[RawNode]) -> set[str]:
-    """Automation ids shared by more than one child of the same parent.
+    """Stable identities shared by more than one child of the same parent.
 
-    Such ids cannot distinguish siblings (Windows tray area, repeated item
-    templates), so those children need the role-relative index in their
-    fingerprint to stay addressable.
+    Such an identity cannot distinguish siblings (Windows tray area, repeated
+    item templates, Explorer's breadcrumb items), so those children need the
+    role-relative index in their fingerprint to stay addressable.
+
+    Two sources are collected, because both end up as `identity` in
+    :func:`~somnus.ir.node.compute_fingerprint` and both can be shared:
+
+    * the automation id, reported as-is;
+    * the class-derived identity (:func:`_identity_class`). A control *type*
+      name is a class, not an element name, so every instance of that control
+      reports it - Explorer's crumbs all report
+      ``fileexplorerextensions.breadcrumbbaritemcontrol``.
     """
     counts: dict[str, int] = {}
     for child in children:
-        aid = child.native.automation_id or ""
-        if aid:
-            counts[aid] = counts.get(aid, 0) + 1
-    return {aid for aid, count in counts.items() if count > 1}
+        for ident in (child.native.automation_id, _identity_class(child.native.class_name)):
+            if ident:
+                counts[ident] = counts.get(ident, 0) + 1
+    return {ident for ident, count in counts.items() if count > 1}
 
 
 def _clip(text: str | None, limit: int = 80) -> str | None:
