@@ -105,20 +105,58 @@ def test_backslash_before_t_is_not_a_tab():
     assert action.args["_0"] == "C:\\temp"
 
 
-def test_newline_escape_still_works():
-    """A raw ``\\n`` is still the multi-line escape (long-text input relies on it)."""
+def test_newline_escape_is_a_literal_backslash_n():
+    """``\\n`` stays two characters: a backslash and an ``n``.
+
+    Multi-line text arrives through JSON (or a shell) as a *real* line feed,
+    which the parser passes through untouched - see
+    ``test_real_newline_passes_through``. Decoding ``\\n`` here would be a
+    second escape pass over already-literal data, and it is what used to turn
+    ``D:\\notes.txt`` into ``D:`` + line feed + ``otes.txt``.
+    """
     action = parse_action('CALL q1.set_text("line one\\nline two")')
+    assert action.args["_0"] == "line one\\nline two"
+
+
+def test_real_newline_passes_through():
+    """A genuine line feed inside the quotes is kept, not rejected."""
+    action = parse_action('CALL q1.set_text("line one\nline two")')
     assert action.args["_0"] == "line one\nline two"
 
 
+def test_path_with_backslash_n_survives():
+    """The single most common argument: a Windows path containing ``\\n``.
+
+    Regression: ``_unescape`` decoded ``\\n`` to a line feed, so every path
+    with a segment starting with ``n`` (``D:\\notes.txt``, ``C:\\new\\a.txt``,
+    ``D:\\runtime``) was silently corrupted. ``\\t`` and ``\\r`` were already
+    exempt; ``\\n`` now is too.
+    """
+    for path in (
+        "D:\\tmp\\notes.txt",
+        "D:\\notes.txt",
+        "C:\\Users\\new\\a.txt",
+        "C:\\node\\x",
+        "D:\\runtime\\bin",
+    ):
+        action = parse_action(f'CALL q1.set_text("{path}")')
+        assert action.args["_0"] == path
+
+
 def test_round_trip_through_serializer():
-    """Parse(quote(s)) == s for strings the serializer must represent exactly."""
+    """Parse(quote(s)) == s, for every string except ones with real newlines.
+
+    Serializer output is for *reading*: a real newline is rendered as ``\\n``
+    so a node's name stays on one line. That rendering is deliberately not
+    re-parseable as an argument any more (``\\n`` is literal), so newline
+    strings are excluded here by design rather than by oversight.
+    """
     from somnus.sui.serialize import _quote
 
     for s in (
         "D:\\tmp\\notes.txt",
         "C:\\Users\\new",
-        "line one\nline two",
+        "C:\\node\\x",
         'he said "hi"',
         "back\\slash",
     ):

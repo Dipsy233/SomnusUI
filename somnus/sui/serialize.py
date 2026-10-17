@@ -256,6 +256,17 @@ def _is_unreadable(node: SemanticNode) -> bool:
 
 
 def _quote(text: str, limit: int) -> str:
+    """Render ``text`` as a quoted SUI-Text value.
+
+    Escapes ``\\``, ``"`` and a real newline so the value stays on one line.
+
+    This is **not** the inverse of :func:`somnus.sui.parse._unescape`, and that
+    is deliberate. The parser decodes only ``\\\\`` and ``\\"``; it leaves
+    ``\\n`` verbatim so a Windows path (``D:\\notes.txt``) survives being
+    passed as an argument. The result: text produced here is meant to be
+    *read*, and a value containing a real newline is not re-parseable as an
+    argument. Every other value round-trips exactly.
+    """
     text = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     if len(text) > limit:
         text = text[: limit - 1] + "…"

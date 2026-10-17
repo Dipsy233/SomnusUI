@@ -28,13 +28,13 @@ _CALL_RE = re.compile(
         (?P<ref>[a-z]{1,3}[0-9]+)\s*\.\s*
         (?P<cap>[A-Za-z_][A-Za-z0-9_]*)
         \s*\(\s*(?P<args>.*?)\s*\)\s*$""",
-    re.VERBOSE | re.IGNORECASE,
+    re.VERBOSE | re.IGNORECASE | re.DOTALL,
 )
 
 #: ``ref.cap(args)`` with the CALL keyword omitted (tool-boundary tolerance).
 _BARE_CALL_RE = re.compile(
     r"^[a-z]{1,3}[0-9]+\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\(.*\)\s*$",
-    re.IGNORECASE,
+    re.IGNORECASE | re.DOTALL,
 )
 
 _FIND_RE = re.compile(
@@ -92,7 +92,9 @@ FORBIDDEN_VERBS = frozenset(
     }
 )
 
-_ARG_RE = re.compile(r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?(.+?)\s*$')
+_ARG_RE = re.compile(
+    r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?(.+?)\s*$', re.DOTALL
+)
 
 
 def parse_action(text: str, rev: int | None = None) -> Action:
@@ -281,20 +283,33 @@ def _split_args(text: str) -> list[str]:
 
 
 def _unescape(text: str) -> str:
-    """Reverse :func:`somnus.sui.serialize._quote`.
+    """Decode the two escapes a caller can actually mean inside quotes.
 
-    The serializer escapes ``\\`` -> ``\\\\``, ``"`` -> ``\\"`` and a real
-    newline -> ``\\n``; this is its exact inverse. It is a single left-to-right
-    pass so a backslash that escapes another backslash is consumed once and
-    never re-read: ``"a\\\\nb"`` is the characters ``a``, ``\\``, ``n`` -> ``a\\n``
-    (a backslash and an ``n``), not a newline.
+    Only ``\\\\`` -> ``\\`` and ``\\"`` -> ``"`` are decoded. Everything else -
+    ``\\n``, ``\\t``, ``\\r``, ``\\q`` - is kept **verbatim**, backslash included.
 
-    Only those three escapes are decoded - exactly what the serializer emits.
-    ``\\t`` and ``\\r`` are deliberately **not** decoded: on Windows a path
-    like ``D:\\tmp\\notes.txt`` contains ``\\t``, and treating it as a tab would
-    corrupt the one input this function most needs to get right. An unknown
-    escape (``\\q``, ``\\t``) is kept verbatim, which is what makes such a path
-    survive intact.
+    Why ``\\n`` is no longer a newline escape
+    -----------------------------------------
+    The MCP tool surface takes the call as a JSON string, and JSON has its own
+    escapes: a newline arrives as an already-decoded line feed, and a literal
+    backslash arrives as a single backslash. Decoding ``\\n`` *again* here would
+    apply a second, unrelated escape pass to data that is already literal, and
+    a Windows path is what dies first: ``D:\\notes.txt`` contains the characters
+    ``\\`` ``n``, and turning those into a line feed corrupts the single most
+    common argument this project passes (every Save-As dialog, every open-path).
+
+    ``\\t`` and ``\\r`` were already exempt for exactly that reason; ``\\n`` is
+    the same case and is now treated the same way. Multi-line text needs no
+    escape here at all: it arrives through JSON as a real line feed, or through
+    a shell as a real line feed. A caller that genuinely wants a backslash
+    followed by ``n`` writes ``\\\\n``.
+
+    This is deliberately *not* an exact inverse of
+    :func:`somnus.sui.serialize._quote`. The serializer still emits ``\\n`` for
+    a real newline, and the resulting text stays correct when it is only ever
+    *displayed*. It stops being re-parseable as an argument, which is the right
+    trade: the model reads serialized text far more often than it feeds
+    serializer output back into a ``CALL``.
     """
     out: list[str] = []
     i = 0
@@ -308,16 +323,16 @@ def _unescape(text: str) -> str:
         nxt = text[i + 1]
         if nxt == "\\":
             out.append("\\")
+            i += 2
         elif nxt == '"':
             out.append('"')
-        elif nxt == "n":
-            out.append("\n")
+            i += 2
         else:
-            # Unknown escape (including \t, \r): keep both characters rather
-            # than guess. This is what leaves `D:\tmp` intact.
+            # Every other escape - including \n, \t, \r - is kept verbatim so a
+            # Windows path survives. Consume only the backslash: the following
+            # character is ordinary text and may itself start another escape.
             out.append(ch)
-            out.append(nxt)
-        i += 2
+            i += 1
     return "".join(out)
 
 
