@@ -1221,12 +1221,6 @@ def _is_shell_chrome(el: Any) -> bool:
     sees) and its ``Windows.UI.Core.CoreWindow`` child. Listing both would show
     the same app twice, so the frame is kept and the content window dropped.
     """
-    """True for UWP *content* windows, which duplicate the frame window.
-
-    A UWP app appears twice: an ``ApplicationFrameWindow`` (the window the user
-    sees) and its ``Windows.UI.Core.CoreWindow`` child. Listing both would show
-    the same app twice, so the frame is kept and the content window dropped.
-    """
     try:
         return (el.CurrentClassName or "") == "Windows.UI.Core.CoreWindow"
     except Exception:
