@@ -583,3 +583,156 @@ def test_win32_fallback_keeps_shell_surfaces(monkeypatch):
 
     assert keeps(66188) is True      # Program Manager
     assert keeps(66878) is False     # NVIDIA GeForce Overlay
+
+
+# ---------------------------------------------------------------------------
+# foreground lock timeout: the escape that costs the user nothing
+# ---------------------------------------------------------------------------
+
+
+def test_raise_window_opens_the_foreground_lock_instead_of_typing_alt(monkeypatch):
+    """Zeroing the lock timeout is preferred over the Alt tap.
+
+    Microsoft documents one condition for `SetForegroundWindow` to succeed:
+    "the foreground lock time-out has expired". The session value here is
+    200000 ms, so it never expires and the call is refused forever - which is
+    why a plain set does nothing and why an Alt tap was needed at all.
+    Temporarily setting the timeout to 0 makes the condition true and the call
+    lands with no input event of any kind.
+
+    This is the whole point: the Alt tap is a real key event that reaches the
+    foreground application, and something that reaches nothing must be tried
+    first.
+    """
+    from somnus.providers.windows import workspace
+
+    state = {"fg": 1, "lock": 200000, "alt": 0, "lock_history": []}
+
+    class _User32:
+        def GetForegroundWindow(self):
+            return state["fg"]
+
+        def BringWindowToTop(self, hwnd):
+            pass
+
+        def SetForegroundWindow(self, hwnd):
+            # Only lands while the lock timeout is 0 - the documented condition.
+            if state["lock"] == 0:
+                state["fg"] = hwnd
+
+        def SystemParametersInfoW(self, action, _ui, pv, _ini):
+            if action == workspace.SPI_GETFOREGROUNDLOCKTIMEOUT:
+                ctypes.cast(pv, ctypes.POINTER(ctypes.c_ulong))[0] = state["lock"]
+                return 1
+            if action == workspace.SPI_SETFOREGROUNDLOCKTIMEOUT:
+                # pvParam carries the value as an integer address, so a
+                # c_void_p(0) arrives as a null pointer - .value is None, and
+                # None means 0 here, which is exactly what the call wants.
+                value = pv.value if isinstance(pv, ctypes.c_void_p) else pv
+                state["lock"] = int(value or 0)
+                state["lock_history"].append(int(value or 0))
+                return 1
+            return 0
+
+        def keybd_event(self, *a):
+            state["alt"] += 1
+
+    class _Kernel32:
+        def GetCurrentThreadId(self):
+            return 7
+
+    monkeypatch.setattr(
+        workspace.ctypes,
+        "windll",
+        type("W", (), {"user32": _User32(), "kernel32": _Kernel32()}),
+    )
+    workspace.reset_raise_stats()
+
+    assert workspace.raise_window(2) is True
+    # The window is in front ...
+    assert state["fg"] == 2
+    # ... the lock was opened and then put back exactly as it was ...
+    assert state["lock"] == 200000
+    assert state["lock_history"] == [0, 200000]
+    # ... and no key event was sent.
+    assert state["alt"] == 0
+    assert workspace.raise_stats()["lock"] == 1
+    assert workspace.raise_stats()["alt"] == 0
+
+
+def test_foreground_lock_is_restored_even_when_the_raise_fails(monkeypatch):
+    """A raise that does not land must not leave the session unlocked.
+
+    Leaving the lock at 0 would change how the user's own windows arbitrate
+    focus for the rest of the session - a side effect vastly worse than one
+    failed raise.
+    """
+    from somnus.providers.windows import workspace
+
+    state = {"lock": 200000, "history": []}
+
+    class _User32:
+        def GetForegroundWindow(self):
+            return 1  # never changes: the raise is refused
+
+        def BringWindowToTop(self, hwnd):
+            pass
+
+        def SetForegroundWindow(self, hwnd):
+            pass
+
+        def SystemParametersInfoW(self, action, _ui, pv, _ini):
+            if action == workspace.SPI_GETFOREGROUNDLOCKTIMEOUT:
+                ctypes.cast(pv, ctypes.POINTER(ctypes.c_ulong))[0] = state["lock"]
+                return 1
+            if action == workspace.SPI_SETFOREGROUNDLOCKTIMEOUT:
+                value = pv.value if isinstance(pv, ctypes.c_void_p) else pv
+                state["lock"] = int(value or 0)
+                state["history"].append(int(value or 0))
+                return 1
+            return 0
+
+        def GetWindowThreadProcessId(self, hwnd, ref):
+            return 0
+
+        def keybd_event(self, *a):
+            pass
+
+    class _Kernel32:
+        def GetCurrentThreadId(self):
+            return 7
+
+    monkeypatch.setattr(
+        workspace.ctypes,
+        "windll",
+        type("W", (), {"user32": _User32(), "kernel32": _Kernel32()}),
+    )
+    workspace.reset_raise_stats()
+
+    assert workspace.raise_window(2) is False
+    assert state["lock"] == 200000          # restored
+    assert state["history"] == [0, 200000]
+    assert workspace.raise_stats()["failed"] == 1
+
+
+def test_lock_helpers_never_pass_a_registry_flag(monkeypatch):
+    r"""`fWinIni` must stay 0: the unlock is for one call, not for the machine.
+
+    `SPIF_UPDATEINIFILE` would write
+    ``HKCU\Control Panel\Desktop\ForegroundLockTimeout``, permanently
+    changing how the user's session hands out the foreground.
+    """
+    from somnus.providers.windows import workspace
+
+    seen: list[int] = []
+
+    class _User32:
+        def SystemParametersInfoW(self, action, _ui, pv, ini):
+            seen.append(ini)
+            return 1
+
+    monkeypatch.setattr(
+        workspace.ctypes, "windll", type("W", (), {"user32": _User32(), "kernel32": None})
+    )
+    assert workspace._set_lock_timeout(0) is True
+    assert seen == [0]

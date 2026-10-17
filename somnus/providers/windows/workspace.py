@@ -45,6 +45,87 @@ WS_MINIMIZE = 0x2000_0000
 _CLSID_VDM = "{aa509086-5ca9-4c25-8f95-589d3c07b48a}"
 _IID_IVDM = "{a5cd92ff-29be-454c-8d04-d82879fb3f1b}"
 
+#: ``SystemParametersInfo`` selectors for the foreground lock.
+#:
+#: ``SetForegroundWindow`` is refused while another process owns the
+#: foreground, and Microsoft's documented condition for it to work reads "the
+#: foreground lock time-out has expired (see SPI_GETFOREGROUNDLOCKTIMEOUT)".
+#: Measured on this machine the timeout is **200000 ms** - 200 seconds - so that
+#: condition effectively never becomes true for a background process, which is
+#: exactly the observed behaviour (a tool asking for a Notepad window gets
+#: ``GetForegroundWindow()`` unchanged).
+#:
+#: Setting the timeout to 0 makes the condition hold unconditionally, so a
+#: plain ``SetForegroundWindow`` lands with **no synthetic input at all** - no
+#: Alt tap, nothing that can reach the foreground application.
+SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
+SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
+#: ``SPIF_UPDATEINIFILE`` (0x01) writes the change to the registry and
+#: ``SPIF_SENDCHANGE`` (0x02) broadcasts it. Neither is ever passed: the unlock
+#: is for one call only, and a tool must not permanently change how the user's
+#: session arbitrates focus. Verified - with ``fWinIni=0``,
+#: ``HKCU\Control Panel\Desktop\ForegroundLockTimeout`` stays at 200000.
+
+#: Which rung of :func:`raise_window` actually landed. Kept so the cost of the
+#: raise chain is measurable instead of guessed: the whole point of the SPI
+#: escape is to make the Alt tap unreachable, and this is how that claim gets
+#: checked on a real machine rather than argued.
+_RAISE_STATS: dict[str, int] = {
+    "already": 0,
+    "set": 0,
+    "lock": 0,
+    "attach": 0,
+    "alt": 0,
+    "failed": 0,
+}
+
+
+def raise_stats() -> dict[str, int]:
+    """How each rung of :func:`raise_window` has fared in this process."""
+    return dict(_RAISE_STATS)
+
+
+def reset_raise_stats() -> None:
+    """Zero the counters (tests, and a caller starting a measured run)."""
+    for key in _RAISE_STATS:
+        _RAISE_STATS[key] = 0
+
+
+def _lock_timeout() -> int | None:
+    """The session's foreground lock timeout in ms, or None if unreadable."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    try:
+        value = ctypes.c_ulong(0)
+        ok = user32.SystemParametersInfoW(
+            SPI_GETFOREGROUNDLOCKTIMEOUT, 0, ctypes.byref(value), 0
+        )
+        return int(value.value) if ok else None
+    except Exception:  # noqa: BLE001 - optional capability, never fatal
+        return None
+
+
+def _set_lock_timeout(value: int) -> bool:
+    """Set the session's foreground lock timeout. Never writes the registry.
+
+    ``SystemParametersInfoW`` takes the new value through its ``PVOID pvParam``
+    slot - as an integer, not a pointer to one. It is therefore passed as a
+    plain address. ``ctypes.c_void_p(0)`` would be wrong here: its ``.value`` is
+    ``None`` (a null pointer), while the call expects the number 0.
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    try:
+        return bool(
+            user32.SystemParametersInfoW(
+                SPI_SETFOREGROUNDLOCKTIMEOUT, 0, ctypes.c_void_p(int(value)), 0
+            )
+        )
+    except Exception:  # noqa: BLE001 - optional capability, never fatal
+        return False
+
 
 def raise_window(hwnd: int) -> bool:
     """Put ``hwnd`` in the foreground; True when it is there afterwards.
@@ -52,20 +133,31 @@ def raise_window(hwnd: int) -> bool:
     ``SetForegroundWindow`` alone does nothing for a process that does not own
     the foreground: Windows' foreground lock answers with 0 and leaves the
     current window in front (verified live: a background tool asking for a
-    Notepad window gets ``GetForegroundWindow()`` unchanged). Three escapes are
-    tried, cheapest first:
+    Notepad window gets ``GetForegroundWindow()`` unchanged). The escapes are
+    tried cheapest first - and "cheapest" is measured in what reaches the user:
 
     1. plain ``SetForegroundWindow`` - works when the lock is not held (the
        process was just started by the user, or already owned the foreground);
-    2. attaching to the foreground thread's input queue with
+    2. the same call with the **foreground lock timeout temporarily set to 0**
+       (``SPI_SETFOREGROUNDLOCKTIMEOUT``). Microsoft's documented condition for
+       ``SetForegroundWindow`` to succeed is "the foreground lock time-out has
+       expired"; the session's value is 200000 ms, so it never expires and the
+       call is refused forever. Zeroing it makes the condition hold, and the
+       call then lands with **no input event of any kind**. The original value
+       is restored in a ``finally`` and the registry is never touched
+       (``fWinIni=0``), so the user's session is left exactly as it was;
+    3. attaching to the foreground thread's input queue with
        ``AttachThreadInput``, which makes this thread count as the foreground
        owner for the duration of the call;
-    3. an inert ``Alt`` tap followed by ``SetForegroundWindow``. The lock is
+    4. an inert ``Alt`` tap followed by ``SetForegroundWindow``. The lock is
        released by *any* input event and an Alt tap is the least intrusive one
        there is - no character is typed, no button is pressed, and the menu bar
        of the foreground window is not entered because the key down and up are
-       delivered back to back. This is the only escape that worked in the live
-       test, so it is the one that makes the guarantee real.
+       delivered back to back.
+
+    Rungs 2 and 4 both defeat the same lock, and 2 does it without touching the
+    user's input at all, so 4 exists only as a last resort - which
+    :func:`raise_stats` is there to confirm rather than assume.
 
     Returns False when the window still is not in front (a hung or elevated
     window), which callers treat as advisory for UIA primitives and as fatal
@@ -75,12 +167,33 @@ def raise_window(hwnd: int) -> bool:
     kernel32 = ctypes.windll.kernel32
     try:
         if int(user32.GetForegroundWindow() or 0) == hwnd:
+            _RAISE_STATS["already"] += 1
             return True
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)
         if int(user32.GetForegroundWindow() or 0) == hwnd:
+            _RAISE_STATS["set"] += 1
             return True
-        # 2. Attach to the foreground thread so this thread may set it.
+
+        # 2. Re-open the foreground lock for the duration of one call. The
+        #    timeout is what `SetForegroundWindow` actually checks, so zeroing
+        #    it is the documented way to let the call through, and unlike an
+        #    input event it reaches nothing the user can see.
+        original = _lock_timeout()
+        if original is not None and original != 0:
+            unlocked = _set_lock_timeout(0)
+            try:
+                if unlocked:
+                    user32.SetForegroundWindow(hwnd)
+            finally:
+                # Restore even when the raise failed: leaving the session with
+                # a 0 ms lock would change how the user's own windows behave.
+                _set_lock_timeout(original)
+            if int(user32.GetForegroundWindow() or 0) == hwnd:
+                _RAISE_STATS["lock"] += 1
+                return True
+
+        # 3. Attach to the foreground thread so this thread may set it.
         fg = int(user32.GetForegroundWindow() or 0)
         cur = kernel32.GetCurrentThreadId()
         fg_thread = 0
@@ -96,16 +209,23 @@ def raise_window(hwnd: int) -> bool:
             if attached:
                 user32.AttachThreadInput(cur, fg_thread, False)
         if int(user32.GetForegroundWindow() or 0) == hwnd:
+            _RAISE_STATS["attach"] += 1
             return True
-        # 3. Release the foreground lock with an inert Alt tap, then retry.
+
+        # 4. Last resort: release the lock with an inert Alt tap. An input
+        #    event reaching the foreground application is a real cost, so it
+        #    must stay the path that almost never runs.
         VK_MENU = 0x12
         KEYEVENTF_KEYUP = 0x0002
         user32.keybd_event(VK_MENU, 0, 0, 0)
         user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
         user32.SetForegroundWindow(hwnd)
-        return int(user32.GetForegroundWindow() or 0) == hwnd
+        landed = int(user32.GetForegroundWindow() or 0) == hwnd
+        _RAISE_STATS["alt" if landed else "failed"] += 1
+        return landed
     except Exception:  # noqa: BLE001 - optional capability, never fatal
         log.debug("raise_window(%s) failed", hwnd, exc_info=True)
+        _RAISE_STATS["failed"] += 1
         return False
 
 
