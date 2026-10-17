@@ -119,7 +119,17 @@ class Session:
         self.allow_packs = allow_packs
         self.policy = policy or Policy()
         self.budget = budget or ObservationBudget()
-        self.settler = settler or Settler()
+        #: A provider that declares itself deterministic cannot move between the
+        #: action and the settle snapshot, so the quiet window would sleep for
+        #: nothing. Only opt the settler into skipping when the provider says so;
+        #: an explicit ``settler=`` argument still wins, so a test can pin the
+        #: behaviour either way.
+        self._settle_deterministic = bool(
+            getattr(provider, "is_deterministic", False)
+        )
+        self.settler = settler or Settler(
+            skip_when_deterministic=self._settle_deterministic
+        )
         self.registry = SessionRegistry()
         self.compiler = compiler or Compiler(allocator=self.registry.allocator)
 
@@ -1025,6 +1035,7 @@ class Session:
             tree, settle_result = self.settler.wait(
                 lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
                 event_source=lambda: self._event_count,
+                deterministic=self._settle_deterministic,
             )
         except KeyError:
             # The target window vanished mid-action (e.g. the save dialog
@@ -1659,6 +1670,12 @@ class Session:
                 pass
 
         self.provider = provider
+        # The new provider may not have the same settle guarantees as the old
+        # one (e.g. switching from a replay to the child session's peer), so the
+        # flag is derived from the provider that is actually in use.
+        self._settle_deterministic = bool(
+            getattr(provider, "is_deterministic", False)
+        )
         self.registry = SessionRegistry()
         self.compiler = Compiler(allocator=self.registry.allocator)
         self.windows = []

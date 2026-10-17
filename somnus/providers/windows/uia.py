@@ -654,17 +654,19 @@ class UiaProvider:
         depth: int,
         max_depth: int,
         path: tuple[int, ...],
+        cached: Any = None,
     ) -> RawNode:
         UIA = self._UIA
-        try:
-            cached = el.BuildUpdatedCache(self._cache)
-        except Exception:
-            # The element died mid-build (window closing while the agent acts).
-            # Re-raise as KeyError so the session maps it to STALE_TARGET
-            # instead of leaking COMError (-2147220991) - found live closing
-            # Notepad: the save dialog replaced the main window between the
-            # action and the settle snapshot.
-            raise KeyError("element vanished during snapshot") from None
+        if cached is None:
+            try:
+                cached = el.BuildUpdatedCache(self._cache)
+            except Exception:
+                # The element died mid-build (window closing while the agent acts).
+                # Re-raise as KeyError so the session maps it to STALE_TARGET
+                # instead of leaking COMError (-2147220991) - found live closing
+                # Notepad: the save dialog replaced the main window between the
+                # action and the settle snapshot.
+                raise KeyError("element vanished during snapshot") from None
         role = UIA_CONTROL_TYPES.get(cached.CachedControlType, "custom")
         patterns = self._available_patterns(cached, UIA)
 
@@ -764,14 +766,28 @@ class UiaProvider:
         truncated = False
         virtual_count = None
         if depth < max_depth:
+            # Read the children from the *cache*, not from a fresh FindAll.
+            #
+            # This is the difference between O(n) and O(n^2). The cache request
+            # is TreeScope_Subtree, so one BuildUpdatedCache on the root already
+            # materialised every descendant; GetCachedChildren then hands back
+            # those cached elements with no COM round trip. A FindAll here would
+            # discard that and re-walk the target process once per node, and the
+            # per-element BuildUpdatedCache then re-fetched each node's whole
+            # subtree. Measured live on the 1467-node scenario suite: 14.4s vs
+            # 2.5s, identical tree.
+            kids = self._cached_children(cached)
+            n = _child_count(kids)
             try:
-                found = cached.FindAll(UIA.TreeScope_Children, self._auto.CreateTrueCondition())
-                n = found.Length
                 for i in range(n):
-                    child = found.GetElement(i)
+                    child_el = kids.GetElement(i)
                     children.append(
                         self._build_node(
-                            child, depth + 1, max_depth, path + (i,)
+                            child_el,
+                            depth + 1,
+                            max_depth,
+                            path + (i,),
+                            cached=child_el,
                         )
                     )
                 # A virtualising container only realises its visible items, so
@@ -863,6 +879,19 @@ class UiaProvider:
             except Exception:
                 continue
         return out
+
+    def _cached_children(self, cached: Any) -> Any:
+        """The cached element array for one node's children, or None.
+
+        A leaf answers this with a NULL COM pointer instead of an empty array,
+        so None is a normal result meaning "no children" and must not be
+        treated as an enumeration failure (it would mark every leaf truncated).
+        """
+        try:
+            kids = cached.GetCachedChildren()
+        except Exception:
+            return None
+        return kids if kids is not None else None
 
     def _window_of(self, el: Any) -> str:
         return self._current_window_id or "w1"
@@ -1149,6 +1178,20 @@ def _getattr(obj: Any, name: str, default: Any = None) -> Any:
         return getattr(obj, name)
     except Exception:
         return default
+
+
+def _child_count(kids: Any) -> int:
+    """Number of children in a cached element array; 0 for a NULL array.
+
+    Accessing ``.Length`` on the NULL pointer a leaf returns raises "NULL COM
+    pointer access", so the count has to be probed rather than assumed.
+    """
+    if kids is None:
+        return 0
+    try:
+        return int(kids.Length)
+    except Exception:
+        return 0
 
 
 def _cached_prop(cached: Any, prop_id: int) -> Any:

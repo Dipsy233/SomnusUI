@@ -58,8 +58,16 @@ CACHED_PATTERNS: dict[int, str] = {
 def build_cache_request(automation: Any, UIA: Any) -> Any:
     """Create a cache request pulling all properties/patterns we consume.
 
-    ``TreeScope_Subtree`` + a depth clamp means the whole window is fetched in a
-    bounded number of round trips.
+    ``TreeScope_Subtree`` is deliberate and is what makes the walk cheap: the
+    snapshot calls ``BuildUpdatedCache`` **once**, on the window root, and then
+    reads descendants through ``GetCachedChildren``. One round trip for the
+    whole window.
+
+    The scope and the walk must stay in step. If the walker ever goes back to
+    calling ``BuildUpdatedCache`` per element (or to ``FindAll`` for children),
+    a Subtree scope means every element re-fetches its entire subtree: measured
+    live on a 1467-node window, that is 14.4s instead of 2.5s for a byte-identical
+    tree. See ``UiaProvider._build_node``.
     """
     req = automation.CreateCacheRequest()
     for prop_id in CACHED_PROPERTIES:

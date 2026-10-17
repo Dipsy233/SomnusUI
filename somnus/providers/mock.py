@@ -152,6 +152,11 @@ class MockProvider:
 
     name = "mock"
 
+    #: A replay has no thread of its own: the tree changes only inside
+    #: ``execute``, and is always the same when the call returns. The settler
+    #: therefore has nothing to wait for (see ``AccessibilityProvider``).
+    is_deterministic = True
+
     def __init__(
         self,
         fixtures: Iterable[RawTree] | None = None,

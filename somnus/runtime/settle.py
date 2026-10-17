@@ -37,28 +37,43 @@ class Settler:
         timeout_s: float = 3.0,
         poll_interval_ms: int = 50,
         clock: Callable[[], float] = time.monotonic,
+        skip_when_deterministic: bool = False,
     ) -> None:
         self.quiet_ms = quiet_ms
         self.timeout_s = timeout_s
         self.poll_interval_ms = poll_interval_ms
         self.clock = clock
+        #: Skip the quiet window for providers that declare
+        #: ``is_deterministic``. Only the session turns this on, and only for
+        #: such a provider; see :meth:`wait`.
+        self.skip_when_deterministic = skip_when_deterministic
 
     def wait(
         self,
         fetch: Callable[[], RawTree],
         *,
         event_source: Callable[[], int] | None = None,
+        deterministic: bool = False,
     ) -> tuple[RawTree, SettleResult]:
         """Poll ``fetch`` until stable.
 
         ``event_source`` (when provided) returns a monotonically increasing event
         count. The UI is quiet once the count stops rising for ``quiet_ms``.
+
+        ``deterministic`` says the provider cannot change between the action and
+        this call unless something is still in flight. When the settler was
+        built with ``skip_when_deterministic``, one snapshot is enough: there is
+        no second version of the tree to wait for, so the quiet window would
+        only sleep before observing the same bytes. This is a provider
+        *capability*, not a test mode - a replay provider declares it, UIA never
+        does.
         """
         start = self.clock()
         last_event_count = event_source() if event_source else 0
         last_change = start
         previous: RawTree | None = None
         events = 0
+        skip = deterministic and self.skip_when_deterministic
 
         while True:
             tree = fetch()
@@ -77,6 +92,11 @@ class Settler:
                     events += max(0, count - last_event_count)
                     last_event_count = count
                     last_change = now
+
+            if skip:
+                return tree, SettleResult(
+                    settled=True, waited_ms=int(elapsed_ms), events=events
+                )
 
             quiet = (now - last_change) * 1000 >= self.quiet_ms
             loading = any("loading" in n.states for n in tree.walk())
