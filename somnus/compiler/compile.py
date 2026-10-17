@@ -366,6 +366,7 @@ class Compiler:
             name=node.name,
             ancestor_path=ancestor_path,
             role_index=role_index,
+            runtime_id=raw.native.runtime_id,
         )
         result.fingerprints[ref] = node.fingerprint
         result.ref_by_raw[id(raw)] = ref

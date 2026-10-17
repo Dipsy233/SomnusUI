@@ -100,6 +100,18 @@ class PeerProvider:
         windows = (result.get("result") or {}).get("windows") or []
         return [wire.window_from_dict(w) for w in windows]
 
+    def peek(self, window_id: str) -> WindowInfo | None:
+        """Ask the far session for one window, raising it there first.
+
+        The raise has to happen on the far side: that desktop, not this one,
+        owns the window and its foreground.
+        """
+        result = self.ensure().request(
+            {"method": "provider.peek", "params": {"window_id": window_id}}
+        )
+        window = (result.get("result") or {}).get("window")
+        return wire.window_from_dict(window) if window else None
+
     def snapshot(
         self,
         window_id: str,

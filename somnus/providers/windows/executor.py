@@ -261,24 +261,23 @@ def _bring_to_foreground(element: Any) -> ExecResult:
     foreground).
 
     ``SetForegroundWindow`` is refused while another process owns the foreground
-    (Win32's foreground lock). That is reported as ``FOREGROUND_DENIED`` so the
-    caller can fall through to a focus-free route instead of sending a keystroke
-    that would land in somebody else's window.
+    (Win32's foreground lock), so the raise goes through the same
+    ``workspace.raise_window`` the provider uses (plain set, attach-thread, inert
+    Alt tap). When even that fails the refusal is reported as
+    ``FOREGROUND_DENIED`` so the caller can fall through to a focus-free route
+    instead of sending a keystroke that would land in somebody else's window.
     """
     try:
         element.SetFocus()
     except Exception:
         pass
     try:
-        import ctypes
+        from somnus.providers.windows.workspace import raise_window
 
-        user32 = ctypes.windll.user32
         hwnd = _top_level_hwnd(element)
         if not hwnd:
             return ExecResult(ok=True, message="no top-level window handle")
-        if int(user32.GetForegroundWindow() or 0) != hwnd:
-            user32.SetForegroundWindow(hwnd)
-        if int(user32.GetForegroundWindow() or 0) != hwnd:
+        if not raise_window(hwnd):
             return ExecResult(
                 ok=False,
                 error="FOREGROUND_DENIED",

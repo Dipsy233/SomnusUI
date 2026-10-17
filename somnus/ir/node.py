@@ -70,6 +70,13 @@ class WindowInfo:
     active: bool = False
     visible: bool = True
     rect: tuple[int, int, int, int] | None = None  # x, y, w, h (resolver only)
+    #: The window's native handle, 0 when the provider cannot report one.
+    #:
+    #: Identity for a window id: two windows of one process can share a title
+    #: (two Explorer windows on the same folder), and enumeration order is not
+    #: stable - raising a window for rendering can reorder the walk. The hwnd
+    #: is what makes a window id keep naming the same window across both.
+    hwnd: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +241,7 @@ def compute_fingerprint(
     name: str | None,
     ancestor_path: str = "",
     role_index: int | None = None,
+    runtime_id: tuple[int, ...] = (),
 ) -> str:
     """Build a stable identity hash for a semantic node.
 
@@ -244,12 +252,28 @@ def compute_fingerprint(
        stable identity exists**. A stable identity makes the name volatile
        evidence and it is deliberately excluded, so mutable labels such as a
        cart total never invalidate the ref.
-    3. ``ancestor_path`` - semantic ancestor path as a last differentiator.
+    3. ``runtime_id`` - the element's own native id, as the *last* resort before
+       falling back to position. It is stable for as long as the element lives
+       and, unlike a sibling index, it does not change when the enumeration
+       order does.
     4. ``role_index`` - position among same-role siblings, used only when the
        evidence above is empty. Without it, unnamed containers (every message
        list, every wrapper pane) hash identically and the registry reports them
        as ambiguous, which makes a whole app unoperable. It is role-relative,
        not absolute, so adding a sibling of another role does not shift it.
+    5. ``ancestor_path`` - semantic ancestor path as a last differentiator.
+
+    **Why (3) exists.** For an element with no identity and no name, the only
+    remaining evidence used to be its position. That is not an identity: UIA
+    returns children in whatever order the application's own provider chooses,
+    and raising a window for rendering (which the runtime does before every
+    snapshot, so that self-drawn trees are complete at all) can change that
+    order. Measured on a synthesised tree: swapping two unnamed buttons kept
+    the refs ``b1``/``b3`` but pointed each at the other's element - a silent
+    retarget, and the registry reported it as "kept" because the fingerprints
+    matched each other. The runtime-id suffix removes the position dependence
+    entirely where the provider supplies one; position remains as the final
+    fallback for elements that expose no id at all.
 
     The runtime deliberately excludes ``value`` and mutable state: those change
     constantly and would make every ref stale (see dev doc section 8).
@@ -271,14 +295,29 @@ def compute_fingerprint(
         index_part = ""
     else:
         index_part = ""
+    # The native id's last segment distinguishes siblings without depending on
+    # where they sit in the enumeration. Only used when nothing stronger exists,
+    # so a node with a stable identity or a name keeps its position-independent
+    # fingerprint and an element that merely *repaints* (same runtime id) keeps
+    # its ref.
+    rid_part = ""
+    if not stable and not norm(name) and runtime_id:
+        rid_part = ".".join(str(p) for p in runtime_id[-1:])
+    # When the element's own id is available, position evidence is *dropped*:
+    # `ancestor_path` embeds each ancestor's own sibling index, so a reordered
+    # sibling list would change the path - and therefore the fingerprint - of
+    # every descendant, which is precisely the retargeting this guards against.
+    # The id is the better evidence and the two must not be mixed.
+    position_free = bool(rid_part)
     payload = "\x1f".join(
         (
             entity or "",
             role or "",
             norm(identity),
             "" if stable else norm(name),
-            norm(ancestor_path),
-            index_part,
+            "" if position_free else norm(ancestor_path),
+            "" if position_free else index_part,
+            rid_part,
         )
     )
     return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()

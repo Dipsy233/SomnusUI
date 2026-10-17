@@ -32,6 +32,7 @@ from somnus.providers.base import NullSubscription
 from somnus.providers.windows.cache import build_cache_request
 from somnus.providers.windows.events import EventCounter
 from somnus.providers.windows.executor import PATTERN_FOR_PRIMITIVE, run_primitive
+from somnus.providers.windows.workspace import Workspace, raise_window
 
 log = logging.getLogger("somnus.uia")
 
@@ -153,12 +154,15 @@ class UiaProvider:
         self._lock = threading.Lock()
         #: runtime_id -> live UIA element, refreshed on every snapshot.
         self._element_cache: dict[tuple[int, ...], Any] = {}
-        from somnus.providers.windows.workspace import Workspace
-
         #: Windows this provider made visible/moved for background operation.
         #: `close()` restores each one, so agent work never leaves the user's
         #: desktop rearranged.
         self._workspace = Workspace()
+        #: The window id whose window is currently expected to be in the
+        #: foreground, so a run of snapshot/execute calls on one window raises
+        #: it once instead of on every call. Cleared whenever another window
+        #: (or the user) is found in front of it.
+        self._foreground_window_id: str | None = None
 
     # -- COM lifecycle ------------------------------------------------------
 
@@ -223,10 +227,64 @@ class UiaProvider:
     # -- window discovery ---------------------------------------------------
 
     def list_windows(self) -> list[WindowInfo]:
+        """Enumerate windows *without* raising any of them.
+
+        Listing is how an agent decides where to go, and it is the one read that
+        needs no window raised: every top-level window has a title, a process
+        and an activation flag whether or not it is in front. Raising a window
+        here would steal the user's focus just to answer "what is on my
+        desktop?", so this path deliberately skips the foreground step (see
+        :meth:`peek`).
+        """
         return self._run(self._list_windows_sync)
 
+    def peek(self, window_id: str) -> WindowInfo | None:
+        """One window's metadata, with its window raised first.
+
+        The runtime asks for the target window's title/flags on every
+        observation. Looking it up through :meth:`list_windows` would not raise
+        the window (see there), so the target would stay wherever it happens to
+        be - behind another window, or minimized - and a self-drawing
+        application would answer the following snapshot with an empty tree.
+        """
+        return self._run(lambda: self._peek_sync(window_id))
+
+    def _peek_sync(self, window_id: str) -> WindowInfo | None:
+        el = self._windows.get(window_id)
+        if el is None:
+            # Re-enumerating is what discovers a window the agent has not listed
+            # yet (a pack may name one directly).
+            next((w for w in self._list_windows_sync() if w.window_id == window_id), None)
+            el = self._windows.get(window_id)
+            if el is None:
+                return None
+        # Raise FIRST, then read the metadata. Reading it from the enumeration
+        # instead would return None for the one case this exists to fix: a
+        # minimized (or otherwise off-screen) window is filtered out of the
+        # list, so a lookup through it finds nothing, reports "no such window",
+        # and the window is never raised - leaving the following snapshot and
+        # every execute against an empty shell.
+        self._enter_foreground_sync(window_id, el)
+        try:
+            pid = int(el.CurrentProcessId)
+            return WindowInfo(
+                window_id=window_id,
+                title=el.CurrentName or "",
+                process=_process_name(pid),
+                pid=pid,
+                active=bool(el.CurrentHasKeyboardFocus),
+                hwnd=_top_level_hwnd_of(el),
+            )
+        except Exception:
+            # The window died between the raise and the read.
+            return None
+
     def _list_windows_sync(self) -> list[WindowInfo]:
-        """Enumerate top-level application windows.
+        """Enumerate top-level application windows, raising none of them.
+
+        Called by :meth:`list_windows` (the peek path, which must not touch
+        the foreground) and by the resolution paths below, which raise the
+        window they resolved to themselves.
 
         The desktop is walked with ``ControlViewWalker`` rather than
         ``FindAll``: the walker view is what actually surfaces UWP/WinUI
@@ -350,16 +408,35 @@ class UiaProvider:
                 proc = _process_name(pid)
         if self.allow_list and proc.lower() not in self.allow_list:
             return
-        # The same native window must not be listed twice.
+        # The same native window must not be listed twice. Windows with a
+        # handle are deduped by the handle (its element can be reached from
+        # both the UIA walker and the Win32 enumeration); a window without one
+        # falls back to (pid, title), the historical rule.
+        #
+        # (pid, title) alone is not enough to *identify* a window: two windows
+        # of one process legitimately share a title (two Explorer windows on
+        # the same folder, two "无标题 - 画图"), and collapsing them here made
+        # one of the two unaddressable.
         for existing in out:
-            if existing.pid == pid and existing.title == name:
+            if hwnd and existing.hwnd:
+                if existing.hwnd == hwnd:
+                    return
+                continue
+            if existing.pid == pid and existing.title == name and not existing.hwnd:
                 return
         # Stable window ids: numbering by list position renumbers every window
         # after one closes, silently retargeting agents that hold old refs
         # (found driving Steam live: w3 flipped between Steam and QQ between
-        # enumerations). Key ids by (pid, title) instead; new windows get the
-        # next free number.
-        key = (pid, name)
+        # enumerations).
+        #
+        # The id is keyed by hwnd, NOT by (pid, title). A title is neither
+        # unique nor stable: two windows of one app can share it (and then a
+        # single id would be handed to both), and raising a window or letting
+        # the app retitle it must not move its id. The hwnd is the one property
+        # of a top-level window that survives enumeration-order changes - which
+        # is exactly what raising a window for rendering can cause. A window
+        # without a handle falls back to (pid, title), the old behaviour.
+        key = (pid, name) if not hwnd else ("hwnd", hwnd)
         wid = self._window_id_by_key.get(key)
         if wid is None:
             used = set(self._window_id_by_key.values())
@@ -368,6 +445,10 @@ class UiaProvider:
                 n += 1
             wid = f"w{n}"
             self._window_id_by_key[key] = wid
+        # Remember the title too, so a window whose handle the provider could
+        # not read still resolves on a later enumeration by its (pid, title).
+        if hwnd:
+            self._window_id_by_key.setdefault((pid, name), wid)
         with self._lock:
             self._windows[wid] = el
         out.append(
@@ -377,14 +458,16 @@ class UiaProvider:
                 process=proc,
                 pid=pid,
                 active=bool(el.CurrentHasKeyboardFocus),
+                hwnd=hwnd,
             )
         )
 
     def focus_window(self, window_id: str) -> ExecResult:
+        """``CALL wN.focus()``: switch the target and raise its window."""
         el = self._windows.get(window_id)
         if el is None:
             return ExecResult(ok=False, error="TARGET_NOT_FOUND")
-        return self._run(lambda: _set_foreground(el))
+        return self._run(lambda: self._enter_foreground_sync(window_id, el))
 
     # -- snapshot -----------------------------------------------------------
 
@@ -447,6 +530,7 @@ class UiaProvider:
                         process=_process_name(int(el.CurrentProcessId)),
                         title=el.CurrentName or "",
                         active=False,
+                        hwnd=hwnd,
                     )
                     tree = self._snapshot_sync(window_id, None, max_depth)
                     return window_id, tree
@@ -524,6 +608,7 @@ class UiaProvider:
                     process=_process_name(int(el.CurrentProcessId)),
                     title=el.CurrentName or "",
                     active=False,
+                    hwnd=hwnd,
                 )
                 tree = self._snapshot_sync(window_id, None, max_depth)
                 # Accept windows whose tree shows menu-like content. This is
@@ -542,46 +627,59 @@ class UiaProvider:
                 return window_id, tree
         return None
 
-    @staticmethod
-    def _ensure_visible(el: Any, workspace=None) -> None:
-        """Make a window operable without stealing the user's screen.
+    def _enter_foreground_sync(self, window_id: str, el: Any) -> ExecResult:
+        """Raise the window behind ``window_id`` and confirm it is in front.
 
-        A minimized Chromium window (Steam, Chrome, Electron apps) exposes an
-        empty or near-empty accessibility tree: the renderer does not lay out
-        invisible content. An agent observing a minimized window would see one
-        bare WINDOW line and wrongly conclude the app is inaccessible, when the
-        only thing missing is that the window is not shown.
+        Called before every snapshot and every primitive (see
+        :meth:`snapshot` and :meth:`execute`): the tree a self-drawing
+        application publishes - and the input it queues - belong to whatever is
+        in the foreground, so the target has to *be* the foreground. The raise
+        is skipped while this window is already the one in front, which is the
+        common case (a run of snapshot/execute calls on one window, the
+        post-action settle, a child session that owns its own desktop).
 
-        Two properties matter beyond plain visibility:
-
-        * the restore must not *activate* - the user may be typing elsewhere,
-          and stealing focus is exactly the interference this feature exists
-          to avoid (``SW_SHOWNOACTIVATE``);
-        * a window on another virtual desktop is usually laid out but moving
-          it to the current desktop makes background operation reliable, so
-          the workspace moves it when it can (never fatal when it cannot).
-
-        With ``workspace``, the prior state is recorded so ``release`` can
-        put the window back (re-minimize, move home) when the session ends.
+        ``SetForegroundWindow`` is refused while another process owns the
+        foreground (Win32's foreground lock). That is not fatal for semantic
+        UIA primitives - they reach a covered window too - so the result is
+        advisory and only the synthetic-input routes (typing, paste) turn a
+        refusal into an error (see ``executor._bring_to_foreground``).
         """
         try:
+            hwnd = _top_level_hwnd_of(el)
+            if not hwnd:
+                return ExecResult(ok=True, message="no top-level window handle")
             import ctypes
 
-            hwnd = int(el.CurrentNativeWindowHandle or 0)
-            if not hwnd:
-                return
             user32 = ctypes.windll.user32
-            # IsWindowVisible stays True for a minimized window; the layout
-            # question is IsIconic. A minimized CEF app lays out nothing, so
-            # iconic is the state that needs fixing.
-            if not user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
-                return
-            if workspace is not None:
-                workspace.acquire(hwnd)
-            else:
-                Workspace.show_no_activate(hwnd)
-        except Exception:
-            return
+            # Skip only when the window is in front *and restored*: a minimized
+            # window is still reported as the foreground window (it is the
+            # foreground window that gets minimized), so checking the id alone
+            # would leave it minimized and skip the restore that the following
+            # snapshot depends on.
+            if (
+                self._foreground_window_id == window_id
+                and int(user32.GetForegroundWindow() or 0) == hwnd
+                and not user32.IsIconic(hwnd)
+            ):
+                return ExecResult(ok=True)
+            # `acquire` records the user's state once, shows a minimized window
+            # and moves it to this desktop; `raise_window` is the actual raise
+            # and reports whether the foreground lock let it through.
+            self._workspace.acquire(hwnd)
+            self._foreground_window_id = window_id
+            if not raise_window(hwnd):
+                return ExecResult(
+                    ok=False,
+                    error="FOREGROUND_DENIED",
+                    message=(
+                        "the target window could not be raised (another "
+                        "application holds the foreground); the tree may be "
+                        "incomplete and synthetic input would land elsewhere"
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001 - converted to a code
+            return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED", message=str(exc))
+        return ExecResult(ok=True)
 
     def _snapshot_sync(
         self,
@@ -608,6 +706,7 @@ class UiaProvider:
                     process=_process_name(el.CurrentProcessId),
                     pid=el.CurrentProcessId,
                     active=bool(el.CurrentHasKeyboardFocus),
+                    hwnd=_top_level_hwnd_of(el),
                 )
             except Exception:
                 # The window died between enumeration and snapshot (agent was
@@ -625,10 +724,10 @@ class UiaProvider:
         root_el = el
         if scope is not None:
             root_el = self._find_by_native(el, scope) or el
-        # A minimized window has no laid-out content; restore it first or the
-        # agent would see a bare window shell instead of the app (found live:
-        # minimized Steam observed as one empty WINDOW line).
-        self._ensure_visible(el, self._workspace)
+        # Only the foreground window is reliably rendered (a covered or
+        # minimized self-drawn window publishes an empty shell), so raise it
+        # before reading anything out of it.
+        self._enter_foreground_sync(window_id, el)
 
         # Nodes built from this snapshot must carry the window they belong to,
         # otherwise execute() later locates them under the wrong root (histori-
@@ -905,6 +1004,13 @@ class UiaProvider:
         value: Any = None,
         timeout_s: float = 3.0,
     ) -> ExecResult:
+        """Run one primitive against the target window, raised first.
+
+        The foreground is taken here rather than inside each pattern call:
+        some patterns (Invoke on a self-drawn control, ShowContextMenu) act on
+        whatever is rendered, and a covered window may have rendered nothing.
+        The raise is a no-op when the window is already in front.
+        """
         future = self._executor.submit(self._execute_sync, ref, primitive, value)
         try:
             return future.result(timeout=timeout_s)
@@ -916,6 +1022,12 @@ class UiaProvider:
         el = self._locate(ref)
         if el is None:
             return ExecResult(ok=False, error="STALE_TARGET")
+        # `focus`/`read` do not need the window in front (a focus step is a
+        # preparation for the *element*, and the capability that follows it
+        # raises the window itself). Everything else may depend on rendering,
+        # so the target window is raised before the primitive runs.
+        if primitive not in ("focus", "read"):
+            self._enter_foreground_sync(ref.window_id, el)
         if primitive not in PATTERN_FOR_PRIMITIVE and primitive not in (
             "focus",
             "read",
@@ -1225,3 +1337,22 @@ def _set_foreground(el: Any) -> ExecResult:
     from somnus.providers.windows.executor import _bring_to_foreground
 
     return _bring_to_foreground(el)
+
+
+def _top_level_hwnd_of(el: Any) -> int:
+    """The top-level HWND a window/provider element belongs to, or 0.
+
+    A window element normally maps its own handle; when it does not (a UWP
+    frame reports the content window), the Win32 walk from the element's
+    parent process handle finds it. 0 means "nothing to raise".
+    """
+    import ctypes
+
+    try:
+        hwnd = int(el.CurrentNativeWindowHandle or 0)
+    except Exception:
+        hwnd = 0
+    if not hwnd:
+        return 0
+    user32 = ctypes.windll.user32
+    return int(user32.GetAncestor(hwnd, 2) or hwnd)  # 2 = GA_ROOT

@@ -14,7 +14,7 @@ from somnus.providers.mock import MockProvider
 from somnus.runtime.session import Session
 from somnus.sui.parse import parse_action
 import re
-from tests.fixtures.builders import notepad_tree, restaurant_demo_tree
+from tests.fixtures.builders import demo_scripts, notepad_tree, restaurant_demo_tree
 
 
 def _second_window(wid: str = "w2", title: str = "Notepad", active: bool = False) -> RawTree:
@@ -196,3 +196,81 @@ def test_observe_with_window_arg_switches_target():
     session = _session(restaurant_demo_tree(), _second_window())
     session.observe(window="w2")
     assert session.target_window == "w2"
+
+
+# ------------------------------------------------------- foreground on use
+
+
+class _PeekProviding(MockProvider):
+    """A mock that records the calls the runtime uses to raise a window."""
+
+    def __init__(self, *a, **kw) -> None:
+        super().__init__(*a, **kw)
+        self.peeks: list[str] = []
+        self.focus_calls: list[str] = []
+        self.lists = 0
+
+    def list_windows(self):
+        self.lists += 1
+        return super().list_windows()
+
+    def peek(self, window_id):
+        self.peeks.append(window_id)
+        return super().peek(window_id)
+
+    def focus_window(self, window_id):
+        self.focus_calls.append(window_id)
+
+
+def test_observe_raises_the_target_window():
+    """OBSERVE must put the window in front: a covered self-drawn window
+    renders nothing, so its tree would silently be a bare shell."""
+    provider = _PeekProviding(fixtures=[restaurant_demo_tree(), _second_window()])
+    session = Session(provider)
+    session.observe()
+    assert provider.peeks and provider.peeks[-1] == session.target_window
+    session.dispatch("CALL w2.focus()")
+    session.observe()
+    assert provider.peeks[-1] == "w2"
+
+
+def test_observe_windows_only_does_not_steal_foreground():
+    """Listing windows needs no window rendered, so it must raise none."""
+    provider = _PeekProviding(fixtures=[restaurant_demo_tree(), _second_window()])
+    session = Session(provider)
+    session.observe(windows_only=True)
+    assert provider.peeks == [] and provider.focus_calls == []
+
+
+def test_call_raises_the_target_window_before_and_after():
+    provider = _PeekProviding(
+        fixtures=[restaurant_demo_tree()], scripts=demo_scripts()
+    )
+    session = Session(provider)
+    session.observe()
+    button = next(
+        n for n in session.result.root.walk() if "activate" in n.cap_names()
+    )
+    provider.peeks.clear()
+    session.dispatch(f"CALL {button.ref}.activate()")
+    # Once before the primitive, once before the settle snapshot.
+    assert provider.peeks == [session.target_window, session.target_window]
+
+
+def test_provider_without_peek_is_focused_explicitly():
+    """A third-party provider gets the same guarantee through focus_window."""
+
+    class _NoPeek(MockProvider):
+        peek = None
+
+        def __init__(self, *a, **kw) -> None:
+            super().__init__(*a, **kw)
+            self.focused: list[str] = []
+
+        def focus_window(self, window_id):
+            self.focused.append(window_id)
+
+    provider = _NoPeek(fixtures=[restaurant_demo_tree()])
+    session = Session(provider)
+    session.observe()
+    assert provider.focused == [session.target_window]

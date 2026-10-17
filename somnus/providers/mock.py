@@ -188,6 +188,11 @@ class MockProvider:
     def list_windows(self) -> list[WindowInfo]:
         return [t.window for t in self._trees.values()]
 
+    def peek(self, window_id: str) -> WindowInfo | None:
+        """Replay the window's metadata; a replay has no desktop to raise."""
+        tree = self._trees.get(window_id)
+        return tree.window if tree is not None else None
+
     def snapshot(
         self,
         window_id: str,

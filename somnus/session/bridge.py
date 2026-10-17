@@ -394,6 +394,13 @@ class PeerServer:
             windows = provider.list_windows()
             return {"result": {"windows": [wire.window_to_dict(w) for w in windows]}}
 
+        if method == "provider.peek":
+            # The far session raises the window before answering: the far
+            # desktop owns it, so the foreground step must run there.
+            peek = getattr(provider, "peek", None)
+            window = peek(params["window_id"]) if peek is not None else None
+            return {"result": {"window": wire.window_to_dict(window) if window else None}}
+
         if method == "provider.snapshot":
             scope = params.get("scope")
             tree = provider.snapshot(

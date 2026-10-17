@@ -41,7 +41,21 @@ class AccessibilityProvider(Protocol):
     #: default, which is what a third-party provider should get.
     is_deterministic: bool
 
-    def list_windows(self) -> list[WindowInfo]: ...
+    def list_windows(self) -> list[WindowInfo]:
+        """Enumerate top-level windows. Must not raise or activate any window."""
+        ...
+
+    def peek(self, window_id: str) -> WindowInfo | None:
+        """One window's current metadata, raising that window first.
+
+        Optional. Providers that can put a window in the foreground implement
+        it so the runtime can refresh the *target* window's title/flags without
+        falling back to a full enumeration - and so that the refresh is the
+        moment the target is made the window the user is looking at, which is
+        what a self-drawn application needs before it renders anything. Without
+        it the runtime falls back to ``list_windows``, which raises nothing.
+        """
+        ...
 
     def snapshot(
         self,

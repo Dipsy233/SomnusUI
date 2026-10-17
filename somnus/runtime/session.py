@@ -228,6 +228,33 @@ class Session:
                 return w
         return None
 
+    def _peek(self, window_id: str) -> WindowInfo | None:
+        """Refresh one window's metadata, raising its window first.
+
+        The provider's ``peek`` already puts the window in the foreground (a
+        covered or minimized self-drawn window renders nothing, so its tree
+        would come back as a bare shell). A provider without ``peek`` (a
+        third-party one, a test double) is asked to focus the window
+        explicitly, which keeps the guarantee without a second provider API.
+        """
+        peek = getattr(self.provider, "peek", None)
+        if peek is not None:
+            try:
+                return peek(window_id)
+            except KeyError:
+                return None
+        focus = getattr(self.provider, "focus_window", None)
+        if focus is not None:
+            try:
+                focus(window_id)
+            except Exception:  # noqa: BLE001 - advisory, the read still happens
+                pass
+        try:
+            windows = self.provider.list_windows()
+        except Exception:  # noqa: BLE001 - a dead provider is reported by observe/call
+            return None
+        return next((w for w in windows if w.window_id == window_id), None)
+
     # ------------------------------------------------------------------ compile
 
     def _current_pack(self) -> Pack | None:
@@ -509,13 +536,23 @@ class Session:
         ``include_other_windows`` (or observe with ``windows_only``) when the
         desktop context is actually wanted.
 
+        Observing a window brings it to the foreground. A window that is behind
+        another one - or minimized - is not reliably *rendered*, and a
+        self-drawn surface (Chromium/Electron/Qt Quick) publishes an empty
+        tree until it is: the observation would silently be missing most of the
+        UI. Taking the foreground is the price of a complete tree; an agent
+        that must not disturb the user belongs in the child session, which has
+        its own foreground window (see docs/child-session.md).
+
         Observation is read-only and side-effect free, so an unknown window ref
         must not dead-end the agent: fall back to the default window and let the
         resulting overview show the real refs (dev doc section 6.4).
 
         ``windows_only`` answers "what is on my desktop right now" without
         dumping any tree, which is what a cross-window workflow needs before it
-        decides where to go (dev doc section 5).
+        decides where to go (dev doc section 5). It is also the one path that
+        raises nothing: a window *list* needs no window rendered, so it does not
+        seize the foreground just to answer.
 
         ``full`` (``OBSERVE w5 full``) renders the whole window tree without
         any collapse or budget. ``expanded`` is the set of node ids the agent
@@ -543,6 +580,15 @@ class Session:
             else:
                 text = f"@rev {self.rev}\n" + self._render_window_list()
             return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
+
+        # Raise the target before reading it (and before the header reports its
+        # active flag, which is only true after the raise). `_recompile` then
+        # snapshots a window that is actually on screen.
+        win = self._peek(self.target_window) if self.target_window else None
+        if win is not None:
+            # Refresh in place: the window list is ordered (refs and window
+            # numbering are allocated from it), so the target keeps its slot.
+            self.windows = [win if w.window_id == win.window_id else w for w in self.windows]
 
         result = self._recompile()
         # Surface windows that appeared/vanished/renamed since the last look so
@@ -881,6 +927,16 @@ class Session:
         self.policy.check_process(self._target_process())
         self.policy.check_action(resolution, confirmed=confirmed)
 
+        # Raise the target before acting. The primitive runs against the window
+        # and whatever it has rendered; a covered or minimized self-drawn window
+        # may have rendered nothing, and some patterns (ShowContextMenu, Invoke
+        # on a self-drawn control) act on the rendering. The provider performs
+        # the raise itself for every primitive; doing it here as well means the
+        # window is already in front while the effect baseline is captured, so
+        # the "did anything change" comparison is not fooled by the raise.
+        if self.target_window:
+            self._peek(self.target_window)
+
         # Baseline for effect verification.
         verifier = Verifier(
             by_ref={n.ref: n for n in self.result.root.walk()},
@@ -1031,6 +1087,11 @@ class Session:
         # window entirely (closing a document raises a save dialog), and the
         # delta must reflect the desktop as it is now.
         self.refresh_windows()
+        # Re-raise before the settle snapshot: the action (or the user) may have
+        # moved the foreground away, and the settled tree is only complete for a
+        # window that is rendered.
+        if self.target_window:
+            self._peek(self.target_window)
         try:
             tree, settle_result = self.settler.wait(
                 lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]

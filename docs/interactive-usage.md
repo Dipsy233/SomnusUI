@@ -194,35 +194,42 @@ OK_UNVERIFIED rev=2
 窗口类 `#32768`）；自绘控件里由应用自己响应 `ShowContextMenu` 的也行。这不是
 运行时的缺陷，是平台的边界，运行时的处理（报实情 + 给替代）就是为它准备的。
 
-## 后台无干扰操作
+## 使用前先把窗口提到前台
 
-agent 操作窗口不需要它在前台，也不抢用户焦点。UIA 的语义调用
-（`activate` / `set_text` / `context_menu` / `scroll`）对**可见但被遮挡**
-的窗口全部可用——前台不是前提。唯一真正阻断操作的是**最小化**：CEF 应用
-（Steam/QQ/Chrome）最小化时渲染挂起，无障碍树萎缩到壳。
+agent 读或操作一个窗口时，会**先把该窗口提到前台**。这不是副作用，是前提：
+被遮挡或最小化的窗口并不可靠地渲染。普通 Win32/WPF/UWP 应用通常仍有完整树，
+但自绘界面（Chromium/Electron/Qt Quick：QQ、豆包、Steam）在被真正显示前什么都
+不渲染——无障碍树萎缩到壳，agent 会以为这个应用没有控件。最小化是最极端的情况：
+CEF 应用完全不布局。
 
-因此运行时在快照/操作前自动处理：
+因此运行时在做任何事之前先提窗口：
 
-1. 最小化的窗口用 `SW_SHOWNOACTIVATE` 展开——不激活、不抢焦点，用户正在
-   输入的窗口保持焦点不动；
-2. 在其他虚拟桌面的窗口用官方 `IVirtualDesktopManager` 移到当前桌面
+1. provider 的 `snapshot` 与每个非平凡的 `execute` 都经过
+   `UiaProvider._enter_foreground_sync`，`CALL wN.focus()` 同理；
+2. 窗口已经在前台时跳过，因此对同一窗口的一串调用只付一次激活；
+3. 前台锁（另一个进程持有前台时 `SetForegroundWindow` 返回 0）由
+   `workspace.raise_window` 处理：普通调用 → `AttachThreadInput` → 一次空按
+   Alt 后重试；
+4. 在其他虚拟桌面的窗口用官方 `IVirtualDesktopManager` 移到当前桌面
    （同一进程无需二次登录：QQ 主桌面登录一次即可）。
 
+唯一不提窗口的是 `OBSERVE windows`：回答"桌面上有什么"不需要任何窗口渲染，
+它是每个工作流的入口，保持无代价。
+
 窗口接触前的状态会被记录，会话结束（provider `close()`）时自动恢复：
-原来最小化的重新最小化，agent 的工作不给用户留下任何桌面被重新布置的
-痕迹。
+原来最小化的重新最小化，agent 的工作不给用户留下桌面被重新布置的痕迹。
 
 ```text
 （用户把 QQ 最小化后离开）
-sui> OBSERVE w4              ← 运行时自动无激活展开 + 快照
+sui> OBSERVE w4              ← 窗口被提到前台，QQ 完整渲染
 @rev 1
-WINDOW w15 "QQ" ...          ← 完整内容，焦点仍在用户原来的窗口
+WINDOW w15 "QQ" ...          ← 完整内容
 
 sui> CALL q2.set_text("...")
 sui> CALL b213.activate()
 
-（会话结束 → QQ 自动回到最小化）
+（会话结束 → 原来最小化的窗口重新最小化）
 ```
 
-已知限制：无激活展开无法完全隐藏窗口（任务栏图标可见；原处于顶层
-z-order 的窗口会短暂出现，被完全遮挡则无感）。
+想要**完全不影响用户**，用子会话（`SWITCH child`）：那里有自己的前台窗口和
+输入队列，提窗口、打字都不影响用户桌上的东西，见 `docs/child-session.md`。

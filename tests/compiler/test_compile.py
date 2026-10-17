@@ -346,3 +346,152 @@ def test_identical_unnamed_containers_are_distinct():
     result = Compiler().compile(tree)
     groups = [n for n in result.root.walk() if n.role == "group"]
     assert len({g.fingerprint for g in groups}) == len(groups)
+
+
+# ------------------------------------------------------- order independence
+#
+# The runtime raises a window before every snapshot (a covered or minimized
+# self-drawn window publishes an empty tree). Raising can reorder the walk, and
+# UIA's child order is the application's choice anyway, so a ref must never
+# depend on where a sibling sits in the list.
+
+
+def _unnamed_buttons(order, rids=None):
+    """Three buttons with no name, no automation id and no class name.
+
+    This is the hardest case: every piece of identity evidence the compiler
+    normally uses is absent, so position used to be the only thing telling the
+    siblings apart.
+    """
+    rids = rids or {i: (1, i) for i in order}
+    kids = [
+        RawNode(
+            native=NativeRef(window_id="w1", runtime_id=rids[i], path=(i,)),
+            role="button",
+            name=None,
+            patterns=frozenset({"invoke"}),
+        )
+        for i in order
+    ]
+    return RawTree(
+        window=WindowInfo("w1", "App", "app.exe", 1),
+        root=RawNode(
+            native=NativeRef(window_id="w1", runtime_id=(0,), path=()),
+            role="window",
+            name="App",
+            children=kids,
+        ),
+        raw_revision=0,
+    )
+
+
+def _ref_to_native(result):
+    return {
+        n.ref: result.sources[n.ref].native.runtime_id
+        for n in result.root.walk()
+        if n.role == "button"
+    }
+
+
+def test_sibling_order_change_does_not_retarget_refs():
+    """Reordering unnamed siblings must not move a ref onto another element.
+
+    Measured before the fix: swapping two unnamed buttons kept the refs but
+    pointed each at the other's element, and the registry reported "kept"
+    because the two fingerprints matched *each other*. A silent retarget is
+    exactly the failure a window raise could trigger.
+    """
+    from somnus.runtime.registry import SessionRegistry
+
+    registry = SessionRegistry()
+    compiler = Compiler(allocator=registry.allocator)
+
+    first = compiler.compile(_unnamed_buttons([0, 1, 2]), pack=None)
+    registry.reconcile(first)
+    before = _ref_to_native(first)
+    assert len(before) == 3
+
+    reordered = compiler.compile(_unnamed_buttons([2, 1, 0]), pack=None)
+    registry.reconcile(reordered)
+    after = _ref_to_native(reordered)
+
+    # Same refs, and each still names the same native element.
+    assert after == before
+
+
+def test_named_siblings_stay_stable_across_reorder():
+    """Named siblings were already position independent; keep it that way."""
+    from somnus.runtime.registry import SessionRegistry
+
+    names = {0: "Save", 1: "Cancel", 2: "Help"}
+
+    def tree(order):
+        base = _unnamed_buttons(order)
+        for child, i in zip(base.root.children, order):
+            child.name = names[i]
+        return base
+
+    registry = SessionRegistry()
+    compiler = Compiler(allocator=registry.allocator)
+    first = compiler.compile(tree([0, 1, 2]), pack=None)
+    registry.reconcile(first)
+    before = _ref_to_native(first)
+    assert {n.name for n in first.root.walk() if n.role == "button"} == set(names.values())
+
+    reordered = compiler.compile(tree([2, 1, 0]), pack=None)
+    registry.reconcile(reordered)
+    assert _ref_to_native(reordered) == before
+
+
+def test_fingerprint_ignores_runtime_id_when_a_name_exists():
+    """A named element keeps its ref when its runtime id changes.
+
+    The app rebuilt the control (new runtime id) but it is still "Save" - the
+    name is the evidence, so the ref must survive.
+    """
+    from somnus.ir.node import compute_fingerprint
+
+    base = compute_fingerprint(
+        entity=None, role="button", identity=None, name="Save", runtime_id=(1, 0)
+    )
+    rebuilt = compute_fingerprint(
+        entity=None, role="button", identity=None, name="Save", runtime_id=(9, 9)
+    )
+    assert base == rebuilt
+
+
+def test_fingerprint_uses_runtime_id_for_anonymous_elements():
+    """With no name and no identity, the native id decides - not the position."""
+    from somnus.ir.node import compute_fingerprint
+
+    a = compute_fingerprint(
+        entity=None, role="image", identity=None, name=None,
+        ancestor_path="window#0", role_index=0, runtime_id=(1, 7),
+    )
+    # Same element, different position in the list: unchanged.
+    moved = compute_fingerprint(
+        entity=None, role="image", identity=None, name=None,
+        ancestor_path="window#3", role_index=5, runtime_id=(1, 7),
+    )
+    # Different element at the same position: different.
+    other = compute_fingerprint(
+        entity=None, role="image", identity=None, name=None,
+        ancestor_path="window#0", role_index=0, runtime_id=(1, 8),
+    )
+    assert a == moved
+    assert a != other
+
+
+def test_fingerprint_falls_back_to_position_without_a_runtime_id():
+    """A provider that reports no native id still gets distinct siblings."""
+    from somnus.ir.node import compute_fingerprint
+
+    a = compute_fingerprint(
+        entity=None, role="button", identity=None, name=None,
+        ancestor_path="window#0", role_index=0, runtime_id=(),
+    )
+    b = compute_fingerprint(
+        entity=None, role="button", identity=None, name=None,
+        ancestor_path="window#0", role_index=1, runtime_id=(),
+    )
+    assert a != b

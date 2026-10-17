@@ -311,43 +311,60 @@ enumeration, the accessibility tree and synthetic input are all confined to the
 caller's Windows session, so a second desktop is reached only by running a
 provider where those windows actually are.
 
-## Working without disturbing the user
+## The window is raised before it is used
 
-The agent's ordinary work does not require the window to be foreground and never
-steals the user's focus. Verified live:
+`OBSERVE` and `CALL` put the target window in the **foreground**. That is a
+deliberate choice, and it is the one that makes observations complete:
 
-- A **visible but covered** window exposes its full tree and accepts every
-  UIA primitive - being foreground is not a requirement of anything the
-  runtime does;
-- a **minimized** window lays nothing out (CEF apps such as Steam/QQ/Chrome
-  collapse to a bare shell) and is the one state that actually blocks
-  operation;
+- A window that is **covered**, minimized or on another virtual desktop is not
+  reliably *rendered*. Ordinary Win32/WPF/UWP apps usually still publish a full
+  tree, but self-drawn surfaces (Chromium, Electron, Qt Quick - QQ, Doubao,
+  Steam) render nothing until they are actually visible: their tree collapses to
+  a bare shell and the agent silently sees an application with no controls.
+- **Minimized** is the extreme case: CEF apps lay out nothing at all.
 
-So the provider shows a minimized window with `SW_SHOWNOACTIVATE` before
-snapshotting or acting - **never activating**, so whatever the user is typing
-into keeps its focus. The window's prior state is recorded, and provider
-`close()` restores it.
+So every path that reads or acts on a window raises it first - the provider's
+`snapshot` and every non-trivial `execute` (both funnel through
+`UiaProvider._enter_foreground_sync`), plus `CALL wN.focus()`. The raise is
+skipped while the window is already in front, so a run of calls on one window
+(snapshot, primitive, settle snapshot) costs one activation, not four.
 
-Known limitation: a no-activate show cannot fully hide the window (its taskbar
-icon appears). That is inherent to the no-activation path and still less
-intrusive than any focus-based approach.
+`SetForegroundWindow` alone is not enough for a tool that was not clicked:
+Windows' foreground lock answers 0 and leaves the current window in front
+(verified live). `workspace.raise_window` tries, in order: a plain
+`SetForegroundWindow`; `AttachThreadInput` to the foreground thread; and an
+inert **Alt tap** followed by a retry - the lock is released by any input event,
+and an Alt press/release pair types nothing and presses nothing.
+
+What is still not raised:
+
+- **`OBSERVE windows`** (the window list). Answering "what is on my desktop"
+  needs no window rendered, so it never seizes the foreground. It is the
+  entry point of every workflow, and it stays free.
+- the **post-action settle** re-raises the target only because the action (or
+  the user) may have moved the foreground away.
+
+State is still restored: the prior state of every window touched (minimized?
+which desktop?) is recorded once per window, and provider `close()` re-minimizes
+what was minimized.
 
 ### When that is not enough: a child session
 
-Two channels do need the foreground: `--allow-clipboard` and
-`--allow-keyboard`. They exist because an application that publishes no writable
-interface (a self-drawn editor, a terminal surface, an omnibox that only commits
-on Enter) is otherwise unreachable, and they were measured as the single largest
-class of unfinished tasks. But `SendInput` and `Ctrl+V` go to the **foreground
-window**, and a desktop has exactly one - so when the agent uses them it is
-competing with the person at the keyboard.
+Raising a window takes the user's focus, and `--allow-clipboard` /
+`--allow-keyboard` additionally send synthetic input. Those channels exist
+because an application that publishes no writable interface (a self-drawn
+editor, a terminal surface, an omnibox that only commits on Enter) is otherwise
+unreachable, and they were measured as the single largest class of unfinished
+tasks. But `SendInput` and `Ctrl+V` go to the **foreground window**, and a
+desktop has exactly one - so when the agent uses them it is competing with the
+person at the keyboard.
 
-No Win32 trick resolves that. What does is a **child session**: a second
-interactive logon for the same account, with its own input desktop, its own
-foreground window and its own input queue. An agent parked there can raise
-windows, type and paste freely; the user, in the console session, is unaffected -
-not because the agent is polite, but because the two sessions do not share the
-thing they used to fight over.
+What removes the interference is a **child session**: a second interactive logon
+for the same account, with its own input desktop, its own foreground window and
+its own input queue. An agent parked there can raise windows, type and paste
+freely; the user, in the console session, is unaffected - not because the agent
+is polite, but because the two sessions do not share the thing they used to
+fight over.
 
 ```bash
 somnus child-session setup     # once, elevated: feature, listener, delegation
