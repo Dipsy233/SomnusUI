@@ -11,17 +11,31 @@
 **优先使用应用自己发布的接口；只有在应用没有暴露任何写入能力时，
 才退回到"替用户操作输入设备"。**
 
-这不是洁癖，而是由实测后果决定的。合成输入（粘贴、键盘）有两个绕不开的代价：
+两条原则按此顺序生效，本文件讨论第一条，第二条见
+[child-session.md](child-session.md)：
+
+1. **不做无焦点写入。** 运行时不在用户不知情时碰触其他应用的窗口。写入通道
+   （`ValuePattern`、`Ctrl+V`、`SendInput`）在动手之前都会先把目标窗口提到
+   前台（`executor._bring_to_foreground`）；窗口提不到前台时，调用会**如实
+   拒绝**，而不是换一条更隐蔽的路。
+2. **不干扰用户，靠子会话。** 无焦点写入曾被当作"安静地工作"的办法，实践表明
+   它引发的不可预期远多于它省下的东西：一次写入落在哪个窗口取决于当时的前台
+   状态，副作用无法归因，用户也无法察觉发生了什么。真正把 agent 的操作从用户
+   眼前移开的是**子会话**——同一账户的第二次交互式登录，有自己的前台窗口和
+   输入队列。需要"不打扰"的宿主应当把 agent 放到那里，而不是要求运行时绕过
+   前台。
+
+合成输入（粘贴、键盘）因此有两个绕不开的代价：
 
 | 代价 | 说明 |
 |---|---|
-| **抢占前台焦点** | 用户的正在用的窗口会被切走。这不是副作用，是前提条件——`Ctrl+V` 和 `SendInput` 都只发给前台窗口。 |
+| **抢占前台焦点** | 用户正在用的窗口会被切走。这不是副作用，是前提条件——`Ctrl+V` 和 `SendInput` 都只发给前台窗口。 |
 | **借用用户资源** | 粘贴通道会占用用户的剪贴板（哪怕只是短暂地写入再恢复）。 |
 
-而应用自己的接口（`ValuePattern`）**不需要前台**，
-可以在用户完全无感的情况下完成写入。实测数据见第四节。
+`ValuePattern` 写入不产生合成输入，也不借用户的剪贴板，但它同样要求目标窗口
+在前台——运行时选择**明确地**提窗口，而不是绕过前台去写。这是第四节的起点。
 
-因此通道链的顺序不是"哪个先试哪个"，而是**按对用户的打扰程度排序**。
+通道链的顺序因此不是"哪个先试哪个"，而是**按对用户的打扰程度排序**。
 
 ---
 
@@ -30,7 +44,7 @@
 `set_text` 是 LLM 唯一看到的名字。它内部是一条**有序的条件链**，
 由解析器按元素在运行时的真实能力逐条求值：
 
-| 顺序 | primitive | 门控条件 | 前置要求 | 抢焦点 | 借用剪贴板 |
+| 顺序 | primitive | 门控条件 | 前置要求 | 合成输入 | 借用剪贴板 |
 |---|---|---|---|---|---|
 | 1 | `set_text` | `has:value` | 控件实现 `ValuePattern` | 否 | 否 |
 | 2 | `paste_text` | — | 需 `--allow-clipboard` | **是** | **是** |
@@ -47,9 +61,10 @@
 > "授权被拒"必须**跳过而非终止**：一个宿主可能只开了键盘没开剪贴板，
 > 若第一条被拒就整个失败，它会拿到"没有可用接口"，而它合法的路线就在下一步。
 
-第一条通道代价为零（不抢焦点、不借剪贴板），后两条都需要前台且是合成输入，
-所以永远排在后面。真实自绘控件（无 `ValuePattern`）落在第 2/3 条，默认被拒，
-除非宿主显式授权。
+三条通道都要求目标在前台（运行时统一在 `_bring_to_foreground` 里提窗口）。
+差别在于代价：第一条不产生任何合成输入，也不借用户的剪贴板；后两条会。所以
+第一条永远排在最前，真实自绘控件（无 `ValuePattern`）落在第 2/3 条，未授权时
+被拒而不是被偷偷写入。
 
 > **已删除的 `set_text_hwnd` 通道。** 曾经在 1 和 2 之间还有一条：当元素**自己**
 > 映射了 HWND 时，用 `EM_REPLACESEL`/`WM_SETTEXT` 写入。它被删除了其门控是"元素有
@@ -65,8 +80,9 @@
 
 ### 3.1 `set_text` — UIA ValuePattern（首选）
 
-`ValuePattern.SetValue`。应用在自己的线程上完成写入：**原子、不抢焦点、
-不产生任何合成输入**。这是唯一代价为零的通道，只要控件实现了它就一定用它。
+`ValuePattern.SetValue`。应用在自己的线程上完成写入：**原子、不产生任何合成
+输入、不借用户的剪贴板**。它仍然要求目标窗口在前台（运行时会把窗口提上来），
+但在四条通道里代价最低，只要控件实现了它就一定用它。
 
 **实测**（Windows 11 24H2 记事本 RichEdit）：20/20 成功，含 CJK 与长字符串。
 
@@ -129,7 +145,8 @@ HWND。够得着它们的是 `Ctrl+V`：文本走**剪贴板**，由应用自己
 **不做**：延迟渲染（无优势、纯增复杂度）、事后删除历史（有时间窗 88~350 ms
 且需 STA/WinRT，既然能预防就不需要）。
 
-**授权**：默认关闭，需 `--allow-clipboard`。
+**授权**：`allow_clipboard`，本构建中**默认开启**，可用 `--no-allow-clipboard`
+或 `allow_clipboard = false` 关闭。
 
 ### 3.4 `type_text` — 合成键盘（最后手段）
 
@@ -145,13 +162,14 @@ HWND。够得着它们的是 `Ctrl+V`：文本走**剪贴板**，由应用自己
 缓解手段是逐字符发送 + 读回验证 + 必要时发一个不输入任何字符的 SHIFT
 去"唤醒"目标的输入泵。但这不是修复，只是缓解。
 
-**授权**：默认关闭，需 `--allow-keyboard`。
+**授权**：`allow_keyboard`，本构建中**默认开启**，可用 `--no-allow-keyboard`
+或 `allow_keyboard = false` 关闭。
 
 ---
 
 ## 四、为什么自绘控件写不进去
 
-**结论：没有可编程接口的自绘控件，不存在通用的无焦点写入方法。**
+**结论：没有可编程接口的自绘控件，不存在通用的写入方法——无论是否抢占前台。**
 这不是库的选择问题（pywinauto / FlaUI / uiautomation 结果相同），
 而是**应用没有暴露这个能力**。
 
@@ -258,12 +276,12 @@ Text pattern 的 DocumentRange   ->  真实内容   ← 内容在这里
 
 ## 六、授权模型
 
-两条合成输入通道**各自独立授权**，默认都关闭：
+两条合成输入通道**各自独立授权**，本构建中默认都开启，可以分别关闭：
 
 | 开关 | 授权通道 | 理由 |
 |---|---|---|
-| `--allow-clipboard` | `paste_text` | 借用用户剪贴板，需要前台 |
-| `--allow-keyboard` | `type_text` | 抢焦点、丢字、难以验证 |
+| `allow_clipboard`（`--no-allow-clipboard` 关闭） | `paste_text` | 借用用户剪贴板，需要前台 |
+| `allow_keyboard`（`--no-allow-keyboard` 关闭） | `type_text` | 抢焦点、丢字、难以验证 |
 
 **按 step 检查**：一个能力可以把多条路线声明成互斥选项，宿主可能只开了其中一个。
 被拒的 step 只是跳过，只有整条链都被拒才报错——且错误里会列出每条被拒路线
@@ -271,24 +289,25 @@ Text pattern 的 DocumentRange   ->  真实内容   ← 内容在这里
 
 ### 6.1 持久化：设置文件
 
-开关如果只能当命令行参数传，就不算真正的 opt-in：
-**MCP 客户端是自己启动这个进程的，用户根本没有地方传 flag**。
-所以每个开关都有一个持久形式（`somnus/config.py`）：
+**MCP 客户端是自己启动这个进程的，用户根本没有地方传 flag**，所以每个开关都
+有一个持久形式（`somnus/config.py`），命令行参数只用于单次覆盖：
 
 ```bash
-somnus config --path              # 文件位置
-somnus config --allow-clipboard   # 打开剪贴板通道，持久生效
-somnus config --allow-keyboard    # 打开键盘通道
-somnus config                     # 查看当前状态（首次会写出默认文件）
+somnus config --path                 # 文件位置
+somnus config --no-allow-clipboard   # 关闭剪贴板通道，持久生效
+somnus config --no-allow-keyboard    # 关闭键盘通道
+somnus config                        # 查看当前状态（首次会写出默认文件）
 ```
 
 文件是普通 TOML，**带注释、可直接手改，也小到可以交给 LLM 改**：
 
 ```toml
-# Both synthetic-input channels are OFF unless set to true below.
-# They seize the screen's foreground, ...
-allow_clipboard = false
-allow_keyboard  = false
+# Both synthetic-input channels are ON unless set to false below.
+# They seize the screen's foreground (and the clipboard channel borrows
+# your clipboard), so turn one off if you do not accept that a window
+# the agent writes into may come to the front. ...
+allow_clipboard = true
+allow_keyboard  = true
 allow_processes = []
 ```
 
@@ -296,13 +315,13 @@ allow_processes = []
 （Windows 为 `%APPDATA%\somnusui\config.toml`）。
 
 优先级：**命令行 flag > 环境变量（`SOMNUS_ALLOW_CLIPBOARD` /
-`SOMNUS_ALLOW_KEYBOARD`）> 文件 > 内置默认（全关）**。
+`SOMNUS_ALLOW_KEYBOARD`）> 文件 > 内置默认（全开）**。
 环境覆盖支持**双向**：既能打开文件里关的，也能关掉文件里开的（CI/临时调试用）。
 
 两个设计约束：
 
-* **降级方向必须安全** —— 文件损坏/读不动/类型不对时，一律回到“两个都关”
-  并把问题记在 `problems` 里报出来，绝不静默变成“全部允许”；
+* **降级方向必须安全** —— 文件损坏/读不动/类型不对时，回到内置默认并把问题
+  记在 `problems` 里报出来，绝不静默按用户没选择过的值运行；
 * **不洗掉注释** —— 保存是重新渲染带注释的模板，而不是覆写裸键值对；
   否则每保存一次，文件就更难改一次。
 

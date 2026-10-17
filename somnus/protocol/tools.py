@@ -22,31 +22,24 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "observe",
         "description": (
-            "Return the semantic overview (L0) of one window as SUI-Text: "
-            "its screens, entities and their capabilities. No pixels, "
-            "coordinates or native ids.\n"
-            "Only the target window is described; set include_other_windows "
-            "to also list the rest of the desktop, or windows_only to get "
-            "just the window list (which is how you switch windows with "
-            "CALL wN.focus())."
+            "Semantic overview (L0) of one window: screens, entities and "
+            "their capabilities. Never pixels or native ids. Call it first - "
+            "it assigns the refs every other tool uses."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "window": {
                     "type": "string",
-                    "description": "optional window ref to focus and observe",
+                    "description": "window ref to focus and observe",
                 },
                 "windows_only": {
                     "type": "boolean",
-                    "description": "list windows only, without any control tree",
+                    "description": "window list only, no control tree",
                 },
                 "include_other_windows": {
                     "type": "boolean",
-                    "description": (
-                        "also list the other desktop windows (off by default, "
-                        "they are not what you asked for)"
-                    ),
+                    "description": "also list the rest of the desktop",
                 },
             },
         },
@@ -54,13 +47,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "find",
         "description": (
-            "Search the current screen for entities/controls. Returns matching "
-            "entity lines. Use FIND syntax: FIND [type] \"query\" [in ref]."
+            "Search the current window, including inside folded lists. Returns "
+            "whole entity lines with their capabilities."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": 'e.g. FIND product "Big Mac"'},
+                "query": {
+                    "type": "string",
+                    "description": 'keyword, or FIND syntax: product "Big Mac" [in ref]',
+                },
             },
             "required": ["query"],
         },
@@ -68,16 +64,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "inspect",
         "description": (
-            "Drill into one node (L1/L2): all attributes, capability parameters "
-            "and relations. Optional depth and text range=start:end."
+            "One node in full (L1/L2): attributes, capability params, relations. "
+            "Use it when a call's capability set looks wrong."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ref": {"type": "string"},
-                "depth": {"type": "integer"},
-                "start": {"type": "integer"},
-                "end": {"type": "integer"},
+                "depth": {"type": "integer", "description": "subtree depth"},
+                "start": {"type": "integer", "description": "text range start"},
+                "end": {"type": "integer", "description": "text range end"},
             },
             "required": ["ref"],
         },
@@ -85,17 +81,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "call",
         "description": (
-            "Invoke a capability: CALL <ref>.<cap>(args). A capability belongs to "
-            "the node it is printed on - to add a product call CALL p1.add(), "
-            "not CALL c1.add(). Returns OK/ERR plus a delta of what changed. "
-            "Critical capabilities require confirmation."
+            "Invoke a capability printed on a node: CALL p1.add(). It belongs to "
+            "that node, not its container. Returns OK/ERR plus a delta, which "
+            "beats the status word. Critical caps need confirmation."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "description": "e.g. CALL p1.add()"},
-                "rev": {"type": "integer"},
-                "confirmed": {"type": "boolean"},
+                "action": {"type": "string", "description": "CALL ref.cap(args)"},
+                "rev": {"type": "integer", "description": "the rev you saw"},
+                "confirmed": {"type": "boolean", "description": "user consented"},
             },
             "required": ["action"],
         },
@@ -103,14 +98,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "switch",
         "description": (
-            "Move this agent between the two Windows sessions, or open / close "
-            "the separate one. The agent drives ONE session at a time: after "
-            "switching, every ref (windows included) names the new desktop, "
-            "and all refs from before are gone.\n"
-            "Use `open` when the user asks for something to happen on a "
-            "separate desktop the agent can be parked in (there its input "
-            "cannot disturb the user); `close` ends it; `child` / `main` move "
-            "between them."
+            "Move between the user's desktop (main) and a separate session "
+            "(child). One desktop at a time: a switch discards every ref. Use "
+            "`open` when the work must not disturb the user."
         ),
         "inputSchema": {
             "type": "object",
@@ -119,11 +109,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["main", "child", "open", "close", "detach"],
                     "description": (
-                        "main = the user's own desktop (the default); "
-                        "child = move to the separate session; "
-                        "open = start that session and move into it; "
-                        "close = end that session and return to main; "
-                        "detach = leave it running after this program exits"
+                        "main = user's desktop; child = the separate session; "
+                        "open = start it and move in; close = end it, back to "
+                        "main; detach = keep it after this process exits"
                     ),
                 }
             },

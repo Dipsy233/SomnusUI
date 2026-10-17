@@ -279,7 +279,11 @@ class Session:
     def _recompile(self) -> CompileResult:
         tree = self._snapshot()
         pack = self._current_pack()
-        result = self.compiler.compile(tree, pack=pack)
+        # Pin the window's ref: the session owns the wN namespace (the window
+        # list and CALL wN.focus() hand it to the agent), so recompiling the
+        # same window must not mint a fresh name for it.
+        pinned = self._window_refs_by_id.get(self.target_window or "")
+        result = self.compiler.compile(tree, pack=pack, window_ref=pinned)
         report = self.registry.reconcile(result)
         self.result = result
         # A fingerprint shared by several nodes cannot be resolved to one ref;
@@ -564,6 +568,12 @@ class Session:
             win = self._window_by_ref(window)
             if win is not None:
                 self.target_window = win.window_id
+                # Remember the name the agent used. It came from the window
+                # list, so it is the name this window goes by: recompiling
+                # without it handed the same window a fresh ref and left the
+                # one the agent was told to use pointing nowhere.
+                self._window_refs[window] = win.window_id
+                self._window_refs_by_id[win.window_id] = window
         if self.target_window is None and self.windows:
             self.target_window = next(
                 (w.window_id for w in self.windows if w.active), self.windows[0].window_id

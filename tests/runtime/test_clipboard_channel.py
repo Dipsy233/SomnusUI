@@ -16,8 +16,8 @@ ProseMirror、豆包的 tiptap、Chromium/Electron 的富文本）既没有 Valu
 3. **不谎报**：延迟渲染（promise）在本环境拿不到读取信号（实测 OLE 抢先
    实体化），所以恢复只能靠定时，必须如实标注"未确认"。
 
-同时守住通道定位：它排在两条无焦点通道**之后**、键盘**之前**；
-默认关闭，需要 --allow-clipboard 显式开启。
+同时守住通道定位：它排在原生 Value 写入**之后**、键盘**之前**；
+默认开启，可用 --no-allow-clipboard 关闭。
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def _self_drawn_editor():
 
 
 # ---------------------------------------------------------------------------
-# 通道定位：默认关闭，且排在无焦点通道之后
+# 通道定位：默认开启，且排在原生 Value 写入之后
 # ---------------------------------------------------------------------------
 
 
@@ -140,11 +140,11 @@ def test_clipboard_route_is_in_the_set_text_chain():
     assert ("paste_text", None) in steps, steps
 
 
-def test_clipboard_sits_after_the_focus_free_route():
-    """粘贴排在 Value 写入之后：那条通道不碰用户的焦点和剪贴板。
+def test_clipboard_sits_after_the_native_value_route():
+    """粘贴排在 Value 写入之后：那条通道不产生合成输入，也不借用户的剪贴板。
 
     顺序不是风格问题——ValuePattern 让应用在自己的线程上完成写入，原子、
-    不抢焦点、不借剪贴板。让粘贴排到它前面，等于每次都去动用户的剪贴板。
+    无合成输入、不借剪贴板。让粘贴排到它前面，等于每次都去动用户的剪贴板。
     """
     session = _session(_tree([_self_drawn_editor()]), allow_clipboard=True)
     session.observe()

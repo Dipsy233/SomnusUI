@@ -23,7 +23,7 @@
 | # | 场景 | 验证点 | 层 |
 |---|------|--------|----|
 | B1 | 用 `--no-pack` 驱动任意 Win32 应用（如 calc/notepad）：observe 可见、控件有 activate/set_text | 无 pack 也能到达并操作；有 Value 模式的控件走原生 `SetValue` 写入（不产生合成按键） | S2 |
-| B2 | 自绘编辑器（Chromium/Electron，如 Steam/QQ/VS Code）：set_text 没有可用原生接口 | 默认如实报 `ACTION_NOT_SUPPORTED` 并分别提示 `--allow-clipboard` / `--allow-keyboard`；开启后优先走剪贴板通道（文本走剪贴板不走输入队列），且剪贴板非纯文本时拒用 | S2 |
+| B2 | 自绘编辑器（Chromium/Electron，如 Steam/QQ/VS Code）：set_text 没有可用原生接口 | 关闭合成通道（`--no-allow-clipboard --no-allow-keyboard`）时如实报 `ACTION_NOT_SUPPORTED` 并分别提示两个开关；开启后优先走剪贴板通道（文本走剪贴板不走输入队列），且剪贴板非纯文本时拒用 | S2 |
 | B3 | 列表识别：打开资源管理器/聊天列表，验证"标题+动词按钮行"与"≥3 同级标题"两种实体识别规则 | 实体行有语义能力，纯容器无能力 | S1 fixture + S2 |
 | B4 | 默认动作只是高亮的应用（聊天列表）：通过 context_menu 驱动 | 指针不移动、无合成按键（可 hook 断言）、操作生效 | S2 |
 

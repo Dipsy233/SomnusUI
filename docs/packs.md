@@ -157,11 +157,10 @@ custom-drawn one that only accepts keystrokes.
 
 The built-in `set_text` chain is exactly this shape, in the order the runtime
 tries them: `set_text` (Value pattern) → `paste_text` (clipboard) → `type_text`
-(keyboard). The last two need a host flag
-(`--allow-clipboard` / `--allow-keyboard`) because they seize the screen's
-foreground; see
-[text-input-channels.md](text-input-channels.md) for why that
-ordering is the one that costs the user least.
+(keyboard). Every route raises the target window first; the last two also
+produce synthetic input (and the clipboard route borrows the user's clipboard),
+which is why they come last. See
+[text-input-channels.md](text-input-channels.md) for the full model.
 
 ## Writing a pack for a new app
 

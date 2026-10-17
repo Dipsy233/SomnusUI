@@ -273,8 +273,10 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     #
     # `paste_text` sits *before* `type_text` because the report measures it as
     # strictly better where both apply: no queue stall, length-independent cost,
-    # and a real delivery signal when the element can be read back. Both stay
-    # behind the focus-free route, which costs the user nothing.
+    # and a real delivery signal when the element can be read back. Both raise
+    # the target window first (see executor._bring_to_foreground); the runtime
+    # does not attempt a focus-free write, so a window that cannot be raised
+    # yields an honest refusal rather than a keystroke sent to a stranger.
     if _is_text_entry(node):
         cap = _cap("set_text", {"text": ParamSpec(type="string", required=True)})
         cap.via = [

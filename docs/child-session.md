@@ -5,18 +5,19 @@ two that did not.
 
 ## The problem
 
-An application is normally driven through the interfaces it publishes
-(`Invoke`, `Value`, `Toggle`, ...), and that needs no foreground: a visible but
-covered window answers every one of them. Two channels are the exception -
-`--allow-clipboard` and `--allow-keyboard` - and they exist because a control
-that publishes no writable interface is otherwise unreachable. A self-drawn
-editor, a terminal surface, an omnibox that only commits on Enter: for these,
-`Ctrl+V` or `SendInput` is the only thing that lands, and both were measured as
-the single largest class of unfinished tasks.
+An application is driven through the interfaces it publishes (`Invoke`,
+`Value`, `Toggle`, ...). For a control that publishes no writable interface -
+a self-drawn editor, a terminal surface, an omnibox that only commits on Enter -
+the only thing that lands is synthetic input: the clipboard channel
+(`allow_clipboard`) or the keyboard channel (`allow_keyboard`).
 
-They also go to the **foreground window**. A desktop has exactly one. So when the
-agent uses them, it is competing with the person at the keyboard for the one
-thing there is one of - and whoever loses stops working. That is the disturbance.
+Every write first raises the target window (see
+[text-input-channels.md](text-input-channels.md)); the runtime does not write
+without focus, because a write that lands wherever the focus happens to be is
+neither predictable nor attributable. That makes the foreground the resource the
+agent needs, and a desktop has exactly one. So while the agent works, it is
+competing with the person at the keyboard for it - and whoever loses stops
+working. That is the disturbance a child session removes.
 
 ## What works: a child session
 

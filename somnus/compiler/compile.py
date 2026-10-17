@@ -147,7 +147,24 @@ class Compiler:
         self.max_depth = max_depth
         self.allocator = allocator or RefAllocator()
 
-    def compile(self, tree: RawTree, pack: Pack | None = None) -> CompileResult:
+    def compile(
+        self,
+        tree: RawTree,
+        pack: Pack | None = None,
+        *,
+        window_ref: str | None = None,
+    ) -> CompileResult:
+        """Compile one raw tree into its semantic form.
+
+        ``window_ref`` pins the ref of the new window node. The session owns
+        the window namespace: it hands the agent ``w1\u2026wN`` in the window list
+        and in ``CALL wN.focus()``, so a later compilation of the *same*
+        window must reuse that name rather than mint a fresh one. Without it
+        the compiler allocated a new ``wN`` on every pass, and one window was
+        printed under two names (the list said ``w2``, the overview that
+        followed said ``w12``), which also left the ref the agent had just
+        been told to use pointing nowhere.
+        """
         raw_root = tree.root
 
         # 1. Normalize (in place is fine; the tree is a fresh snapshot).
@@ -191,6 +208,21 @@ class Compiler:
             )
             root.layer = "window"
             root.role = "window"
+            # This branch built the window node through _build(), which
+            # allocated a fresh ref; the caller's pin wins, or the window would
+            # change name on every compilation.
+            if window_ref and root.ref != window_ref:
+                result.sources[window_ref] = result.sources.pop(root.ref, SourceRef(
+                    native=raw_root.native
+                ))
+                result.fingerprints[window_ref] = result.fingerprints.pop(
+                    root.ref, ""
+                )
+                result.members_by_ref[window_ref] = result.members_by_ref.pop(
+                    root.ref, {}
+                )
+                root.ref = window_ref
+                self.allocator.observe_existing(window_ref)
             if not root.name:
                 root.name = _clip(tree.window.title)
             if tree.window.active:
@@ -201,12 +233,15 @@ class Compiler:
             return result
 
         window_node = SemanticNode(
-            ref=self.allocator.next(ROLE_REF_PREFIX["window"]),
+            ref=window_ref or self.allocator.next(ROLE_REF_PREFIX["window"]),
             role="window",
             layer="window",
             name=_clip(tree.window.title),
             states=frozenset({"active"}) if tree.window.active else frozenset(),
         )
+        # A reused ref has to be registered with the allocator, or the next
+        # window node could be handed the same counter value.
+        self.allocator.observe_existing(window_node.ref)
         window_node.fingerprint = compute_fingerprint(
             entity=None, role="window", identity=tree.window.process, name=tree.window.title
         )
@@ -688,6 +723,12 @@ def _collect_collapses(root: RawNode) -> dict[int, int]:
     return out
 
 
-def compile_tree(tree: RawTree, pack: Pack | None = None, **kwargs: Any) -> CompileResult:
+def compile_tree(
+    tree: RawTree,
+    pack: Pack | None = None,
+    *,
+    window_ref: str | None = None,
+    **kwargs: Any,
+) -> CompileResult:
     """Functional wrapper used by tests and the CLI."""
-    return Compiler(**kwargs).compile(tree, pack=pack)
+    return Compiler(**kwargs).compile(tree, pack=pack, window_ref=window_ref)

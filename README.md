@@ -32,11 +32,15 @@ AccessibilityProvider (Windows UI Automation; AX / AT-SPI planned)
 ## Principles
 
 - **No vision.** The accessibility tree is the only perception channel.
-- **No synthetic input by default.** Applications are driven through the
-  interfaces they publish. An element that publishes no usable interface is
-  reported as such rather than typed into. The clipboard and keyboard channels
-  (`--allow-clipboard`, `--allow-keyboard`) are available when nothing else can
-  work and seize the foreground, and the response states which channel answered.
+- **Every action takes the foreground.** A window is raised before it is read
+  or written, and text goes in through a channel the application can verify:
+  `ValuePattern` first, then the clipboard channel, then the keyboard channel.
+  All of them need the target in front, and the response states which channel
+  answered. The runtime does not attempt focus-free writes — a write that lands
+  wherever the focus happens to be is neither predictable nor attributable. To
+  work without disturbing the user, run the agent in a child session
+  (see [docs/child-session.md](docs/child-session.md)). An element that
+  publishes no usable interface is reported as such.
 - **Low token cost.** Observation is projected and budgeted: homogeneous lists
   preview a few items, anonymous leaves fold into one summary line. An L0
   overview typically costs tens to a few hundred tokens.
@@ -167,20 +171,23 @@ patterns, so an application it has never seen is still usable:
   chosen by the control's own interface — never by its class name or role.
   Routes are ordered by how much they cost the user; the first that works wins:
 
-  | # | Route | Requires | Seizes the foreground |
+  | # | Route | Requires | Synthetic input / clipboard |
   | --- | --- | --- | --- |
-  | 1 | `ValuePattern.SetValue` | the control publishes a Value pattern | no |
-  | 2 | `WM_SETTEXT` / `EM_REPLACESEL` | the element maps its own HWND | no |
-  | 3 | clipboard + `Ctrl+V` | `--allow-clipboard` | yes |
-  | 4 | focus and type | `--allow-keyboard` | yes |
+  | 1 | `ValuePattern.SetValue` | the control publishes a Value pattern | no / no |
+  | 2 | `WM_SETTEXT` / `EM_REPLACESEL` (not wired) | the element maps its own HWND | no / no |
+  | 3 | clipboard + `Ctrl+V` | `--allow-clipboard` | yes / **yes** |
+  | 4 | focus and type | `--allow-keyboard` | yes / no |
 
-  Routes 1 and 2 write through interfaces the application itself publishes, so
-  the write happens on the application's own thread: atomic, no focus taken, no
-  synthetic input. Only when neither applies — typically a self-drawn editor —
-  does the chain use routes 3 and 4, both of which require the target in the
-  foreground. Route selection is decided at execution time, because static
-  inspection cannot settle it: UIA reports interfaces an element then refuses.
-  The route that answered is remembered for the rest of the session.
+  Route 1 writes through an interface the application itself publishes, so the
+  write happens on the application's own thread: atomic, no synthetic input, no
+  clipboard borrowed. Route 2 (`WM_SETTEXT` / `EM_REPLACESEL`) is described for
+  completeness and is not wired: a control that maps an HWND and holds editable
+  text also publishes a Value pattern, so it would never be reached. Every route
+  requires the target window in the foreground — the runtime raises it first
+  rather than writing without focus. Route selection is decided at execution
+  time, because static inspection cannot settle it: UIA reports interfaces an
+  element then refuses. The route that answered is remembered for the rest of
+  the session.
 
   A call that cannot be served by an enabled route is reported rather than
   silently redirected:

@@ -105,8 +105,9 @@ def run_primitive(
             # parks most of a fast burst (docs/text-input-channels.md 3.3).
             #
             # It needs the foreground and it disturbs the user's clipboard, so it
-            # is gated on --allow-clipboard and ordered *after* both focus-free
-            # routes. A refusal that costs nothing (the clipboard holds an image
+            # is gated on --allow-clipboard and ordered *after* the native value
+            # route. Every route raises the target first; there is no focus-free
+            # attempt. A refusal that costs nothing (the clipboard holds an image
             # we cannot restore) is reported as unsupported so the chain falls
             # through to typing rather than failing the call.
             fg = _bring_to_foreground(element)
@@ -264,8 +265,9 @@ def _bring_to_foreground(element: Any) -> ExecResult:
     (Win32's foreground lock), so the raise goes through the same
     ``workspace.raise_window`` the provider uses (plain set, attach-thread, inert
     Alt tap). When even that fails the refusal is reported as
-    ``FOREGROUND_DENIED`` so the caller can fall through to a focus-free route
-    instead of sending a keystroke that would land in somebody else's window.
+    ``FOREGROUND_DENIED``: synthetic input has no focus-free fallback, so the
+    honest answer is that the window could not be fronted, not a keystroke that
+    would land in somebody else's window.
     """
     try:
         element.SetFocus()

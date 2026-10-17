@@ -6,9 +6,8 @@ the clipboard or the keyboard is stopped by any control that publishes no
 writable interface (a self-drawn editor, a terminal surface, an omnibox that
 only commits on Enter), which measured as the single largest class of unfinished
 tasks. The user can turn either off (``allow_clipboard = false`` /
-``allow_keyboard = false`` in the file, or ``--no-allow-*``), because both still
-seize the foreground and the clipboard borrows a resource that belongs to the
-user.
+``allow_keyboard = false`` in the file, or ``--no-allow-*``), because both seize
+the foreground and the clipboard borrows a resource that belongs to the user.
 
 This module is where that decision is written down. It is deliberately:
 
