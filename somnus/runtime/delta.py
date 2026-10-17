@@ -150,6 +150,22 @@ def diff_trees(
     return delta
 
 
+#: Roles whose *name* is state rather than a label, and which therefore
+#: belong in the delta when it changes. A control that reports its current
+#: value only through its accessible name - Paint's colour swatch reads
+#: `颜色 1: 红色` and then `颜色 1: 深红色` - has no other channel to show that
+#: anything happened, so excluding its role from the name comparison made a
+#: successful click indistinguishable from a no-op (the delta came back empty
+#: and the runtime reported "no effect" for an action that had worked).
+#:
+#: Deliberately not "every leaf with a name": buttons, tabs and list rows
+#: re-title themselves for reasons that are not state (a window title appearing
+#: in a tab), and the point of the delta is to be read, not scanned.
+_STATEFUL_NAME_ROLES = frozenset(
+    {"radio", "checkbox", "check", "toggle", "switch", "option"}
+)
+
+
 def _diff_node(old: SemanticNode, new: SemanticNode) -> list[tuple[str, str, Any, Any]]:
     out: list[tuple[str, str, Any, Any]] = []
     for key in WATCHED_ATTRS:
@@ -171,7 +187,7 @@ def _diff_node(old: SemanticNode, new: SemanticNode) -> list[tuple[str, str, Any
     # Restricted to named leaves: on a container the name is a stable label
     # ("购物车", "商品") whose churn is noise, and entities carry attrs instead.
     elif (
-        old.role in ("text", "statusbar", "link")
+        (old.role in ("text", "statusbar", "link") or old.role in _STATEFUL_NAME_ROLES)
         and not old.children
         and old.name
         and new.name
