@@ -339,7 +339,7 @@ docs/
   child-session.md          第二个桌面：设计、代价与已否定的方案
   text-input-channels.md    文本如何写入控件，以及每条路径的代价
   scenario-suite.md         验收界面清单与通过标准
-  benchmark-50-tasks.md     语义 API 与视觉点击对比基准（方案）
+  benchmark-50-tasks.md     50 个真实用户任务：这个项目能干什么、干到什么程度
 examples/               agent 循环、契约检查、任务评估（宿主示例代码）
 bench/                  基准门槛 + LLM 控制演示
 tests/{

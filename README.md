@@ -372,7 +372,7 @@ docs/
   child-session.md          the second desktop: design, costs, rejected options
   text-input-channels.md    how text reaches a control, and at what cost
   scenario-suite.md         the acceptance screens and their pass criteria
-  benchmark-50-tasks.md     the proposed semantic-vs-vision benchmark
+  benchmark-50-tasks.md     50 real user tasks: what this project can and cannot do
 examples/               agent loop, contract check, task evaluation (host code)
 bench/                  benchmark gates and LLM control demos
 tests/{
