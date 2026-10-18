@@ -240,15 +240,14 @@ def test_make_mcp_server_lists_the_same_tools(session):
     from somnus.protocol.mcp_server import make_mcp_server
 
     server = make_mcp_server(session)
-    # The low-level Server keeps its handlers on a request-handler table; the
-    # tool list is produced by the registered list_tools callback. Calling it
-    # through the server is the closest check that does not start a transport.
+    # mcp 2.x: the on_list_tools handler is registered in the constructor and
+    # stored in the request-handler table. Calling it directly is the closest
+    # check that does not start a transport.
     import asyncio
 
-    listed = asyncio.run(server.request_handlers[mcp.types.ListToolsRequest](
-        mcp.types.ListToolsRequest(method="tools/list")
-    ))
-    tools = listed.root.tools
+    entry = server._request_handlers["tools/list"]
+    listed = asyncio.run(entry.handler(None, entry.params_type(method="tools/list")))
+    tools = listed.tools
     assert [t.name for t in tools] == [spec["name"] for spec in TOOL_SPECS]
 
 
