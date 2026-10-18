@@ -1,31 +1,34 @@
-"""SomnusUI command line interface.
+"""SomnusDroid command line interface.
 
 Commands::
 
-    somnus windows                       list windows
-    somnus record  <window> -o tree.json record a RawTree fixture
-    somnus observe [window]              print the L0 SUI-Text observation
-    somnus call    "CALL p1.add()"       run one action
+    somnus windows                       list the device's windows
+    somnus observe                       print the L0 SUI-Text observation
+    somnus call    "CALL b1.activate()"  run one action
+    somnus call    "SWITCH launch 微信"   open an app through the platform API
     somnus repl                          interactive SUI-Text loop
-    somnus bench   [--runs 100]          run the acceptance benchmark
-    somnus mcp                           start the MCP server (stdio)
+    somnus mcp [provider]                start the MCP server (stdio)
     somnus rpc                           start the JSON-RPC server (stdio)
 
 Global options::
 
     --provider {auto,android,mock}   select the accessibility provider
-    --fixture PATH               load a recorded fixture into the mock provider
-    --demo                       use the built-in restaurant demo fixtures
-    --pack ID                    force an app pack
-    --allow PROCESS              allow-list a process (repeatable)
-    --confirmed                  pre-confirm critical actions
-    --allow-clipboard            permit the Ctrl+V channel for this run
-    --allow-keyboard             permit synthetic typing for this run
-    --config PATH                read settings from PATH
+    --android-fixture PATH      replay a recorded Portal snapshot (offline)
+    --fixture PATH              load a recorded fixture into the mock provider
+    --demo                      use the built-in restaurant demo fixtures
+    --pack ID                   force an app pack
+    --allow PROCESS             allow-list a process (repeatable)
+    --confirmed                 pre-confirm critical actions
+    --allow-gesture             enable taps at node bounds (self-drawn apps)
+    --allow-clipboard           permit the clipboard write channel
+    --allow-keyboard            permit synthetic typing (host-side routes)
+    --config PATH               read settings from PATH
 
-The two synthetic-input switches are ON by default and can be turned off for
-one run (``--no-allow-clipboard`` / ``--no-allow-keyboard``) or persistently
-(``somnus config --no-allow-clipboard``) - see :mod:`somnus.config`.
+Synthetic-input switches are ON by default and can be turned off for one run
+(``--no-allow-clipboard`` / ``--no-allow-keyboard``) or persistently
+(``somnus config --no-allow-clipboard``) - see :mod:`somnus.config`. The
+gesture channel is OFF by default: a tap is a blind coordinate, so it must be
+named on the command line (or enabled in the Portal's config) every time.
 """
 
 from __future__ import annotations
@@ -102,7 +105,9 @@ def build_session(args: argparse.Namespace) -> Session:
     else:
         from somnus.providers.base import get_provider
 
-        provider = get_provider(provider_name)
+        provider = get_provider(
+            provider_name, allow_gesture=getattr(args, "allow_gesture", False)
+        )
 
     policy = Policy(
         allow_processes=tuple(args.allow or ()) or settings.allow_processes,
@@ -213,10 +218,10 @@ def cmd_call(args: argparse.Namespace) -> int:
 
 def cmd_repl(args: argparse.Namespace) -> int:
     session = build_session(args)
-    # Start from the desktop: the window list is the entry point of every
-    # workflow (pick a window, then observe it), so the REPL opens on that
-    # instead of whatever window happens to have focus.
-    print(session.observe(windows_only=True).text)
+    # Open on the current screen: on a phone that is the only screen there
+    # is, and the observation header already names it (SCREEN home / qq). The
+    # old desktop-era window list carried no signal here.
+    print(session.observe().text)
     try:
         while True:
             line = input("sui> ").strip()
@@ -298,6 +303,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--allow", action="append", default=None)
     parser.add_argument("--confirmed", action="store_true")
+    parser.add_argument(
+        "--allow-gesture",
+        action="store_true",
+        help=(
+            "enable the gesture channel: taps at a node's bounds centre for "
+            "controls that publish no CLICK action (self-drawn apps, some "
+            "search bars). Results are OK_UNVERIFIED by nature - confirm with "
+            "OBSERVE"
+        ),
+    )
     parser.add_argument(
         "--config",
         default=None,
