@@ -13,7 +13,7 @@
 | M3 settle / verify / delta | **完成(真机验收通过)** | toggle WLAN 开关 wifi_on 1→0→1;set_text "蓝牙"→搜索列表实时过滤,delta `~ q1 text="蓝牙"`;click 跨窗口时 delta 报窗口替换 |
 | M4 FIND scroll、set_text 降级 | **完成(真机验收通过)** | FIND scroll:首屏 miss → 循环滚动命中"应用设置"→ 可直接 CALL;无匹配 3.7s 干净耗尽。set_text 通道 1/2 验证,通道 3(IME)未实装 |
 | M5 策略与确认 | **推迟(按用户要求)** | 共享 Policy 生效中(包名白名单/critical 确认);中文高风险词表待安全阶段统一加 |
-| M6 MCP + AndroidWorld | **MCP 接入完成(真机验收)** | `somnus mcp android` stdio 端到端:initialize/tools/observe/find/call 全通;窗口切换修复(w1→w2→w1 引用稳定);AndroidWorld 跑分未开始 | |
+| M6 MCP + AndroidWorld | **MCP 接入完成(真机验收)** | `somnus mcp android` stdio 端到端全通(含 SYSTEM/APP/find/click/toggle);AndroidWorld 跑分未开始 | |
 | M7 工作屏 | 未开始 | |
 
 ## 新增文件
@@ -86,6 +86,16 @@ Windows 行为零改动:`tests` 全绿(468 passed;clipboard 4 个失败为上游
 | host 回归 487 passed | ✅ |
 
 AndroidWorld 跑分(M6 后半)未开始。
+
+### pi 会话内实接验收(pi .pi/mcp.json → somnus-mcp android)
+
+排查三个部署层问题:
+
+1. **editable install 指向改名前的旧目录**(`E:/0down/SomnusUI`,无 android provider)→ `somnus-mcp.exe` 导入旧代码而 `python -m` 走新代码,造成"独立测试都过、pi 里失败"。重装 `pip install -e .` 刷新映射。
+2. **拔插 USB 后会话卡死**:`_rpc` 只在 `SERVICE_DISCONNECTED` 时关闭 socket,timeout 后半开 socket 永久毒化会话。修复:任何 PortalError 都 close,下次调用重连。
+3. **MCP `call` 工具对 `SYSTEM home` 报 STALE_TARGET**:工具把 SYSTEM/APP 形式喂给 `session.call`(只认节点 CALL)。修复:改走 `session.run` 完整分发。
+
+pi 内真机验收:SYSTEM home/back ✅、APP launch ✅、FIND WLAN ✅、click 进入 WLAN 详情页 ✅、toggle 开关(wifi_on 1→0→1)✅。
 
 ## M4 完成:FIND scroll 真机验证(2026-10-18)
 
