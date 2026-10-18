@@ -233,6 +233,20 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # explicit Invoke, which is what makes them navigable at all.
     if _has_default_action(node) or role in ("link", "menuitem"):
         caps.setdefault("activate", _cap("activate"))
+    elif (node.native.class_name or "").startswith("android.") and _is_control(node):
+        # Android gesture fallback (SomnusDroid doc §7.1): some ROM surfaces
+        # render as controls but publish no CLICK to the accessibility tree
+        # (measured: MIUI settings' search bar). A synthetic tap at the node's
+        # bounds centre is the only route. Offered as `tap` - not `activate`,
+        # because a tap is synthesized from coordinates the model never sees
+        # and comes back OK_UNVERIFIED unless the delta proves it - and the
+        # provider's own double opt-in (host --allow-gesture + Portal config)
+        # is what decides whether the route exists at all. A provider without
+        # the channel refuses with ACTION_NOT_SUPPORTED, which the agent sees
+        # as an honest refusal rather than a missing capability.
+        tap = _cap("tap")
+        tap.via = [PrimitiveStep(primitive="gesture", target="$self", value="tap")]
+        caps.setdefault("tap", tap)
 
     # set_text is granted to *every* text-entry surface. The route it takes is
     # decided by the control's own interface, not by its class name or role.

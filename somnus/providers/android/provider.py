@@ -42,6 +42,9 @@ ACTION_FOR_PRIMITIVE: dict[str, str] = {
     "scroll_into_view": "SHOW_ON_SCREEN",
     "focus": "FOCUS",
     "read": "READ",
+    # set_text channel 2 (doc §7.2): the text rides the clipboard (written
+    # first via ``clipboard.set``); PASTE itself takes no value argument.
+    "paste_text": "PASTE",
 }
 
 #: Global actions for the ``system`` tool (doc §6.1).
@@ -223,6 +226,17 @@ class AndroidProvider:
                 "bottom": "SCROLL_TO_BOTTOM",
             }
             params["action"] = mapping.get(direction or "", "SCROLL_FORWARD")
+        # set_text channel 2: write the text to the clipboard first, then
+        # ACTION_PASTE at the node. The paste step carries no value.
+        if primitive == "paste_text":
+            if not self.set_clipboard(str(value or "")):
+                return ExecResult(
+                    ok=False,
+                    error="NATIVE_EXECUTION_FAILED",
+                    message="clipboard write failed; check the clipboard channel",
+                )
+            params.pop("value", None)
+
         try:
             result = self._rpc("perform", params)
         except PortalError as err:
