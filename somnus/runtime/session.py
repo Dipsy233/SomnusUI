@@ -97,19 +97,6 @@ class Session:
         allow_packs: bool = True,
     ) -> None:
         self.provider = provider
-        #: How to rebuild a *local* provider when switching back from the child
-        #: session. The provider instance currently in use must be released
-        #: during the swap (only one may hold UIA state), so switching away
-        #: cannot simply keep this one around - it has to be reconstructible.
-        #: Set by the caller that built the session (see somnus/cli.py); when
-        #: absent, switching back to "main" is reported as unsupported rather
-        #: than done badly.
-        self._local_provider_factory = None
-        #: Which desktop the current refs name: "main" or "child".
-        self._session_label = "main"
-        #: The child session this process opened, once it has one. Kept so the
-        #: exit hook can clean up what was started here and nothing else.
-        self._child_session_id: int | None = None
         self.explicit_pack = pack
         self.pack_id = pack_id
         #: When False the session never applies an App Pack: every window is
@@ -1533,396 +1520,61 @@ class Session:
     def audit_log(self) -> list[dict]:
         return list(self._audit)
 
-    # ------------------------------------------------------------------ sessions
+    # ------------------------------------------------------------------ switching
 
-    def open_child_session(
-        self,
-        *,
-        visible: bool = False,
-        auto_logon: bool = True,
-        start_peer: bool = True,
-        timeout: float = 120.0,
-    ) -> str:
-        """Open the child session and move this agent into it.
+    def switch_session(self, target: str) -> str:
+        """Navigate the phone itself: home / back / pager next / prev.
 
-        One call does the whole sequence a person would otherwise perform by
-        hand, which is what lets the model do it on request:
+        Every one of these runs through the platform's own APIs (global
+        actions, a synthesized pager swipe) rather than the UI tree, because
+        what they reach is precisely what no tree can name: the home screen,
+        the previous app, the launcher page that is not instantiated yet.
 
-        1. start the RDP loopback (with the stored credential when
-           ``auto_logon``, so no one has to type at the window);
-        2. wait for Windows to create the session;
-        3. start the peer inside it and wait for the pipe;
-        4. switch this session over to it.
-
-        Failure at any step is reported as it is, with the step named, rather
-        than as one opaque "could not open a session".
+        A switch discards every ref - the screen they named is gone.
         """
-        from somnus.session import childsession
-
-        if childsession.inside_child_session():
-            return self._err(
-                "PERMISSION_DENIED",
-                "this agent is already running inside the child session",
-                hint="report-user",
-            )
-
-        # A session is "already open" only when Windows really has one with a
-        # desktop. The raw id is a hint that survives a refused logon and a
-        # reset, so trusting it made this report "exists but has no peer" for a
-        # session that was not there at all.
-        existing = childsession.live_child_session()
-        if existing is not None:
-            # Already open: attach, which is the common case when the window was
-            # kept from last time.
-            from somnus.session.peerprovider import make_peer_provider
-
-            provider = make_peer_provider(session_id=existing.session_id)
-            if provider.connect():
-                self._swap_provider(provider)
-                self._session_label = "child"
-                windows = self.refresh_windows()
-                return (
-                    f"OK session=child id={existing.session_id} "
-                    f"windows={len(windows)} (attached to the session already open)\n"
-                    + self._render_window_list()
-                )
-            # The session is real but its peer is not up yet. That is normal for
-            # a second or two after logon (the Run key starts it), so wait
-            # rather than declaring failure.
-            deadline = time.monotonic() + 20.0
-            while time.monotonic() < deadline and not provider.connect():
-                time.sleep(0.5)
-            if provider.connected:
-                self._swap_provider(provider)
-                self._session_label = "child"
-                windows = self.refresh_windows()
-                return (
-                    f"OK session=child id={existing.session_id} "
-                    f"windows={len(windows)} (peer came up)\n"
-                    + self._render_window_list()
-                )
-            return self._err(
-                "PERMISSION_DENIED",
-                f"child session {existing.session_id} is open and has a signed-in "
-                "user, but no peer is answering on it; start one inside that "
-                "session with `somnus child-session peer`, or register it with "
-                "`somnus child-session peer-setup`",
-                hint="report-user",
-            )
-
-        # Nothing open yet: create it.
-        from somnus.session.launch import ChildSessionRun, HostMissing
-
-        run = ChildSessionRun(
-            visible=visible,
-            auto_logon=auto_logon,
-            connect_timeout=timeout,
-        )
-        try:
-            run.start()
-        except HostMissing as err:
-            return self._err("NATIVE_EXECUTION_FAILED", str(err), hint="report-user")
-        except RuntimeError as err:
-            detail = "; ".join(run.output()[-3:]) or str(err)
-            return self._err(
-                "PERMISSION_DENIED",
-                f"could not open the child session: {err} ({detail})",
-                hint="report-user",
-            )
-
-        session_id = run.child_session_id
-        if session_id is None:
-            # No auto-logon: the window is waiting for a person. Leaving the
-            # helper running is right - the model can try again once they have.
-            run.detach()
-            return self._err(
-                "PERMISSION_DENIED",
-                "the child session is waiting for a sign-in at the RDP window; "
-                "store the password with `somnus child-session credential "
-                "--save` to make this automatic",
-                hint="ask-user",
-            )
-
-        # Peer: run it in the child session. It is started through the Run key
-        # when that is registered; otherwise the caller must start it there.
-        from somnus.session import peerstart
-
-        if start_peer and peerstart.status() is None:
-            run.detach()
-            return self._err(
-                "PERMISSION_DENIED",
-                f"child session {session_id} is open, but no peer is registered "
-                "to start with it; run `somnus child-session peer-setup` once "
-                "(or start `somnus child-session peer` inside that session)",
-                hint="report-user",
-            )
-
-        from somnus.session.peerprovider import make_peer_provider
-
-        provider = make_peer_provider(session_id=session_id)
-        # The peer starts with the session's own logon, so it can lag the
-        # session by a moment; waiting here is what makes the switch reliable.
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline and not provider.connect():
-            time.sleep(0.5)
-        if not provider.connected:
-            run.detach()
-            return self._err(
-                "PERMISSION_DENIED",
-                f"child session {session_id} is open but its peer did not "
-                "answer within 60s",
-                hint="report-user",
-            )
-
-        from somnus.session import lifecycle
-
-        run.detach()  # release the local helper handle; the agent now owns it
-        # The agent's session keeps the responsibility, not the short-lived run
-        # object: this process may make many tool calls against the session, and
-        # it must be cleaned up when the process ends - unless the caller
-        # explicitly leaves it running (see detach_child_session).
-        lifecycle.claim(session_id)
-        self._child_session_id = session_id
-        self._swap_provider(provider)
-        self._session_label = "child"
-        windows = self.refresh_windows()
-        return (
-            f"OK session=child id={session_id} windows={len(windows)}\n"
-            + self._render_window_list()
-        )
-
-    def detach_child_session(self) -> str:
-        """Leave the child session running when this process exits.
-
-        The default is the opposite - the session is cleaned up at exit, because
-        an agent that is gone has no one to drive it. This makes the other
-        choice explicit, so a session can be parked and picked up by a later
-        run.
-        """
-        from somnus.session import lifecycle
-
-        session_id = getattr(self, "_child_session_id", None)
-        if session_id is None:
-            live = childsession.live_child_session()
-            session_id = live.session_id if live else None
-        lifecycle.disown(session_id)
-        if self.session_label == "child":
-            self.switch_session("main")
-        return f"OK child session {session_id} will stay running after exit"
-
-    def close_child_session(self) -> str:
-        """End the child session and return this agent to the main desktop.
-
-        Closing the RDP connection is what ends the session - the session exists
-        only as long as its connection does - so the helper process is stopped,
-        not just disconnected.
-        """
-        from somnus.session import childsession, lifecycle
-
-        if self.session_label == "child":
-            self.switch_session("main")
-
-        before = childsession.live_child_session()
-        report = lifecycle.cleanup()
-
-        # Confirm with the same check the rest of the code trusts, rather than
-        # with the raw id (which keeps naming a session after it is gone).
-        after = childsession.live_child_session()
-        if after is not None:
-            return self._err(
-                "NATIVE_EXECUTION_FAILED",
-                f"child session {after.session_id} is still present after "
-                f"cleanup ({report})",
-                hint="report-user",
-            )
-        if before is None:
-            return f"OK no child session was open ({report})"
-        return f"OK closed child session {before.session_id} ({report})"
-
-    @staticmethod
-    def _err(code: str, message: str, *, hint: str = "report-user") -> str:
-        """One failure line in the same shape the rest of the runtime emits."""
-        return f'ERR {code} hint={hint} msg="{message}"'
-
-    def switch_session(self, target: str, *, peer_factory=None) -> str:
-        """Retarget this session at another Windows session.
-
-        The agent has one *current* session and one set of refs; switching
-        means pointing both at the other desktop, never driving two at once.
-        Two sessions at once would make every bare ref ambiguous, and the ref
-        namespace is what the whole tool surface is built on, so the model
-        cannot be asked to disambiguate on every call.
-
-        What has to be reset, and why:
-
-        * the provider - that is where the windows live;
-        * the registry and the window-ref maps - a ``w2`` that named a window
-          on the old desktop must not silently resolve to a different window on
-          the new one;
-        * ``target_window`` and the compiled result - they describe the old
-          desktop.
-
-        The compiler, projection, resolver, policy and budget are untouched:
-        they are the agent's *behaviour*, not its location, and the whole point
-        of this design is that behaviour does not depend on which session is in
-        front of it.
-
-        ``target`` is ``"main"``, ``"child"``, or ``"other"`` (an alias for
-        ``child`` that reads better when the caller does not know which
-        session is which).
-        """
-        from somnus.session import childsession
-
         target = (target or "").strip().lower()
-
-        # A phone has no second desktop to switch to - what a user moves
-        # between on Android are *screens*. The same tool becomes navigation,
-        # and every one of these runs through the platform's own APIs (global
-        # actions, a synthesized pager swipe) rather than the UI tree, because
-        # what they reach is precisely what no tree can name: the home screen,
-        # the previous app, the launcher page that is not instantiated yet.
         android_global = getattr(self.provider, "global_action", None)
-        if android_global is not None and target in (
-            "home", "back", "next", "prev",
-        ):
-            if target in ("home", "back"):
-                result = android_global(target)
-            else:
-                pager = getattr(self.provider, "page", None)
-                if pager is None:
-                    return self._err(
-                        "ACTION_NOT_SUPPORTED",
-                        "this provider cannot turn launcher pages",
-                    )
-                result = pager(target)
-            if result.ok:
-                # The screen just changed wholesale: every ref named the old
-                # one. Same contract as SYSTEM home (discards, re-orient).
-                self.registry = SessionRegistry()
-                self.result = None
-                self._prev_windows = {}
-                self._window_refs = {}
-                self._window_refs_by_id = {}
-                self._last_signature = None
-                self._bump_rev()
-                return (
-                    f"OK switched={target} rev={self.rev}\n"
-                    "~ refs discarded; OBSERVE to re-orient"
+        if android_global is None:
+            return _err(
+                "ACTION_NOT_SUPPORTED",
+                "switch is an Android screen action; this provider has no "
+                "global actions",
+            )
+        if target in ("home", "back"):
+            result = android_global(target)
+        elif target in ("next", "prev"):
+            pager = getattr(self.provider, "page", None)
+            if pager is None:
+                return _err(
+                    "ACTION_NOT_SUPPORTED",
+                    "this provider cannot turn launcher pages",
                 )
+            result = pager(target)
+        else:
+            return _err(
+                "INVALID_ARGUMENT",
+                f"unknown switch target {target!r}; use home|back|next|prev",
+            )
+        if not result.ok:
             return SomnusError(
                 result.error or ErrorCode.NATIVE_EXECUTION_FAILED,
                 message=result.message or target,
             ).render()
-
-        want_child = target in ("child", "other", "remote", "sub")
-        if not want_child and target not in ("main", "local", "host", "primary"):
-            return (
-                f'ERR INVALID_ARGUMENT hint=inspect msg="unknown session '
-                f'{target!r}; use \'main\' or \'child\'"'
-            )
-
-        here = childsession.current_session_id()
-        if childsession.inside_child_session():
-            # Running inside the child session there is nothing to switch to:
-            # this process cannot see the main desktop either.
-            return (
-                "ERR PERMISSION_DENIED hint=report-user msg=\"this agent is "
-                "running inside the child session, where the main desktop is "
-                "not reachable\""
-            )
-
-        if want_child:
-            if peer_factory is None:
-                from somnus.session.peerprovider import make_peer_provider
-
-                peer_factory = make_peer_provider
-            provider = peer_factory()
-            if not provider.connect():
-                child_id = childsession.child_session_id()
-                detail = (
-                    f"child session {child_id}"
-                    if child_id is not None
-                    else "no child session is open"
-                )
-                return (
-                    f"ERR PERMISSION_DENIED hint=report-user msg=\"cannot reach "
-                    f"{detail}: start it with `somnus child-session start`, and "
-                    f"run the peer inside it with `somnus child-session peer` "
-                    f"(or register it with `somnus child-session peer-setup`)\""
-                )
-            self._swap_provider(provider)
-            self._session_label = "child"
-            windows = self.refresh_windows()
-            return (
-                f"OK session=child windows={len(windows)}\n"
-                + self._render_window_list()
-            )
-
-        # Back to this desktop: rebuild the local provider rather than keeping
-        # a second one alive, so there is only ever one provider holding UIA
-        # state.
-        if getattr(self, "_local_provider_factory", None) is None:
-            return (
-                "ERR ACTION_NOT_SUPPORTED hint=report-user msg=\"this session "
-                "has no local desktop to return to\""
-            )
-        provider = self._local_provider_factory()
-        self._swap_provider(provider)
-        self._session_label = "main"
-        windows = self.refresh_windows()
-        return (
-            f"OK session=main windows={len(windows)}\n" + self._render_window_list()
-        )
-
-    def _swap_provider(self, provider) -> None:
-        """Replace the provider and drop every ref that pointed at the old one."""
-        old = getattr(self, "provider", None)
-        if old is not None and old is not provider:
-            try:
-                old.close()
-            except Exception:  # noqa: BLE001 - the swap must not fail on teardown
-                pass
-
-        self.provider = provider
-        # The new provider may not have the same settle guarantees as the old
-        # one (e.g. switching from a replay to the child session's peer), so the
-        # flag is derived from the provider that is actually in use.
-        self._settle_deterministic = bool(
-            getattr(provider, "is_deterministic", False)
-        )
+        # The screen just changed wholesale: every ref named the old one.
         self.registry = SessionRegistry()
-        self.compiler = Compiler(allocator=self.registry.allocator)
-        self.windows = []
-        self.target_window = None
         self.result = None
-        self._prev_index = {}
         self._prev_windows = {}
         self._window_refs = {}
         self._window_refs_by_id = {}
-        self._menu_owner = {}
-        self._route_memory = {}
-        self._ambiguous_refs = set()
         self._last_signature = None
-        self._prev_structured = None
-        self.rev = 0
-
-    @property
-    def session_label(self) -> str:
-        """Which desktop the refs currently name: ``main`` or ``child``."""
-        return getattr(self, "_session_label", "main")
+        self._bump_rev()
+        return (
+            f"OK switched={target} rev={self.rev}\n"
+            "~ refs discarded; OBSERVE to re-orient"
+        )
 
     def close(self) -> None:
-        """Release the provider.
-
-        Deliberately does *not* clean up the child session. A CLI command builds
-        a session, does one thing and closes it, so cleaning up here would end a
-        running child session on every unrelated command (``somnus windows``,
-        ``somnus observe``) that merely happened to build a session object.
-
-        The lifetime rule is the one :mod:`somnus.session.lifecycle` states:
-        cleanup happens at *process exit* for sessions the process started, or
-        explicitly through ``switch(close)``.
-        """
+        """Release the provider."""
         self.provider.close()
 
     # ------------------------------------------------------------------ Android
@@ -1936,7 +1588,7 @@ class Session:
         """
         getter = getattr(self.provider, "global_action", None)
         if getter is None:
-            return self._err(
+            return _err(
                 "ACTION_NOT_SUPPORTED",
                 "SYSTEM is an Android action; this provider has no global actions",
             )
@@ -1957,7 +1609,7 @@ class Session:
         lister = getattr(self.provider, "list_apps", None)
         launcher = getattr(self.provider, "launch_app", None)
         if launcher is None:
-            return self._err(
+            return _err(
                 "ACTION_NOT_SUPPORTED",
                 "APP is an Android action; this provider cannot launch apps",
             )
@@ -2061,12 +1713,6 @@ class Session:
                 return self.system_action(action.query or "")
             if action.kind == "app":
                 return self.app_action(action)
-            if action.kind == "session":
-                if action.query == "close":
-                    return self.close_child_session()
-                if action.query == "detach":
-                    return self.detach_child_session()
-                return self.open_child_session()
             if action.kind == "unknown":
                 return f'ERR {ErrorCode.UNKNOWN_CONTENT} hint=report-unknown msg="{action.query}"'
             raise SomnusError(ErrorCode.PARSE_ERROR, message=action.kind)
@@ -2199,6 +1845,11 @@ def _depth_of(root: SemanticNode, target: SemanticNode) -> int:
         for child in node.children:
             stack.append((child, depth + 1))
     return 0
+
+
+def _err(code: str, message: str, *, hint: str = "report-user") -> str:
+    """One failure line in the same shape the rest of the runtime emits."""
+    return f'ERR {code} hint={hint} msg="{message}"'
 
 
 def _q(text: str | None) -> str:

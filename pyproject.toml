@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "somnusui"
 version = "0.1.0"
-description = "SomnusUI - compile native GUI accessibility trees into a low-token semantic API for LLMs"
+description = "SomnusUIm (SomnusDroid) - turn the Android accessibility tree into a low-token semantic API for LLMs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -16,10 +16,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-windows = [
-    "comtypes>=1.2",
-    "pywinauto>=0.6.8",
-]
 mcp = [
     "mcp>=1.0",
 ]

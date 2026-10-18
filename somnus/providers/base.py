@@ -112,32 +112,34 @@ def _wire_android_recovery(provider: Any) -> None:
     provider.recovery = recover
 
 
-def get_provider(name: str = "auto", **kwargs: Any) -> AccessibilityProvider:
+def get_provider(name: str = "android", **kwargs: Any) -> AccessibilityProvider:
     """Factory resolving a provider by name.
 
-    ``auto`` picks the Windows UIA provider when available, else the mock
-    provider (useful for CLI smoke tests on any platform).
+    This repository is the Android build (SomnusDroid): ``android`` talks to
+    the Portal app over adb, ``mock`` replays recorded fixtures offline. The
+    Windows UIA provider lives in the original SomnusUI repository.
     """
 
-    name = (name or "auto").lower()
+    name = (name or "android").lower()
 
-    # SomnusDroid: the Android provider is registered like any other platform
-    # provider. Import is lazy so a Windows-only host never touches it.
-    if name in ("android", "droid"):
+    if name in ("android", "droid", "auto"):
         from somnus.providers.android.provider import AndroidProvider
 
         provider = AndroidProvider(**kwargs)
         _wire_android_recovery(provider)
         return provider
 
-    if name in ("auto", "uia", "windows"):
+    if name == "auto":
+        # No device reachable is not an import failure; fall through to the
+        # mock so an offline CLI still works.
         try:
-            from somnus.providers.windows.uia import UiaProvider
+            from somnus.providers.android.provider import AndroidProvider
 
-            return UiaProvider(**kwargs)
+            provider = AndroidProvider(**kwargs)
+            _wire_android_recovery(provider)
+            return provider
         except Exception:
-            if name != "auto":
-                raise
+            pass
 
     from somnus.providers.mock import MockProvider
 

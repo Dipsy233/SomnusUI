@@ -42,9 +42,9 @@ def test_every_tool_is_named_in_the_prompt():
 
 
 def test_the_switch_tool_documents_one_command_per_target():
-    """A model must be able to move desktops from the table alone."""
+    """A model must be able to navigate the phone from the table alone."""
     text = prompt()
-    for command in ("SWITCH main", "SWITCH child", "SESSION open", "SESSION close"):
+    for command in ("SWITCH home", "SWITCH back", "SWITCH next", "SWITCH prev"):
         assert command in text, command
 
 

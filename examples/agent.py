@@ -12,7 +12,7 @@ prompt with the plain-text protocol (one SUI-Text command per line) via
 Usage::
 
     python examples/agent.py --demo --task "帮我点一个巨无霸和一份薯条，然后打开购物车"
-    python examples/agent.py --provider uia --allow restaurantdemo.exe --pack restaurant-demo ...
+    python examples/agent.py --provider android --task "打开TIM给我的电脑发消息" ...
 """
 
 from __future__ import annotations

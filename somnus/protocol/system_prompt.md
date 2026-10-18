@@ -11,7 +11,7 @@ pixels: no coordinates, keys or native ids exist for you to guess.
 | `find` | locate, incl. inside folded lists | `FIND [type] "query" [in ref]` |
 | `inspect` | all caps/args/relations of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | act | `CALL ref.cap(args)` |
-| `switch` | navigate screens / move between desktops | `SWITCH home\|back\|next\|prev` (Android) · `SWITCH main\|child` (desktop) / `SESSION open\|close\|detach` |
+| `switch` | navigate the phone's screens | `SWITCH home\|back\|next\|prev` |
 
 `observe` describes **one window**. `OBSERVE windows` lists windows only (the
 cheapest way to find the one you want); `OBSERVE w2 desktop` adds the others.
@@ -123,24 +123,16 @@ foreground needed, and it closes by itself.
 
 ## Two desktops, one at a time
 
-The user's desktop is **main**; **child** is a separate session where your input
-cannot disturb them. You are always on exactly one.
-
 | Command | Effect |
 | --- | --- |
-| `SWITCH home` / `SWITCH back` | Android: launcher / previous screen (platform action) |
-| `SWITCH next` / `SWITCH prev` | Android: turn the launcher or pager one page |
-| `SWITCH main` / `SWITCH child` | desktops: move (child must already be open) |
-| `SESSION open` | start the child session and move into it |
-| `SESSION close` | end it, return to main |
-| `SESSION detach` | leave it running after this program exits |
+| `SWITCH home` / `SWITCH back` | launcher / previous screen (platform action) |
+| `SWITCH next` / `SWITCH prev` | turn the launcher or pager one page |
 
-**A switch discards every ref** — on Android they named the previous screen; on
-a desktop, windows on the new one. Re-`observe` before acting.
+**A switch discards every ref** — they named the previous screen. Re-`observe`
+before acting.
 
-Switch when the user wants work done *without being disturbed* (`SESSION open`
-does it in one step), or needs a window that is on the other side. Do not switch
-per call, and say which desktop you are on: the user cannot see it.
+Switch when what you need is not in the tree at all: the home screen, the
+previous app, a launcher page that is not instantiated yet.
 
 ## Rules
 

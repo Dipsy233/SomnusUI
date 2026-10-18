@@ -101,27 +101,20 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "switch",
         "description": (
-            "On Android: navigate the phone itself - home (back to the "
-            "launcher), back (previous screen), next/prev (turn the launcher "
-            "or pager one page). Runs through the platform's own actions, not "
-            "the UI tree, and discards every ref. On a desktop: move between "
-            "the user's desktop (main) and a separate session (child)."
+            "Navigate the phone itself: home (back to the launcher), back "
+            "(previous screen), next/prev (turn the launcher or pager one "
+            "page). Runs through the platform's own actions, not the UI "
+            "tree, and discards every ref."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "target": {
                     "type": "string",
-                    "enum": [
-                        "home", "back", "next", "prev",
-                        "main", "child", "open", "close", "detach",
-                    ],
+                    "enum": ["home", "back", "next", "prev"],
                     "description": (
-                        "Android: home = launcher; back = previous screen; "
-                        "next/prev = pager page. Desktop: main = user's "
-                        "desktop; child = the separate session; open = start "
-                        "it and move in; close = end it; detach = keep it "
-                        "after this process exits"
+                        "home = launcher; back = previous screen; "
+                        "next/prev = pager page"
                     ),
                 }
             },
@@ -174,13 +167,7 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             action = parse_action(args.get("action", ""), rev=args.get("rev"))
             return session.run(action, confirmed=args.get("confirmed"))
         if name == "switch":
-            target = (args.get("target") or "main").strip().lower()
-            if target == "open":
-                return session.open_child_session()
-            if target == "close":
-                return session.close_child_session()
-            if target == "detach":
-                return session.detach_child_session()
+            target = (args.get("target") or "home").strip().lower()
             return session.switch_session(target)
         return SomnusError(ErrorCode.PARSE_ERROR, message=f"unknown tool {name}").render()
     except SomnusError as err:
