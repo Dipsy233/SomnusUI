@@ -167,6 +167,13 @@ class Resolver:
                 value = args.get(value[1:].strip())
             if value is None and step.primitive in ("set_text", "type_text", "paste_text"):
                 value = _text_argument(args)
+            if value is None and step.primitive == "scroll" and args.get("to"):
+                # The scroll direction is the whole point of the call: without
+                # this forwarding every `to:` argument died here and the
+                # provider fell back to SCROLL_FORWARD - so `top`/`up`/
+                # `bottom` all scrolled *down* (found live on TIM: `to:top`
+                # paged the conversation list downward forever).
+                value = args["to"]
             steps.append(
                 ResolvedStep(
                     native=native,
