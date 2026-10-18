@@ -150,10 +150,23 @@ class PortalTransport:
             "method": method,
             "params": params or {},
         }
-        self._send_frame(json.dumps(request, ensure_ascii=False))
+        # A broken socket must retire here, not poison every later call: a
+        # bare OSError from send/recv (the Portal restarted, adb dropped the
+        # forward) used to escape before ``close()`` ran, leaving the dead
+        # socket in place - every subsequent call re-raised the same
+        # WinError 10053 forever instead of reconnecting (found live).
+        try:
+            self._send_frame(json.dumps(request, ensure_ascii=False))
+        except OSError as err:
+            self.close()
+            raise PortalError(f"send failed ({method}): {err}") from err
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            payload = self._recv_frame(deadline)
+            try:
+                payload = self._recv_frame(deadline)
+            except OSError as err:
+                self.close()
+                raise PortalError(f"recv failed ({method}): {err}") from err
             if payload is None:
                 continue
             try:
