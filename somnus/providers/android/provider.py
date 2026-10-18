@@ -337,10 +337,21 @@ class AndroidProvider:
         # A node the Portal can no longer address is a stale ref, not a
         # routing failure: the chain must not try another route.
         unsupported = err_name in ("UNSUPPORTED", "NO_SUCH_ACTION")
+        message = str((result or {}).get("message") or err_name)
+        if not ok and primitive == "scroll" and err_name == "ACTION_FAILED":
+            # A refused scroll is almost never a runtime bug: the platform
+            # performed what it could, and the application declined the
+            # specific action (TIM ignores ACTION_SCROLL_UP entirely while
+            # answering ACTION_SCROLL_BACKWARD). Name the alternative instead
+            # of leaving the agent with a bare "perform refused".
+            message = (
+                f"the app may not support {action}; scroll(up)/scroll(down) "
+                "usually still work - alternate them with FIND"
+            )
         return ExecResult(
             ok=False,
             error=PORTAL_ERROR_CODES.get(err_name, "NATIVE_EXECUTION_FAILED"),
-            message=str((result or {}).get("message") or err_name),
+            message=message,
             unsupported=unsupported,
         )
 
