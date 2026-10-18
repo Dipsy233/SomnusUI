@@ -116,10 +116,10 @@ def test_the_written_file_is_hand_editable_and_self_explanatory(cfg):
     """
     config_module.save(Settings(), cfg)
     text = cfg.read_text(encoding="utf-8")
+    assert "allow_gesture = true" in text
     assert "allow_clipboard = true" in text
-    assert "allow_keyboard = true" in text
-    # 必须解释代价：这两个开关会抢占前台。
-    assert "foreground" in text
+    # 必须解释能力边界：tap 的坐标来自无障碍树，效果需 delta 证实。
+    assert "accessibility" in text
     assert "#" in text, "comments are how a person knows what these do"
 
 
@@ -127,8 +127,7 @@ def test_saving_preserves_comments_instead_of_rewriting_bare_keys(cfg):
     """保存不能把注释洗掉——否则每保存一次，文件就更难改一次。"""
     config_module.save(Settings(allow_clipboard=True), cfg)
     text = cfg.read_text(encoding="utf-8")
-    assert "Ctrl+V channel" in text
-    assert "SendInput channel" in text
+    assert "gesture channel" in text
 
 
 def test_allow_processes_round_trips(cfg):

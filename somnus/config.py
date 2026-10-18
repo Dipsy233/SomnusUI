@@ -1,13 +1,13 @@
 """Persistent settings, so an opt-in stays opted in.
 
-The two synthetic-input channels (``--allow-clipboard`` / ``--allow-keyboard``)
-are **on by default** in this build: a semantic agent that cannot fall back to
-the clipboard or the keyboard is stopped by any control that publishes no
-writable interface (a self-drawn editor, a terminal surface, an omnibox that
-only commits on Enter), which measured as the single largest class of unfinished
-tasks. The user can turn either off (``allow_clipboard = false`` /
-``allow_keyboard = false`` in the file, or ``--no-allow-*``), because both seize
-the foreground and the clipboard borrows a resource that belongs to the user.
+The gesture channel (``allow_gesture``) is **on by default** in this build: a
+semantic agent that cannot tap is stopped by any control that publishes no
+CLICK action (a self-drawn post card, a custom search bar, a game surface),
+which measured as the largest class of unreachable UI on a phone. The tap's
+coordinates come from the accessibility bounds the model never sees, and its
+result is ``OK_UNVERIFIED`` unless the delta proves the effect - that honesty
+is the safety net, not an off switch. The user can still turn it off
+(``allow_gesture = false`` in the file, or ``--no-allow-gesture``).
 
 This module is where that decision is written down. It is deliberately:
 
@@ -22,32 +22,30 @@ This module is where that decision is written down. It is deliberately:
 File location (first that applies)::
 
     $SOMNUS_CONFIG                      explicit path, for tests and packaging
-    <platform config dir>/somnusui/config.toml
+    <platform config dir>/somnusdroid/config.toml
 
 The platform directory follows the usual conventions:
 
 ======================  =====================================================
-Windows                 ``%APPDATA%\\somnusui\\config.toml``
-macOS                   ``~/Library/Application Support/somnusui/config.toml``
-Linux/BSD               ``$XDG_CONFIG_HOME/somnusui/config.toml`` (or
-                        ``~/.config/somnusui/config.toml``)
+Windows                 ``%APPDATA%\\somnusdroid\\config.toml``
+macOS                   ``~/Library/Application Support/somnusdroid/config.toml``
+Linux/BSD               ``$XDG_CONFIG_HOME/somnusdroid/config.toml`` (or
+                        ``~/.config/somnusdroid/config.toml``)
 ======================  =====================================================
 
 Schema - every key optional, unknown keys ignored so a newer/older runtime and a
 hand-edited file do not fight::
 
-    # SomnusUI settings. Both channels are on unless set to false here.
-    allow_clipboard = true    # Ctrl+V channel: needs the foreground
-    allow_keyboard  = true    # SendInput channel: needs the foreground
+    # SomnusDroid settings. The gesture channel is on unless set to false here.
+    allow_gesture = true      # taps at a node's bounds centre
 
-    # Optional: restrict every action to these processes.
+    # The two host-side synthetic channels below matter only for routes that
+    # leave the phone (they are kept for symmetry with the desktop build).
+    allow_clipboard = true
+    allow_keyboard  = true
+
+    # Optional: restrict every action to these processes (apps).
     allow_processes = []
-
-    # Optional: run the agent in a child session (a second Windows session for
-    # the same account). The synthetic channels stop competing with the user
-    # for the foreground because the child session has its own.
-    child_session = false
-    child_session_debug_window = true   # keep the RDP loopback window visible
 
 Reading is best-effort by design: a malformed file must not stop the runtime, it
 must only mean "the settings could not be read" - reported through
@@ -65,23 +63,20 @@ from pathlib import Path
 
 #: Environment variable naming an explicit config file.
 ENV_CONFIG_PATH = "SOMNUS_CONFIG"
-#: Environment overrides for the two switches, so a shell or CI can set them
-#: without writing a file. Set to a false-y value ("0", "false", "no", "") to
-#: turn a file's ``true`` back off for one run.
+#: Environment overrides, so a shell or CI can set them without writing a
+#: file. Set to a false-y value ("0", "false", "no", "") to turn a file's
+#: ``true`` back off for one run.
+ENV_ALLOW_GESTURE = "SOMNUS_ALLOW_GESTURE"
 ENV_ALLOW_CLIPBOARD = "SOMNUS_ALLOW_CLIPBOARD"
 ENV_ALLOW_KEYBOARD = "SOMNUS_ALLOW_KEYBOARD"
-#: Environment overrides for the child-session switches.
-ENV_CHILD_SESSION = "SOMNUS_CHILD_SESSION"
-ENV_CHILD_SESSION_DEBUG = "SOMNUS_CHILD_SESSION_DEBUG_WINDOW"
 
 #: Keys understood in the file. Anything else is ignored (see module docstring).
 _KNOWN_KEYS = frozenset(
     {
+        "allow_gesture",
         "allow_clipboard",
         "allow_keyboard",
         "allow_processes",
-        "child_session",
-        "child_session_debug_window",
     }
 )
 
@@ -103,30 +98,26 @@ def default_config_path() -> Path:
         return Path(override).expanduser()
     if sys.platform.startswith("win"):
         base = os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")
-        return Path(base) / "somnusui" / "config.toml"
+        return Path(base) / "somnusdroid" / "config.toml"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "somnusui" / "config.toml"
+        return Path.home() / "Library" / "Application Support" / "somnusdroid" / "config.toml"
     base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
-    return Path(base) / "somnusui" / "config.toml"
+    return Path(base) / "somnusdroid" / "config.toml"
 
 
 @dataclass(slots=True)
 class Settings:
     """Resolved settings: file values, plus whatever overrode them."""
 
-    #: The Ctrl+V channel. On unless disabled here or by a flag/env override.
+    #: Taps at a node's bounds centre, for controls that publish no CLICK
+    #: action. On unless disabled here or by a flag/env override.
+    allow_gesture: bool = True
+    #: The clipboard write channel (host-side routes).
     allow_clipboard: bool = True
-    #: The SendInput channel. On unless disabled here or by a flag/env override.
+    #: The synthetic typing channel (host-side routes).
     allow_keyboard: bool = True
-    #: Optional process allow-list (empty = no restriction).
+    #: Optional app allow-list (empty = no restriction).
     allow_processes: tuple[str, ...] = ()
-    #: Run the agent in a child session so its synthetic input cannot reach the
-    #: user's desktop. Off unless asked for: it needs Pro and a one-time admin
-    #: setup.
-    child_session: bool = False
-    #: Keep the RDP loopback window visible, for testing. Only meaningful when
-    #: :attr:`child_session` is on.
-    child_session_debug_window: bool = True
     #: The file these came from (even when it does not exist yet), so a host can
     #: tell the user exactly which path to edit.
     path: Path | None = None
@@ -139,11 +130,10 @@ class Settings:
         where = str(self.path) if self.path else "<none>"
         lines = [
             f"config path      : {where}",
+            f"allow_gesture    : {self.allow_gesture}",
             f"allow_clipboard  : {self.allow_clipboard}",
             f"allow_keyboard   : {self.allow_keyboard}",
             f"allow_processes  : {', '.join(self.allow_processes) or '(any)'}",
-            f"child_session    : {self.child_session}",
-            f"child_session_win: {self.child_session_debug_window}",
         ]
         for problem in self.problems:
             lines.append(f"warning          : {problem}")
@@ -178,7 +168,7 @@ def _apply_file(settings: Settings, data: dict) -> Settings:
     """Fold the file's values in, reporting the ones that made no sense."""
     problems = list(settings.problems)
 
-    for key in ("allow_clipboard", "allow_keyboard", "child_session", "child_session_debug_window"):
+    for key in ("allow_gesture", "allow_clipboard", "allow_keyboard"):
         if key not in data:
             continue
         value = data[key]
@@ -211,10 +201,9 @@ def _apply_env(settings: Settings) -> Settings:
     can turn on what the file leaves off, and turn off what the file enables.
     """
     for env_name, key in (
+        (ENV_ALLOW_GESTURE, "allow_gesture"),
         (ENV_ALLOW_CLIPBOARD, "allow_clipboard"),
         (ENV_ALLOW_KEYBOARD, "allow_keyboard"),
-        (ENV_CHILD_SESSION, "child_session"),
-        (ENV_CHILD_SESSION_DEBUG, "child_session_debug_window"),
     ):
         override = _truthy_env(env_name)
         if override is not None:
@@ -225,10 +214,10 @@ def _apply_env(settings: Settings) -> Settings:
 def save(settings: Settings, path: Path | None = None) -> Path:
     """Write settings to *path* (or the default location), creating parents.
 
-    TOML is written by hand rather than with a library: the schema is three keys,
-    and a hand-written file keeps the comments that tell a person (or an agent)
-    what the switches do. A round-trip that dropped those comments would make the
-    file worse to edit every time it was saved.
+    TOML is written by hand rather than with a library: the schema is a
+    handful of keys, and a hand-written file keeps the comments that tell a
+    person (or an agent) what the switches do. A round-trip that dropped those
+    comments would make the file worse to edit every time it was saved.
     """
     target = Path(path).expanduser() if path is not None else (settings.path or default_config_path())
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -241,35 +230,24 @@ def render_toml(settings: Settings) -> str:
     """The file's text, comments included."""
     processes = ", ".join(f'"{p}"' for p in settings.allow_processes)
     return (
-        "# SomnusUI settings.\n"
+        "# SomnusDroid settings.\n"
         "#\n"
-        "# Both synthetic-input channels are ON unless set to false below.\n"
-        "# They seize the screen's foreground (and the clipboard channel borrows\n"
-        "# your clipboard), so turn one off if you do not accept that a window\n"
-        "# the agent writes into may come to the front.\n"
+        "# The gesture channel is ON unless set to false below. It taps at a\n"
+        "# control's own bounds centre for controls that publish no CLICK\n"
+        "# action (self-drawn apps); without it those controls are unreachable.\n"
+        "# The tap's coordinates come from the accessibility tree, never from\n"
+        "# the model, and the result is OK_UNVERIFIED unless the delta proves\n"
+        "# the effect.\n"
         "\n"
-        "# Ctrl+V channel: reaches a self-drawn editor that publishes no\n"
-        "# writable interface. Borrows your clipboard, then restores it\n"
-        "# format by format (images included).\n"
+        f"allow_gesture = {_toml_bool(settings.allow_gesture)}\n"
+        "\n"
+        "# Host-side synthetic channels, kept for symmetry with the desktop\n"
+        "# build. They only matter for routes that leave the phone.\n"
         f"allow_clipboard = {_toml_bool(settings.allow_clipboard)}\n"
-        "\n"
-        "# SendInput channel: types the text. Last resort - it is slower, can\n"
-        "# drop characters, and is the least verifiable route.\n"
         f"allow_keyboard = {_toml_bool(settings.allow_keyboard)}\n"
         "\n"
-        "# Optional: restrict every action to these processes (empty = any).\n"
+        "# Optional: restrict every action to these processes/apps (empty = any).\n"
         f"allow_processes = [{processes}]\n"
-        "\n"
-        "# Run the agent in a child session: a second Windows session for the\n"
-        "# same account (same files, same programs) with its own input desktop,\n"
-        "# so synthetic input stops competing with you for the foreground.\n"
-        "# Needs Windows Pro/Enterprise/Education and a one-time admin setup:\n"
-        "# `somnus child-session setup`. End users normally do not need this.\n"
-        f"child_session = {_toml_bool(settings.child_session)}\n"
-        "\n"
-        "# Keep the RDP loopback window visible (testing). It does not affect\n"
-        "# isolation - the session is the same either way - only what you see.\n"
-        f"child_session_debug_window = {_toml_bool(settings.child_session_debug_window)}\n"
     )
 
 

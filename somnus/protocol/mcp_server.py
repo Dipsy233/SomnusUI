@@ -27,6 +27,8 @@ def build_session(**kwargs: Any) -> Session:
 
     A ``policy`` may be passed explicitly (tests, embedding); otherwise one is
     built from the settings file, so the opt-in switches work without a flag.
+    The gesture channel follows the same file: ``allow_gesture = false`` in
+    the TOML turns it off, ``--no-allow-gesture`` overrides for one run.
     """
     from somnus.providers.base import get_provider
 
@@ -39,7 +41,11 @@ def build_session(**kwargs: Any) -> Session:
             allow_clipboard=settings.allow_clipboard,
             allow_keyboard=settings.allow_keyboard,
         )
+    else:
+        settings = load_settings(config_path)
 
+    if kwargs.get("allow_gesture") is None:
+        kwargs["allow_gesture"] = settings.allow_gesture
     provider = get_provider(kwargs.pop("provider", "android"), **kwargs)
     return Session(provider, policy=policy)
 
@@ -107,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - entry poin
     # ``--allow-gesture`` (any position) turns on the gesture channel: taps at
     # node bounds for widgets that publish no CLICK action (MIUI search bars,
     # some editors). Off by default - coordinates are unverified.
-    allow_gesture = "--allow-gesture" in argv
+    allow_gesture = None if "--no-allow-gesture" not in argv else False
     session = build_session(provider=provider, allow_gesture=allow_gesture)
     try:
         asyncio.run(_run_stdio(session))

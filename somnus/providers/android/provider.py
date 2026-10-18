@@ -101,14 +101,17 @@ class AndroidProvider:
         transport: PortalTransport | None = None,
         serial: str | None = None,
         max_depth: int = 20,
-        allow_gesture: bool = False,
+        allow_gesture: bool = True,
         **_: Any,
     ) -> None:
         self.max_depth = max_depth
         #: The gesture channel (``dispatchGesture`` at the node's bounds
-        #: centre) is off by default: coordinates exist only inside the Portal
-        #: and a gesture result is ``OK_UNVERIFIED`` unless the delta proves
-        #: it worked (doc §7.1).
+        #: centre) is ON by default: self-drawn apps routinely publish
+        #: controls with no CLICK action (measured live: xiaoheihe post cards
+        #: are unreachable without a tap), and the tap's coordinates come
+        #: from the accessibility bounds the model never sees. A gesture
+        #: result is ``OK_UNVERIFIED`` unless the delta proves it worked -
+        #: that honesty is the safety net, not the off switch.
         self.allow_gesture = allow_gesture
         self.transport = transport or PortalTransport(serial=serial)
         #: Snapshot fetch retries (mobilerun's fetch_state_with_retry pattern):

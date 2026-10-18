@@ -105,9 +105,13 @@ def build_session(args: argparse.Namespace) -> Session:
     else:
         from somnus.providers.base import get_provider
 
-        provider = get_provider(
-            provider_name, allow_gesture=getattr(args, "allow_gesture", False)
+        gesture_flag = getattr(args, "allow_gesture", None)
+        gesture = (
+            gesture_flag
+            if gesture_flag is not None
+            else load_settings(getattr(args, "config", None)).allow_gesture
         )
+        provider = get_provider(provider_name, allow_gesture=gesture)
 
     policy = Policy(
         allow_processes=tuple(args.allow or ()) or settings.allow_processes,
@@ -305,13 +309,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confirmed", action="store_true")
     parser.add_argument(
         "--allow-gesture",
+        dest="allow_gesture",
         action="store_true",
+        default=None,
         help=(
-            "enable the gesture channel: taps at a node's bounds centre for "
-            "controls that publish no CLICK action (self-drawn apps, some "
-            "search bars). Results are OK_UNVERIFIED by nature - confirm with "
-            "OBSERVE"
+            "force the gesture channel on for this run (overrides the "
+            "settings file). Taps at a node's bounds centre serve controls "
+            "that publish no CLICK action (self-drawn apps); the channel is "
+            "on by default - --no-allow-gesture turns it off"
         ),
+    )
+    parser.add_argument(
+        "--no-allow-gesture",
+        dest="allow_gesture",
+        action="store_false",
+        help="turn the gesture channel off for this run",
     )
     parser.add_argument(
         "--config",
