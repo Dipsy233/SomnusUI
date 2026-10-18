@@ -65,7 +65,30 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
                 ?: return err("APP_NOT_FOUND", "no launchable activity for $packageName")
             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
-            ok()
+            // MIUI's "background activity start" permission silently drops the
+            // startActivity when the Portal is in the background and the
+            // permission is off - the call returns ok but nothing happens
+            // (found live: APP open returned ok while the launcher stayed
+            // active). Verify the foreground actually moved; report loudly
+            // when it did not (doc: fail loud).
+            Thread.sleep(1200)
+            val windows = svc.snapshot(true).optJSONArray("windows") ?: JSONArray()
+            var active = ""
+            for (i in 0 until windows.length()) {
+                val w = windows.optJSONObject(i) ?: continue
+                if (w.optBoolean("active")) {
+                    active = w.optString("pkg")
+                    break
+                }
+            }
+            val targetPkg = intent.`package` ?: intent.component?.packageName ?: ""
+            return if (active == packageName || active == targetPkg) ok()
+            else JSONObject()
+                .put("ok", false)
+                .put("error", "APP_NOT_IN_FOREGROUND")
+                .put("message",
+                    "launched $packageName but the foreground is '$active'; " +
+                    "on MIUI enable 后台弹出界面 for the Portal")
         } catch (t: Throwable) {
             err("ACTION_FAILED", t.message ?: "launch failed")
         }

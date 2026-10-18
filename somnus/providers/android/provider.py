@@ -66,6 +66,9 @@ PORTAL_ERROR_CODES = {
     "ACTION_FAILED": "NATIVE_EXECUTION_FAILED",
     "SERVICE_DISCONNECTED": "SERVICE_DISCONNECTED",
     "KEYGUARD": "KEYGUARD_LOCKED",
+    # MIUI's background-start permission dropped the launch; the hint tells
+    # the user which toggle to flip (verified live on MIUI 16).
+    "APP_NOT_IN_FOREGROUND": "APP_NOT_IN_FOREGROUND",
 }
 
 
@@ -309,9 +312,10 @@ class AndroidProvider:
         if bool((result or {}).get("ok")):
             self._bump_events()
             return ExecResult(ok=True)
+        err_name = str((result or {}).get("error") or "ACTION_FAILED")
         return ExecResult(
             ok=False,
-            error="APP_NOT_FOUND",
+            error=PORTAL_ERROR_CODES.get(err_name, "APP_NOT_FOUND"),
             message=str((result or {}).get("message") or package),
         )
 
