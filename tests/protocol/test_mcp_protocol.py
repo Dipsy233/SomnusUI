@@ -235,8 +235,6 @@ def test_serve_answers_malformed_json_with_a_parse_error(session):
 
 
 def test_make_mcp_server_lists_the_same_tools(session):
-    mcp = pytest.importorskip("mcp")  # the optional dependency
-
     from somnus.protocol.mcp_server import make_mcp_server
 
     server = make_mcp_server(session)
