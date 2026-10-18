@@ -69,6 +69,7 @@ class AndroidMockProvider:
         self.launchable: list[dict[str, str]] = []
         self.globals: list[str] = []
         self.pages: list[str] = []
+        self.launch_app_calls: list[str] = []
         for snap in snapshots or ():
             self._install(snap)
         for path in snapshot_paths or ():
@@ -186,6 +187,7 @@ class AndroidMockProvider:
         return ExecResult(ok=True)
 
     def launch_app(self, package: str) -> ExecResult:
+        self.launch_app_calls.append(package)
         if any(a.get("package") == package for a in self.launchable):
             return ExecResult(ok=True)
         return ExecResult(ok=False, error="APP_NOT_FOUND", message=package)

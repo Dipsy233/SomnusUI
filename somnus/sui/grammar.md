@@ -126,6 +126,8 @@ query   := "FIND" [REF] [TYPE] STRING ["in" REF]
 inspect := "INSPECT" REF ["depth=" INT] ["range=" INT ":" INT]
 abort   := "UNKNOWN" STRING
 observe := "OBSERVE" [REF] ["windows" | "desktop" | "full"] ["expand" REF]
+switch  := "SWITCH" ("home"|"back"|"next"|"prev"|"recents"|"notifications"|"quick_settings" | "launch" APP)
+app     := "APP" ("launch"|"search") STRING
 ```
 
 ```
@@ -138,8 +140,12 @@ INSPECT l1 depth=1
 INSPECT t1 range=0:2000
 OBSERVE w5 full           # the whole window tree, no folding, no budget
 OBSERVE w5 expand g3      # unfold one collapsed node, keep the rest folded
-OBSERVE windows           # just the window list (how you switch windows)
-OBSERVE w5 desktop        # w5 plus the list of the other windows
+SWITCH home               # launcher (platform action)
+SWITCH back | recents     # previous screen | task switcher
+SWITCH next | prev        # launcher page turn
+SWITCH notifications | quick_settings   # the pull-down panels
+SWITCH launch 微信         # open an app via the platform API
+APP search "腾讯"          # list matching apps
 ```
 
 Large homogeneous collections (a game list, a message list) render the first

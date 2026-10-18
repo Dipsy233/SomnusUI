@@ -76,11 +76,23 @@ def test_observe_returns_the_semantic_overview(session):
     assert "PRODUCT" in text
 
 
-def test_observe_windows_only_lists_windows(session):
-    text = call_tool(session, "observe", {"windows_only": True})
-    assert "WINDOW w1" in text
-    # A window-list answer carries no control tree.
-    assert "PRODUCT" not in text
+def test_observe_header_names_the_current_screen(session):
+    """`SCREEN <id>` - the agent knows where it is without parsing packages."""
+    text = call_tool(session, "observe")
+    assert "SCREEN " in text
+
+
+def test_switch_launch_goes_through_the_platform_api():
+    """SWITCH launch opens an app through the platform API, no tree needed."""
+    from somnus.providers.android.mock import AndroidMockProvider
+    from somnus.runtime.policy import Policy
+
+    provider = AndroidMockProvider(snapshots=[])
+    provider.launchable = [{"package": "com.example.chat", "label": "聊天"}]
+    s = Session(provider, policy=Policy())
+    text = call_tool(s, "switch", {"target": "launch", "app": "聊天"})
+    assert "OK app=com.example.chat" in text, text
+    assert provider.launch_app_calls == ["com.example.chat"]
 
 
 def test_find_accepts_the_find_syntax_verbatim(session):

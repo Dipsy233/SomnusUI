@@ -648,9 +648,9 @@ class Session:
         # context carried is the window delta - a window appearing or vanishing
         # changes what the agent can act on, so it must still be reported even
         # in single-window mode.
-        header: list[str] = []
+        header: list[str] = [self._screen_line()]
         if include_other_windows:
-            header = self._window_header(result)
+            header.extend(self._window_header(result))
         if window_delta:
             header.append(window_delta)
         # The header (other windows + deltas) consumes part of the observation
@@ -695,6 +695,37 @@ class Session:
             suffix = (" " + " ".join(flags)) if flags else ""
             lines.append(f"  WINDOW {ref} {_q(w.title)}{suffix}")
         return "\n".join(lines)
+
+    def _screen_line(self) -> str:
+        """``SCREEN <id>`` - what the phone is showing right now, in one token.
+
+        The agent should not have to parse package names to know where it is:
+        `SCREEN home` says the launcher, `SCREEN qq` says QQ. The id is the
+        app's launcher label when the Portal knows it (lower-cased, spaces
+        folded), the package's last segment otherwise, and `home` for any
+        launcher package. This is also the id `SWITCH launch` accepts back.
+        """
+        win = next(
+            (w for w in self.windows if w.window_id == self.target_window), None
+        )
+        pkg = (win.process if win else "") or ""
+        if not pkg:
+            return 'SCREEN unknown ""'
+        if "launcher" in pkg.lower() or pkg.endswith(".home") or pkg == "com.miui.home":
+            return "SCREEN home"
+        label = None
+        lister = getattr(self.provider, "list_apps", None)
+        if lister is not None:
+            try:
+                apps = lister()
+            except Exception:  # noqa: BLE001 - a dead app list must not kill observe
+                apps = []
+            label = next(
+                (a.get("label") for a in apps if a.get("package") == pkg), None
+            )
+        if not label:
+            label = pkg.rsplit(".", 1)[-1]
+        return "SCREEN " + "_".join(label.split()).lower()
 
     def _window_delta(self) -> str:
         """Delta lines for windows that appeared or disappeared.
@@ -1522,15 +1553,25 @@ class Session:
 
     # ------------------------------------------------------------------ switching
 
-    def switch_session(self, target: str) -> str:
-        """Navigate the phone itself: home / back / pager next / prev.
+    def switch_session(self, target: str, *, app: str | None = None) -> str:
+        """Navigate the phone itself - screens, panels and apps.
 
-        Every one of these runs through the platform's own APIs (global
-        actions, a synthesized pager swipe) rather than the UI tree, because
-        what they reach is precisely what no tree can name: the home screen,
-        the previous app, the launcher page that is not instantiated yet.
+        Targets:
 
-        A switch discards every ref - the screen they named is gone.
+        * ``home`` / ``back``     - platform global actions;
+        * ``next`` / ``prev``     - launcher page turn (synthesized swipe);
+        * ``recents``             - the task switcher;
+        * ``notifications`` /
+          ``quick_settings``      - the pull-down shades. On devices with one
+          merged shade both open the same panel; on split-shade devices they
+          are the two distinct panels, matching what the user's finger does
+          from the left vs the top-right corner;
+        * ``launch`` (with ``app=``) - open an app through the platform's own
+          launch API. No tree, no icon clicking: what it reaches (a not-yet-
+          instantiated app, a folder page away) is exactly what no tree can
+          name.
+
+        Every switch discards every ref - the screen they named is gone.
         """
         target = (target or "").strip().lower()
         android_global = getattr(self.provider, "global_action", None)
@@ -1540,7 +1581,14 @@ class Session:
                 "switch is an Android screen action; this provider has no "
                 "global actions",
             )
-        if target in ("home", "back"):
+        if target == "launch":
+            if not app:
+                return _err(
+                    "INVALID_ARGUMENT",
+                    "SWITCH launch needs an app: SWITCH launch <label-or-package>",
+                )
+            return self.app_action(Action(kind="app", query=app, scope="launch"))
+        if target in ("home", "back", "recents", "notifications", "quick_settings"):
             result = android_global(target)
         elif target in ("next", "prev"):
             pager = getattr(self.provider, "page", None)
@@ -1553,7 +1601,8 @@ class Session:
         else:
             return _err(
                 "INVALID_ARGUMENT",
-                f"unknown switch target {target!r}; use home|back|next|prev",
+                f"unknown switch target {target!r}; use "
+                "home|back|next|prev|recents|notifications|quick_settings|launch <app>",
             )
         if not result.ok:
             return SomnusError(
@@ -1605,7 +1654,13 @@ class Session:
         ).render()
 
     def app_action(self, action: Action) -> str:
-        """``APP open "<label or package>"`` / ``APP search "..."``."""
+        """``APP launch "<label or package>"`` / ``APP search "..."``.
+
+        Launch goes through the platform's own API (PackageManager launch
+        intent), never by clicking icons in a tree: what it reaches is
+        exactly what no tree can name - an app whose launcher icon is pages
+        deep in a folder, or not instantiated at all.
+        """
         lister = getattr(self.provider, "list_apps", None)
         launcher = getattr(self.provider, "launch_app", None)
         if launcher is None:
@@ -1626,7 +1681,7 @@ class Session:
             lines = [f"FOUND {len(hits)}"]
             lines += [f"  APP {a.get('package')} {_q(a.get('label') or '')}" for a in hits]
             return "\n".join(lines)
-        # open: label first, package as fallback.
+        # launch: label first, package as fallback.
         apps = lister() if lister else []
         package = next(
             (a.get("package") for a in apps
@@ -1708,7 +1763,7 @@ class Session:
             if action.kind == "call":
                 return self.call(action, confirmed=confirmed).text
             if action.kind == "switch":
-                return self.switch_session(action.query or "main")
+                return self.switch_session(action.query or "home", app=action.scope)
             if action.kind == "system":
                 return self.system_action(action.query or "")
             if action.kind == "app":

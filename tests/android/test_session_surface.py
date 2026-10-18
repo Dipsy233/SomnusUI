@@ -42,21 +42,21 @@ def test_system_on_windows_provider_is_refused_cleanly():
 def test_app_open_by_label():
     session = make_session()
     session.observe()
-    out = session.dispatch('APP open "设置"')
+    out = session.dispatch('APP launch "设置"')
     assert out.startswith("OK app=com.android.settings"), out
 
 
 def test_app_open_by_package():
     session = make_session()
     session.observe()
-    out = session.dispatch('APP open "com.example.chat"')
+    out = session.dispatch('APP launch "com.example.chat"')
     assert out.startswith("OK app=com.example.chat"), out
 
 
 def test_app_open_unknown_is_app_not_found():
     session = make_session()
     session.observe()
-    out = session.dispatch('APP open "不存在的应用"')
+    out = session.dispatch('APP launch "不存在的应用"')
     assert out.startswith("ERR APP_NOT_FOUND"), out
 
 

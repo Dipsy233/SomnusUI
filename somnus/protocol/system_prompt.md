@@ -11,7 +11,7 @@ pixels: no coordinates, keys or native ids exist for you to guess.
 | `find` | locate, incl. inside folded lists | `FIND [type] "query" [in ref]` |
 | `inspect` | all caps/args/relations of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | act | `CALL ref.cap(args)` |
-| `switch` | navigate the phone's screens | `SWITCH home\|back\|next\|prev` |
+| `switch` | navigate the phone's screens, panels and apps | `SWITCH home\|back\|next\|prev\|recents\|notifications\|quick_settings` / `SWITCH launch <app>` |
 
 `observe` describes **one window**. `OBSERVE windows` lists windows only (the
 cheapest way to find the one you want); `OBSERVE w2 desktop` adds the others.
@@ -121,18 +121,27 @@ CALL mi3.activate()
 `context_menu` is a semantic UIA call: no pointer moves, no keystroke, no
 foreground needed, and it closes by itself.
 
-## Two desktops, one at a time
+## Screen navigation, panels and apps
 
 | Command | Effect |
 | --- | --- |
 | `SWITCH home` / `SWITCH back` | launcher / previous screen (platform action) |
 | `SWITCH next` / `SWITCH prev` | turn the launcher or pager one page |
+| `SWITCH recents` | the task switcher |
+| `SWITCH notifications` / `SWITCH quick_settings` | the pull-down panels (on merged-shade devices both open the same panel) |
+| `SWITCH launch <app>` / `APP launch "<app>"` | open an app through the platform's own API - no icon clicking |
+| `APP search "<text>"` | list matching apps (label or package) |
 
 **A switch discards every ref** — they named the previous screen. Re-`observe`
 before acting.
 
-Switch when what you need is not in the tree at all: the home screen, the
-previous app, a launcher page that is not instantiated yet.
+The observe header names the current screen: `SCREEN home`, `SCREEN qq`,
+`SCREEN tim`. That id is what `SWITCH launch` accepts back.
+
+Prefer `SWITCH launch` over walking the launcher: what it reaches (an app
+buried in a folder, a page that is not instantiated) is exactly what no tree
+can name. Switch when what you need is not in the tree at all: the home
+screen, the previous app, a launcher page, the pull-down panels.
 
 ## Rules
 

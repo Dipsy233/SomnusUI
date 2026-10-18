@@ -24,26 +24,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Semantic overview (L0) of the CURRENT screen: screens, entities "
             "and their capabilities. Always reflects what is on screen right "
-            "now - on a phone it follows the active window automatically. "
-            "Never pixels or native ids. Call it first - it assigns the refs "
-            "every other tool uses."
+            "now - the header names the current app (SCREEN home / SCREEN "
+            "qq). Never pixels or native ids. Call it first - it assigns the "
+            "refs every other tool uses."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "window": {
-                    "type": "string",
-                    "description": "window ref to focus and observe",
-                },
-                "windows_only": {
-                    "type": "boolean",
-                    "description": "window list only, no control tree",
-                },
-                "include_other_windows": {
-                    "type": "boolean",
-                    "description": "also list the rest of the desktop",
-                },
-            },
+            "properties": {},
         },
     },
     {
@@ -101,22 +88,35 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "switch",
         "description": (
-            "Navigate the phone itself: home (back to the launcher), back "
-            "(previous screen), next/prev (turn the launcher or pager one "
-            "page). Runs through the platform's own actions, not the UI "
-            "tree, and discards every ref."
+            "Navigate the phone itself - no UI tree needed: home (launcher), "
+            "back, next/prev (launcher pages), recents (task switcher), "
+            "notifications / quick_settings (the pull-down shades; on merged-"
+            "shade devices both open the same panel), launch (open an app "
+            "through the platform's own API with `app`). Discards every ref."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "target": {
                     "type": "string",
-                    "enum": ["home", "back", "next", "prev"],
+                    "enum": [
+                        "home", "back", "next", "prev", "recents",
+                        "notifications", "quick_settings", "launch",
+                    ],
                     "description": (
-                        "home = launcher; back = previous screen; "
-                        "next/prev = pager page"
+                        "home = launcher; back = previous screen; next/prev = "
+                        "pager page; recents = task switcher; notifications / "
+                        "quick_settings = the pull-down panels; launch = open "
+                        "the app named in `app`"
                     ),
-                }
+                },
+                "app": {
+                    "type": "string",
+                    "description": (
+                        "with target=launch: app label or package, e.g. '微信' "
+                        "or 'com.tencent.mm'"
+                    ),
+                },
             },
             "required": ["target"],
         },
@@ -129,11 +129,7 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
     args = arguments or {}
     try:
         if name == "observe":
-            return session.observe(
-                args.get("window"),
-                windows_only=bool(args.get("windows_only")),
-                include_other_windows=bool(args.get("include_other_windows")),
-            ).text
+            return session.observe().text
         if name == "find":
             # The `query` argument accepts the FIND syntax verbatim
             # (``FIND product "Big Mac"``) or a bare query string.
@@ -159,7 +155,7 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
         if name == "call":
             # Route through dispatch, not session.call: the action string is
             # SUI-Text, which includes the session-level forms (SYSTEM back,
-            # APP open, FIND ... scroll) that parse_action accepts but
+            # APP launch, FIND ... scroll) that parse_action accepts but
             # session.call would mis-handle as a node CALL (found live: MCP
             # `call {"action": "SYSTEM home"}` errored with STALE_TARGET).
             from somnus.sui.parse import parse_action
@@ -168,7 +164,7 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             return session.run(action, confirmed=args.get("confirmed"))
         if name == "switch":
             target = (args.get("target") or "home").strip().lower()
-            return session.switch_session(target)
+            return session.switch_session(target, app=args.get("app"))
         return SomnusError(ErrorCode.PARSE_ERROR, message=f"unknown tool {name}").render()
     except SomnusError as err:
         return err.render()

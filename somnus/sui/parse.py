@@ -77,7 +77,16 @@ _OBSERVE_RE = re.compile(
 #: ``SESSION open`` / ``SESSION close`` create and end the child session.
 _SWITCH_RE = re.compile(
     r"^SWITCH\s+(?P<target>main|local|host|primary|child|other|remote|sub"
-    r"|home|back|next|prev)\s*$",
+    r"|home|back|next|prev|recents|notifications|quick_settings)\s*$",
+    re.IGNORECASE,
+)
+
+#: ``SWITCH launch <app>`` - open an app through the platform's own launch
+#: API (PackageManager), never by clicking icons in a tree. The verb is
+#: deliberately `launch`, not `open`: `+open` is a capability some controls
+#: print, and the two must not read as the same gesture.
+_SWITCH_LAUNCH_RE = re.compile(
+    r"^SWITCH\s+launch\s+(?P<app>\S+)\s*$",
     re.IGNORECASE,
 )
 _SESSION_RE = re.compile(
@@ -93,9 +102,12 @@ _SYSTEM_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: ``APP open "<label or package>"`` / ``APP search "..."`` - launch an app.
+#: ``APP launch "<label or package>"`` / ``APP search "..."`` - launch an app
+#: through the platform's own API, no tree needed. The verb is `launch`, not
+#: `open`: `+open` is a capability some controls print, and the two must not
+#: read as the same gesture.
 _APP_RE = re.compile(
-    r"^APP\s+(?P<op>open|search)\s+(?P<query>\"(?:[^\"\\]|\\.)*\"|\S+)\s*$",
+    r"^APP\s+(?P<op>launch|search)\s+(?P<query>\"(?:[^\"\\]|\\.)*\"|\S+)\s*$",
     re.IGNORECASE,
 )
 
@@ -163,6 +175,12 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     if m:
         reason = m.group("reason").strip('"')
         return Action(kind="unknown", query=reason, raw=raw)
+
+    m = _SWITCH_LAUNCH_RE.match(raw)
+    if m:
+        return Action(
+            kind="switch", query="launch", scope=m.group("app"), raw=raw
+        )
 
     m = _SWITCH_RE.match(raw)
     if m:
