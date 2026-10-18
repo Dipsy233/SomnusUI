@@ -72,12 +72,18 @@ class SessionRegistry:
         """
         self._reconcile_counter += 1
         report = ReconcileReport()
+        # The compiled window root keeps its pinned ref through anything: it is
+        # the session's window identity ("w1" stays this window across switches
+        # to other windows, whose passes would otherwise prune it as dead and
+        # mint "w4" when the agent switches back - found live: CALL w1.focus()
+        # came back OK but the next observation called the same window w4).
+        root_ref = result.root.ref
         # Drop refs that died in an earlier pass: they must not participate
         # in uniqueness decisions, or a fingerprint whose element vanished
         # and returned (tray flyout, minimized window) stays ambiguous forever.
         if self._live_refs:
             for fp in list(self.by_fingerprint):
-                refs = [r for r in self.by_fingerprint[fp] if r in self._live_refs]
+                refs = [r for r in self.by_fingerprint[fp] if r in self._live_refs or r == root_ref]
                 if refs:
                     self.by_fingerprint[fp] = refs
                 else:
@@ -136,6 +142,11 @@ class SessionRegistry:
             # Adopt the compiler-allocated ref when it is unused; otherwise
             # allocate a fresh one (refs are never recycled within a session).
             if old_ref and old_ref not in self.records and old_ref not in claimed:
+                new_ref = old_ref
+            elif old_ref == root_ref and old_ref in self.records:
+                # The pinned window ref is the session's identity for this
+                # window (see the pruning note above): reuse it even though
+                # the pass that saw it last was a different window's.
                 new_ref = old_ref
             else:
                 new_ref = self._fresh_ref(node)

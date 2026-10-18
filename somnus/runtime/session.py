@@ -226,6 +226,16 @@ class Session:
         for w in self.windows:
             if w.window_id == window_id:
                 return w
+        # The target window is also known through its pinned root ref: the
+        # recompile path registers id -> ref but deliberately never writes
+        # ref -> id (that map belongs to focus_window/observe). Reverse-lookup
+        # here so `CALL w1.focus()` resolves on Android, whose native ids are
+        # never ref-shaped ("0/6835"). Every by-id entry is a ref the session
+        # itself allocated, so a hit is trusted regardless of which window is
+        # currently the target (that is the whole point of switching back).
+        for window_id, pinned_ref in self._window_refs_by_id.items():
+            if pinned_ref == ref:
+                return next((w for w in self.windows if w.window_id == window_id), None)
         return None
 
     def _peek(self, window_id: str) -> WindowInfo | None:
@@ -301,6 +311,17 @@ class Session:
         result = self.compiler.compile(tree, pack=pack, window_ref=pinned)
         report = self.registry.reconcile(result)
         self.result = result
+        # Keep the id -> ref pin fresh: `CALL wN.focus()` needs the ref the
+        # tree's root was compiled under, and on Android the native window id
+        # ("0/6835") is never ref-shaped, so the Windows flow's accidental
+        # pass-through (window ids literally being "wN") does not carry over
+        # (found live: CALL w1.focus() errored with CAPABILITY_NOT_FOUND on a
+        # phone). Only the id -> ref direction is written here; the ref -> id
+        # map belongs to focus_window/observe, which own the agent-facing
+        # namespace - writing it from a recompile would hijack a ref the agent
+        # already used for another window.
+        if self.target_window and self.target_window not in self._window_refs.values():
+            self._window_refs_by_id[self.target_window] = result.root.ref
         # A fingerprint shared by several nodes cannot be resolved to one ref;
         # remember them so `call` can return TARGET_AMBIGUOUS.
         self._ambiguous_refs = {
@@ -908,8 +929,17 @@ class Session:
             self._recompile()
         assert self.result is not None
 
-        # Window focus is a special session-level capability.
+        # Window focus is a special session-level capability. The ref -> id
+        # map only knows refs the agent used for switching; the target window
+        # is always focusable by its current root ref (w1 below) even before
+        # any switch happened, so fall back to the pinned by-id ref.
         win = self._window_by_ref(action.ref or "")
+        if (
+            win is None
+            and action.capability == "focus"
+            and self._window_refs_by_id.get(self.target_window or "") == action.ref
+        ):
+            win = next((w for w in self.windows if w.window_id == self.target_window), None)
         if win is not None and action.capability == "focus":
             return self.focus_window(action.ref or "")
 

@@ -863,7 +863,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--runs", type=int, default=100)
     p.set_defaults(func=cmd_bench)
 
-    sub.add_parser("mcp").set_defaults(func=cmd_mcp)
+    _mcp = sub.add_parser("mcp")
+    _mcp.add_argument(
+        "provider", nargs="?", default="auto",
+        help="provider to bind (auto/uia/mock/android)"
+    )
+    _mcp.set_defaults(func=cmd_mcp)
     sub.add_parser("rpc").set_defaults(func=cmd_rpc)
     return parser
 
