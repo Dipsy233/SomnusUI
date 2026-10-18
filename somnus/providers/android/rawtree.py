@@ -215,6 +215,14 @@ def convert_node(data: dict[str, Any], window_id: str) -> RawNode | None:
         states.add("selected")
     if data.get("focused"):
         states.add("focused")
+    # The view's own clickable claim, independent of the action list. Normally
+    # ACTION_CLICK rides along with it (-> invoke -> activate); when an app
+    # publishes one without the other, the compiler grants `tap` on exactly
+    # this evidence instead of guessing from role or shape.
+    if data.get("clickable"):
+        states.add("clickable")
+    if data.get("long_clickable"):
+        states.add("long_clickable")
     checked = data.get("checked")
     if checked is True:
         states.add("checked")

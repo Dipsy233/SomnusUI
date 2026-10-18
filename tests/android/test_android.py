@@ -110,7 +110,11 @@ def test_password_field_renders_without_a_value():
 # ---------------------------------------------------------------------------
 
 
-def _caps_for(actions: list[str], cls: str = "android.widget.TextView"):
+def _caps_for(
+    actions: list[str],
+    cls: str = "android.widget.TextView",
+    states: frozenset[str] | None = None,
+):
     from somnus.compiler.caps import primitive_capabilities
     from somnus.ir.node import NativeRef, RawNode
 
@@ -119,6 +123,7 @@ def _caps_for(actions: list[str], cls: str = "android.widget.TextView"):
         role="text" if "textview" in cls.lower() else "button",
         name="微信",
         patterns=frozenset(),
+        states=states or frozenset(),
     )
     # Mirror the rawtree mapping: actions -> patterns.
     from somnus.providers.android.rawtree import ACTION_TO_PATTERN
@@ -166,10 +171,26 @@ def test_select_is_suppressed_on_android_entirely():
     caps = _caps_for(["CLICK", "SELECT"], "android.widget.LinearLayout")
     assert "activate" in caps
     assert "select" not in caps
-    # A tab-strip item with SELECT but no CLICK: still no select (tap covers it).
+    # A tab-strip item with SELECT but no CLICK: still no select.
     caps = _caps_for(["SELECT"], "android.widget.TextView")
     assert "select" not in caps
-    assert "tap" in caps  # the gesture fallback stays
+
+
+def test_tap_is_granted_on_the_view_s_own_clickable_claim():
+    """`clickable` without a CLICK action: the view claims touch response.
+
+    Self-drawn cards (xiaoheihe) handle touches directly and never register
+    an OnClickListener - the tree carries `clickable: true` but no CLICK
+    action. That claim is the only honest evidence for a tap, and the cap is
+    granted on exactly it; nodes that claim nothing stay tap-free.
+    """
+    caps = _caps_for([], "android.view.View", states=frozenset({"clickable"}))
+    assert "tap" in caps
+    assert "activate" not in caps  # no CLICK action -> no activate promise
+    # A node that claims nothing stays tap-free (touch listeners are invisible
+    # to the tree; the verb remains available as the implicit fallback).
+    caps = _caps_for([], "android.view.View")
+    assert "tap" not in caps
 
 
 def test_context_menu_on_android_needs_long_click():

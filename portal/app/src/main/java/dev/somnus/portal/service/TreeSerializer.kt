@@ -99,6 +99,12 @@ object TreeSerializer {
         json.put("focused", node.isFocused)
         json.put("visible", node.isVisibleToUser)
         if (!node.isVisibleToUser) json.put("offscreen", true)
+        // Clickability is the view's own claim about itself, independent of the
+        // action list. It normally implies ACTION_CLICK (which the host maps
+        // to `activate`); when an app publishes one without the other, the
+        // host uses the difference to decide whether a tap is worth printing.
+        json.put("clickable", node.isClickable)
+        json.put("long_clickable", node.isLongClickable)
 
         node.collectionInfo?.let { collection ->
             val collJson = JSONObject()

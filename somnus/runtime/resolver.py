@@ -83,6 +83,20 @@ class Resolver:
                 if action.capability in getattr(candidate, "aliases", ()):
                     cap = candidate
                     break
+        if cap is None and action.capability == "tap":
+            # The gesture verb is an implicit fallback on every node, not a
+            # printed capability: printing it painted `+tap` on every line of
+            # self-drawn apps (found live: xiaoheihe's whole tree), while the
+            # verb itself is what matters - a tap at the node's bounds centre
+            # for controls that publish no CLICK. The provider refuses
+            # honestly when the channel is disabled.
+            from somnus.compiler.caps import _cap
+            from somnus.ir.capability import PrimitiveStep
+
+            cap = _cap("tap")
+            cap.via = [
+                PrimitiveStep(primitive="gesture", target="$self", value="tap")
+            ]
         if cap is None:
             raise capability_not_found(action.ref, action.capability)
 

@@ -217,20 +217,22 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # explicit Invoke, which is what makes them navigable at all.
     if _has_default_action(node) or role in ("link", "menuitem"):
         caps.setdefault("activate", _cap("activate"))
-    elif (node.native.class_name or "").startswith("android.") and _is_control(node):
-        # Android gesture fallback (SomnusDroid doc §7.1): some ROM surfaces
-        # render as controls but publish no CLICK to the accessibility tree
-        # (measured: MIUI settings' search bar). A synthetic tap at the node's
-        # bounds centre is the only route. Offered as `tap` - not `activate`,
-        # because a tap is synthesized from coordinates the model never sees
-        # and comes back OK_UNVERIFIED unless the delta proves it - and the
-        # provider's own double opt-in (host --allow-gesture + Portal config)
-        # is what decides whether the route exists at all. A provider without
-        # the channel refuses with ACTION_NOT_SUPPORTED, which the agent sees
-        # as an honest refusal rather than a missing capability.
+    elif "clickable" in node.states and "invoke" not in patterns:
+        # The view itself claims to be clickable but publishes no CLICK
+        # action: an app that handles touches directly and never registered
+        # an OnClickListener (self-drawn cards, custom surfaces). The tap is
+        # granted on exactly that evidence - the view's own claim - not on
+        # role, shape or blanket toolkit actions (found live: xiaoheihe's
+        # post cards, where every node used to grow a tap from the
+        # interactive-evidence fallback).
         tap = _cap("tap")
         tap.via = [PrimitiveStep(primitive="gesture", target="$self", value="tap")]
         caps.setdefault("tap", tap)
+    # Beyond this view-claim there is no honest evidence of touch response:
+    # a control driven by a touch listener exposes nothing in the tree. The
+    # gesture verb stays available on every node as an implicit fallback
+    # (the resolver routes CALL ref.tap() to the gesture channel), it is
+    # simply not printed where the UI claims nothing.
 
     # set_text is granted to *every* text-entry surface. The route it takes is
     # decided by the control's own interface, not by its class name or role.
