@@ -50,9 +50,13 @@ class SomnusAccessibilityService : AccessibilityService() {
     var lastChangeMs: Long = 0
         private set
 
-    /** Gesture channel toggle (doc §7.1): off until explicitly enabled. */
+    /** Gesture channel toggle: on by default - self-drawn apps publish
+     * controls with no CLICK action (measured: xiaoheihe post cards), and
+     * those are unreachable without a tap. The tap's coordinates come from
+     * the accessibility bounds, never from the model; the result stays
+     * OK_UNVERIFIED unless the delta proves the effect. */
     @Volatile
-    var gesturesEnabled: Boolean = false
+    var gesturesEnabled: Boolean = true
 
     override fun onServiceConnected() {
         super.onServiceConnected()
