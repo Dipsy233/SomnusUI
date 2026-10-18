@@ -12,8 +12,8 @@
 | M2 Android 编译规则 | **完成** | 标签上提、包装折叠、裸 View→UNKNOWN;真机设置/桌面/WLAN/搜索页 L0 全部 ≤ 305 token(门禁 400) |
 | M3 settle / verify / delta | **完成(真机验收通过)** | toggle WLAN 开关 wifi_on 1→0→1;set_text "蓝牙"→搜索列表实时过滤,delta `~ q1 text="蓝牙"`;click 跨窗口时 delta 报窗口替换 |
 | M4 FIND scroll、set_text 降级 | **完成(真机验收通过)** | FIND scroll:首屏 miss → 循环滚动命中"应用设置"→ 可直接 CALL;无匹配 3.7s 干净耗尽。set_text 通道 1/2 验证,通道 3(IME)未实装 |
-| M5 策略与确认 | **部分复用** | 共享 Policy 生效(包名白名单/critical 确认);中文高风险词表未加 |
-| M6 MCP + AndroidWorld | 未开始 | |
+| M5 策略与确认 | **推迟(按用户要求)** | 共享 Policy 生效中(包名白名单/critical 确认);中文高风险词表待安全阶段统一加 |
+| M6 MCP + AndroidWorld | **MCP 接入完成(真机验收)** | `somnus mcp android` stdio 端到端:initialize/tools/observe/find/call 全通;窗口切换修复(w1→w2→w1 引用稳定);AndroidWorld 跑分未开始 | |
 | M7 工作屏 | 未开始 | |
 
 ## 新增文件
@@ -67,6 +67,25 @@ Windows 行为零改动:`tests` 全绿(468 passed;clipboard 4 个失败为上游
 ### 待办(部署形态)
 
 - ~~RpcServer 生命周期挂在 MainActivity~~ ✅ 已迁入前台 `RpcService`(见下)
+
+## M6:MCP 接入完成(2026-10-18,真机验证)
+
+接入本身与 provider 无关,真机验证中修了三个 bug:
+
+1. **`somnus mcp` 无法指定 provider**:CLI 子命令没接 positional 参数(set_defaults 链式误用也修了)。
+2. **`CALL w1.focus()` 在 Android 上永远 CAPABILITY_NOT_FOUND**:Windows provider 的 window_id 本身是 "wN",碰巧直通;Android 的原生 id("0/6835")永不匹配。修复:`_window_by_ref` 反查 by-id 映射。
+3. **切换回窗口后 ref 漂移(w1→w4)**:reconcile 把切走的窗口 root 记录当死引用剪掉,切回时重新分配。修复:编译后的 root ref 永不剪除、优先复用。
+
+真机验收:
+
+| 项 | 结果 |
+|---|---|
+| stdio MCP 完整会话(initialize/tools/list/observe/find/call) | ✅ |
+| CALL w1.focus() 自聚焦 | ✅ |
+| w1→w2→w1、w1→w3→w1 切换往返,引用稳定不漂移 | ✅ |
+| host 回归 487 passed | ✅ |
+
+AndroidWorld 跑分(M6 后半)未开始。
 
 ## M4 完成:FIND scroll 真机验证(2026-10-18)
 
