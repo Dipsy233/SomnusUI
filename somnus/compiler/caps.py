@@ -349,17 +349,23 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # The role table is likewise not evidence: an element that reports no
     # scroll interface has nothing for the provider to run.
     if "scroll" in patterns:
-        caps.setdefault(
+        cap = _cap(
             "scroll",
-            _cap(
-                "scroll",
-                {
-                    "to": ParamSpec(
-                        type="enum", enum=("up", "down", "top", "bottom"), required=False
-                    )
-                },
-            ),
+            {
+                "direction": ParamSpec(
+                    type="enum",
+                    enum=("up", "down", "top", "bottom"),
+                    required=True,
+                )
+            },
         )
+        # The direction rides as the step's literal value: the resolver
+        # forwards a positional argument straight through, so the call reads
+        # `CALL l1.scroll(down)` - no `key:` spelling for the parser to
+        # mis-attach (found live: `scroll(to:top)` parsed as a positional
+        # "to:top" string and the provider silently scrolled down forever).
+        cap.via = [PrimitiveStep(primitive="scroll", target="$self", value="$direction")]
+        caps.setdefault("scroll", cap)
 
     # A ScrollItem (a row in a virtualised list) can be brought into view; this
     # is how an off-screen item is reached without scrolling blindly. It is a

@@ -292,7 +292,14 @@ class AndroidProvider:
         if value is not None and primitive in ("set_text", "paste_text", "type_text"):
             params["value"] = str(value)
         if value is not None and primitive == "scroll":
-            direction = value if isinstance(value, str) else None
+            # The direction is the call itself: `CALL l1.scroll(top)`. A dict
+            # (`{"to": ...}` from an older spelling) and the `to:` prefix
+            # are tolerated; so is the common `botton` typo.
+            if isinstance(value, dict):
+                value = value.get("to") or value.get("direction")
+            if isinstance(value, str) and value.lower().startswith("to:"):
+                value = value[3:]
+            direction = str(value).strip().lower() if value is not None else None
             mapping = {
                 "down": "SCROLL_FORWARD",
                 "up": "SCROLL_BACKWARD",
@@ -300,6 +307,9 @@ class AndroidProvider:
                 "right": "SCROLL_RIGHT",
                 "top": "SCROLL_TO_TOP",
                 "bottom": "SCROLL_TO_BOTTOM",
+                "botton": "SCROLL_TO_BOTTOM",
+                "end": "SCROLL_TO_BOTTOM",
+                "start": "SCROLL_TO_TOP",
             }
             params["action"] = mapping.get(direction or "", "SCROLL_FORWARD")
         # set_text channel 2: write the text to the clipboard first, then

@@ -47,7 +47,7 @@ True of the role, so not printed:
   prints `+expand`: open it with `expand` first, its items do not exist yet
 - `CHECKBOX`/`SWITCH`: `toggle`
 - `LISTITEM`/`TAB`/`RADIO`: `select`
-- `LIST`/`TREE`/`TABLE`/`PANE`: `scroll(to=up|down|top|bottom)`
+- `LIST`/`TREE`/`TABLE`/`PANE`: `scroll(up)` / `scroll(down)` / `scroll(top)` / `scroll(bottom)`
 
 `set_text` is **never** implicit — it is the line's answer to "is this writable":
 

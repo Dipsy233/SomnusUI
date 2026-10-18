@@ -101,10 +101,10 @@ def _plain_find(session, action: Action) -> str:
 
 
 def _scroll(session, list_ref: str, direction: str) -> str:
-    """One ``CALL <list_ref>.scroll(to=direction)`` through the session."""
+    """One ``CALL <list_ref>.scroll(direction)`` through the session."""
     from somnus.sui.parse import parse_action
 
-    out = session.dispatch(f"CALL {list_ref}.scroll(to={direction})")
+    out = session.dispatch(f"CALL {list_ref}.scroll({direction})")
     return out
 
 

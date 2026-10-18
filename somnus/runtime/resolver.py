@@ -165,15 +165,25 @@ class Resolver:
             value = step.value
             if isinstance(value, str) and value.startswith("$"):
                 value = args.get(value[1:].strip())
+                if value is None and len(args) == 1:
+                    # A single positional argument satisfies the one named
+                    # parameter: `CALL l1.scroll(down)` lands as {"_0":
+                    # "down"}, and the step asks for "$direction".
+                    value = next(iter(args.values()))
             if value is None and step.primitive in ("set_text", "type_text", "paste_text"):
                 value = _text_argument(args)
-            if value is None and step.primitive == "scroll" and args.get("to"):
-                # The scroll direction is the whole point of the call: without
-                # this forwarding every `to:` argument died here and the
-                # provider fell back to SCROLL_FORWARD - so `top`/`up`/
-                # `bottom` all scrolled *down* (found live on TIM: `to:top`
-                # paged the conversation list downward forever).
-                value = args["to"]
+            if value is None and step.primitive == "scroll" and args:
+                # Tolerated spellings: `to:top` / `to="top"` from older
+                # prompts. The documented form is the bare positional
+                # `scroll(down)`, handled above.
+                named = args.get("to") or args.get("direction")
+                if named is None:
+                    colon = [
+                        v for v in args.values()
+                        if isinstance(v, str) and ":" in v
+                    ]
+                    named = colon[0].split(":", 1)[1] if colon else None
+                value = named
             steps.append(
                 ResolvedStep(
                     native=native,
