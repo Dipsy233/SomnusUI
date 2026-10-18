@@ -255,6 +255,11 @@ class RpcServer(
  */
 private class FrameReader(private val input: java.io.InputStream) {
 
+    companion object {
+        /** 64 MB: a full snapshot with an 8000-node cap is far below this. */
+        const val MAX_FRAME_BYTES = 64L * 1024 * 1024
+    }
+
     /** null = clean close; a string = one text frame. */
     fun readTextFrame(): String? {
         val header = readExact(2) ?: return null
@@ -271,6 +276,14 @@ private class FrameReader(private val input: java.io.InputStream) {
         } ?: return null
 
         val mask = if (masked) readExact(4) ?: return null else null
+        // RFC 6455 has no protocol-level max, but a frame length from a
+        // desynchronised stream is garbage: allocating it is an OOM bomb
+        // (found live: a 1.1 GB allocation crashed the whole process after a
+        // connection got out of step). Loopback RPC frames are JSON snapshots
+        // - tens of MB at the very most; anything larger is corruption.
+        if (length > MAX_FRAME_BYTES) {
+            throw java.io.IOException("frame too large: $length bytes (max $MAX_FRAME_BYTES)")
+        }
         val payload = readExact(length.toInt()) ?: return null
         if (mask != null) {
             for (i in payload.indices) {

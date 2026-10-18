@@ -18,6 +18,9 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
     /** set_text channel 2 (doc §7.2): clipboard + ACTION_PASTE. */
     var clipboardAllowed: Boolean = true
 
+    /** Launch foreground-verification result (see [launch]). */
+    private val verified = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun snapshot(metadataOnly: Boolean = false): JSONObject {
         val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
         return try {
@@ -71,24 +74,40 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
             // (found live: APP open returned ok while the launcher stayed
             // active). Verify the foreground actually moved; report loudly
             // when it did not (doc: fail loud).
-            Thread.sleep(1200)
-            val windows = svc.snapshot(true).optJSONArray("windows") ?: JSONArray()
-            var active = ""
-            for (i in 0 until windows.length()) {
-                val w = windows.optJSONObject(i) ?: continue
-                if (w.optBoolean("active")) {
-                    active = w.optString("pkg")
-                    break
+            //
+            // The check runs on its own thread with a hard join timeout:
+            // snapshot() walks the launched app's window tree, and a huge or
+            // hostile tree (QQ's SplashActivity measured live) can block the
+            // walk far past any RPC timeout - without the join bound the whole
+            // server wedges behind one launch call (found live: every later
+            // connection timed out while the verifier thread sat in a native
+            // getChild call).
+            val verifier = Thread {
+                try {
+                    Thread.sleep(1200)
+                    val windows = svc.snapshot(true).optJSONArray("windows") ?: JSONArray()
+                    for (i in 0 until windows.length()) {
+                        val w = windows.optJSONObject(i) ?: continue
+                        if (w.optBoolean("active") && w.optString("pkg") == packageName) {
+                            verified.set(true)
+                            break
+                        }
+                    }
+                } catch (_: Throwable) {
+                    // Verification is best-effort; an unreadable tree must not
+                    // fail a launch that visibly worked.
                 }
             }
-            val targetPkg = intent.`package` ?: intent.component?.packageName ?: ""
-            return if (active == packageName || active == targetPkg) ok()
+            verifier.isDaemon = true
+            verifier.start()
+            verifier.join(5000)
+            return if (verified.get()) ok()
             else JSONObject()
                 .put("ok", false)
                 .put("error", "APP_NOT_IN_FOREGROUND")
                 .put("message",
-                    "launched $packageName but the foreground is '$active'; " +
-                    "on MIUI enable 后台弹出界面 for the Portal")
+                    "launched $packageName but could not confirm it reached the " +
+                    "foreground; on MIUI enable 后台弹出界面 for the Portal")
         } catch (t: Throwable) {
             err("ACTION_FAILED", t.message ?: "launch failed")
         }
