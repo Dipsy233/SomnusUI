@@ -42,6 +42,9 @@ ACTION_FOR_PRIMITIVE: dict[str, str] = {
     "scroll_into_view": "SHOW_ON_SCREEN",
     "focus": "FOCUS",
     "read": "READ",
+    # Virtualized lists scroll natively (RecyclerView's SCROLL_FORWARD etc.);
+    # the gesture channel stays off unless both sides opt in (doc §7.1).
+    "scroll": "SCROLL_FORWARD",
     # set_text channel 2 (doc §7.2): the text rides the clipboard (written
     # first via ``clipboard.set``); PASTE itself takes no value argument.
     "paste_text": "PASTE",

@@ -67,7 +67,21 @@ def scroll_find(
         before = _window_signature(session)
         out = _scroll(session, scope_ref, direction)
         if not out.startswith("OK"):
-            return out
+            # A live RecyclerView re-renders while scrolling and may refuse a
+            # step or retire the scope's key ("perform refused" / STALE).
+            # That is not the end of the search: recompile and re-check, so
+            # the loop either resumes on the fresh ref or honestly reports
+            # exhaustion (found on device: MIUI's settings list refuses the
+            # second SCROLL_FORWARD while its rows re-layout).
+            session.refresh_windows()
+            session._recompile()
+            plain = _plain_find(session, action)
+            if not plain.startswith("FOUND 0"):
+                return plain
+            scope = session.result.find(scope_ref)
+            if scope is None or "scroll" not in scope.patterns:
+                return plain
+            continue
         sleeper(SCROLL_SETTLE_S)
         after = _window_signature(session)
         if after == before:
