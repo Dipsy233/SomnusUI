@@ -11,7 +11,7 @@
 | M1 Portal:snapshot / click / back / launch | **完成(真机验收通过)** | 真机 Android 16(MIUI):snapshot wire 93–281ms(门禁 300);打开设置→点 WLAN 进入详情页;BACK;搜索框 set_text "蓝牙"→列表实时过滤;launch/apps 全通 |
 | M2 Android 编译规则 | **完成** | 标签上提、包装折叠、裸 View→UNKNOWN;真机设置/桌面/WLAN/搜索页 L0 全部 ≤ 305 token(门禁 400) |
 | M3 settle / verify / delta | **完成(真机验收通过)** | toggle WLAN 开关 wifi_on 1→0→1;set_text "蓝牙"→搜索列表实时过滤,delta `~ q1 text="蓝牙"`;click 跨窗口时 delta 报窗口替换 |
-| M4 FIND scroll、set_text 降级 | **完成(通道 1/2 真机验收)** | `FIND ... scroll`;set_text 通道 1(SET_TEXT)+ 通道 2(剪贴板+PASTE)真机验证;通道 3(IME)未实装 |
+| M4 FIND scroll、set_text 降级 | **完成(真机验收通过)** | FIND scroll:首屏 miss → 循环滚动命中"应用设置"→ 可直接 CALL;无匹配 3.7s 干净耗尽。set_text 通道 1/2 验证,通道 3(IME)未实装 |
 | M5 策略与确认 | **部分复用** | 共享 Policy 生效(包名白名单/critical 确认);中文高风险词表未加 |
 | M6 MCP + AndroidWorld | 未开始 | |
 | M7 工作屏 | 未开始 | |
@@ -67,6 +67,21 @@ Windows 行为零改动:`tests` 全绿(468 passed;clipboard 4 个失败为上游
 ### 待办(部署形态)
 
 - ~~RpcServer 生命周期挂在 MainActivity~~ ✅ 已迁入前台 `RpcService`(见下)
+
+## M4 完成:FIND scroll 真机验证(2026-10-18)
+
+又修复两个缺陷:
+
+1. **scroll 原语无 Portal 映射**:host `ACTION_FOR_PRIMITIVE` 缺 `scroll`,映射到 SCROLL_FORWARD/BACKWARD/…(RecyclerView 原生滚动,非手势)。
+2. **滚动中列表重布局导致循环死路**:MIUI 列表滚动时会拒绝/回收 scope key("perform refused"/STALE),scrollfind 循环改为 recompile 后重试,直到耗尽或命中。
+
+真机验收:
+
+| 项 | 结果 |
+|---|---|
+| 首屏无"应用设置"(FOUND 0) → `FIND "应用设置" in l1 scroll` 循环滚动命中 | ✅ |
+| 命中行可直接 `CALL li.activate()` | ✅(进入应用设置页) |
+| 无匹配查询 → 3.7s 干净耗尽,报 "scroll search exhausted" | ✅ |
 
 ## M4 补全:set_text 通道 2 + tap 能力(2026-10-18,真机验证)
 
