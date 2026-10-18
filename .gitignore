@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Tool-local state
+# `.pi/` is this agent harness's own working config (MCP server list, session
+# scratch). It points at the developer's machine, so it is not part of the
+# project - same reason `.vscode/` is not.
+.pi/
+
+# .NET / WPF demo app
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+apps/restaurant-demo/bin/
+apps/restaurant-demo/obj/
+
+# SomnusUI runtime artifacts
+*.fixture.json
+!tests/fixtures/*.json
+somnus_record*.json
+recordings/
+
+# Local scratch
+*.log
+/tmp/
+
+# playwright-cli scratch
+.playwright-cli/
+
+steam.txt
+
+# Android / Portal
+portal/.gradle/
+portal/build/
+portal/app/build/
+portal/local.properties
+portal/build_log.txt
+*.apk
+*.keystore

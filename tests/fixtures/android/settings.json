@@ -1,0 +1,616 @@
+{
+ "display": 0,
+ "rev": 1,
+ "windows": [
+  {
+   "id": 12,
+   "type": "application",
+   "pkg": "com.android.settings",
+   "title": "设置",
+   "active": true,
+   "pid": 4242,
+   "root": {
+    "key": "12/0",
+    "cls": "android.widget.FrameLayout",
+    "text": null,
+    "desc": "设置",
+    "rid": "com.android.settings:id/main_content",
+    "actions": [],
+    "enabled": true,
+    "editable": false,
+    "password": false,
+    "checked": null,
+    "selected": false,
+    "bounds": [
+     0,
+     0,
+     1080,
+     2400
+    ],
+    "collection": null,
+    "children": [
+     {
+      "key": "12/0.0",
+      "cls": "android.widget.EditText",
+      "text": "搜索设置",
+      "desc": null,
+      "rid": "com.android.settings:id/search",
+      "actions": [
+       "CLICK",
+       "SET_TEXT"
+      ],
+      "enabled": true,
+      "editable": true,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     },
+     {
+      "key": "12/1.0",
+      "cls": "androidx.recyclerview.widget.RecyclerView",
+      "text": null,
+      "desc": null,
+      "rid": "com.android.settings:id/recycler_view",
+      "actions": [
+       "SCROLL_FORWARD",
+       "SCROLL_BACKWARD"
+      ],
+      "enabled": true,
+      "editable": false,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": {
+       "count": -1,
+       "virtualized": true
+      },
+      "children": [
+       {
+        "key": "12/1.0.0",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_0",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.0.0",
+          "cls": "android.widget.TextView",
+          "text": "WLAN",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.0.1",
+          "cls": "android.widget.TextView",
+          "text": "已连接到 Home-5G",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.1",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_1",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.1.0",
+          "cls": "android.widget.TextView",
+          "text": "蓝牙",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.1.1",
+          "cls": "android.widget.TextView",
+          "text": "已关闭",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.2",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_2",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.2.0",
+          "cls": "android.widget.TextView",
+          "text": "显示",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.2.1",
+          "cls": "android.widget.TextView",
+          "text": "",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.3",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_3",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.3.0",
+          "cls": "android.widget.TextView",
+          "text": "声音",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.3.1",
+          "cls": "android.widget.TextView",
+          "text": "",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.4",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_4",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.4.0",
+          "cls": "android.widget.TextView",
+          "text": "应用",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.4.1",
+          "cls": "android.widget.TextView",
+          "text": "",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.5",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_5",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.5.0",
+          "cls": "android.widget.TextView",
+          "text": "通知",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.5.1",
+          "cls": "android.widget.TextView",
+          "text": "",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.6",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_6",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.6.0",
+          "cls": "android.widget.TextView",
+          "text": "电池",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.6.1",
+          "cls": "android.widget.TextView",
+          "text": "87%",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       },
+       {
+        "key": "12/1.0.7",
+        "cls": "android.widget.LinearLayout",
+        "text": null,
+        "desc": null,
+        "rid": "com.android.settings:id/preference_7",
+        "actions": [
+         "CLICK"
+        ],
+        "enabled": true,
+        "editable": false,
+        "password": false,
+        "checked": null,
+        "selected": false,
+        "bounds": [
+         0,
+         0,
+         1080,
+         2400
+        ],
+        "collection": null,
+        "children": [
+         {
+          "key": "12/1.0.7.0",
+          "cls": "android.widget.TextView",
+          "text": "存储",
+          "desc": null,
+          "rid": "android:id/title",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         },
+         {
+          "key": "12/1.0.7.1",
+          "cls": "android.widget.TextView",
+          "text": "已用 64 GB",
+          "desc": null,
+          "rid": "android:id/summary",
+          "actions": [],
+          "enabled": true,
+          "editable": false,
+          "password": false,
+          "checked": null,
+          "selected": false,
+          "bounds": [
+           0,
+           0,
+           1080,
+           2400
+          ],
+          "collection": null,
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

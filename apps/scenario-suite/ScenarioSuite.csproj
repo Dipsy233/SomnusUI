@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <!-- Implicit usings are off: the WinForms ones (System.Windows.Forms,
+         System.Drawing) collide with the WPF types every window here uses -
+         ``Application``, ``KeyEventArgs`` and ``Point`` exist in both - so the
+         choice is explicit per file. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- The native screen hosts real Win32 controls through WindowsFormsHost,
+         so the project mixes WPF and WinForms (both are supported together).
+         A WinForms control is a genuine Win32 window with an HWND of its own,
+         which WPF's own painted controls never have. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>ScenarioSuite</AssemblyName>
+    <RootNamespace>ScenarioSuite</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- One window per scenario, selected on the command line, so a test can
+         launch exactly the screen it needs instead of one monolith. -->
+    <StartupObject>ScenarioSuite.App</StartupObject>
+  </PropertyGroup>
+
+</Project>

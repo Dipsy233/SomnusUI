@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Somnus Portal</string>
+    <string name="service_description">SomnusDroid 感知与执行通道:导出界面语义树并代为执行点击/输入。resource-id 与坐标绝不离开本机。</string>
+    <string name="notif_channel">Somnus Portal 服务</string>
+    <string name="notif_title">Somnus Portal 运行中</string>
+    <string name="notif_text">正在为主机提供无障碍树与执行通道。点按查看状态。</string>
+</resources>

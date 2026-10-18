@@ -1,0 +1,173 @@
+{
+ "display": 0,
+ "rev": 1,
+ "windows": [
+  {
+   "id": 20,
+   "type": "application",
+   "pkg": "com.example.form",
+   "title": "表单",
+   "active": true,
+   "pid": 4242,
+   "root": {
+    "key": "20/0",
+    "cls": "android.widget.ScrollView",
+    "text": null,
+    "desc": "表单",
+    "rid": null,
+    "actions": [
+     "SCROLL_FORWARD"
+    ],
+    "enabled": true,
+    "editable": false,
+    "password": false,
+    "checked": null,
+    "selected": false,
+    "bounds": [
+     0,
+     0,
+     1080,
+     2400
+    ],
+    "collection": null,
+    "children": [
+     {
+      "key": "20/0.0",
+      "cls": "android.widget.EditText",
+      "text": "",
+      "desc": "姓名",
+      "rid": "form:name",
+      "actions": [
+       "CLICK",
+       "SET_TEXT"
+      ],
+      "enabled": true,
+      "editable": true,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     },
+     {
+      "key": "20/0.1",
+      "cls": "android.widget.TextView",
+      "text": "只读编号 REQ-0001",
+      "desc": null,
+      "rid": "form:id",
+      "actions": [],
+      "enabled": true,
+      "editable": false,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     },
+     {
+      "key": "20/0.2",
+      "cls": "android.widget.Switch",
+      "text": "同意条款",
+      "desc": null,
+      "rid": "form:agree",
+      "actions": [
+       "CLICK"
+      ],
+      "enabled": true,
+      "editable": false,
+      "password": false,
+      "checked": false,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     },
+     {
+      "key": "20/0.3",
+      "cls": "android.widget.Button",
+      "text": "提交",
+      "desc": null,
+      "rid": "form:submit",
+      "actions": [
+       "CLICK"
+      ],
+      "enabled": true,
+      "editable": false,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     },
+     {
+      "key": "20/0.4",
+      "cls": "android.widget.Button",
+      "text": "禁用按钮",
+      "desc": null,
+      "rid": "form:disabled",
+      "actions": [
+       "CLICK"
+      ],
+      "enabled": false,
+      "editable": false,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     },
+     {
+      "key": "20/0.5",
+      "cls": "android.widget.TextView",
+      "text": "未提交",
+      "desc": null,
+      "rid": "form:validation",
+      "actions": [],
+      "enabled": true,
+      "editable": false,
+      "password": false,
+      "checked": null,
+      "selected": false,
+      "bounds": [
+       0,
+       0,
+       1080,
+       2400
+      ],
+      "collection": null,
+      "children": []
+     }
+    ]
+   }
+  }
+ ]
+}

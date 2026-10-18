@@ -1,0 +1,78 @@
+<Window x:Class="ScenarioSuite.NativeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wf="clr-namespace:System.Windows.Forms;assembly=System.Windows.Forms"
+        xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
+        Title="Scenario Suite - native" Height="640" Width="860"
+        AutomationProperties.AutomationId="native_window">
+  <Grid Margin="12">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="160" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+
+    <!-- A native Win32 EDIT (via WinForms): a real HWND, unlike WPF's painted
+         controls. It maps a handle and publishes a Value pattern, so the
+         runtime writes it without focus - the ordinary native-control case. -->
+    <TextBlock Grid.Row="0" Grid.Column="0" Text="单行(原生 EDIT):" VerticalAlignment="Center" />
+    <wfi:WindowsFormsHost Grid.Row="0" Grid.Column="1" Height="28">
+      <wf:TextBox x:Name="SingleLine" />
+    </wfi:WindowsFormsHost>
+
+    <!-- A multi-line native EDIT: the class RichEdit/Edit both answer the
+         message route, and AcceptsReturn proves a replacement is not silently
+         truncated at a newline. -->
+    <TextBlock Grid.Row="1" Grid.Column="0" Text="多行(原生):" VerticalAlignment="Top" Margin="0,6,0,0" />
+    <wfi:WindowsFormsHost Grid.Row="1" Grid.Column="1" Height="120" Margin="0,4,0,0">
+      <wf:TextBox x:Name="MultiLine"
+                  Multiline="True"
+                  ScrollBars="Vertical"
+                  AcceptsReturn="True" />
+    </wfi:WindowsFormsHost>
+
+    <!-- A read-only native control: it still maps an HWND, so the message route
+         is offered but the control refuses the write - the honest answer. -->
+    <TextBlock Grid.Row="2" Grid.Column="0" Text="只读(原生):" VerticalAlignment="Center" />
+    <wfi:WindowsFormsHost Grid.Row="2" Grid.Column="1" Height="28" Margin="0,4,0,0">
+      <wf:TextBox x:Name="ReadOnlyBox" ReadOnly="True" Text="LOCKED" />
+    </wfi:WindowsFormsHost>
+
+    <!-- A native RichEdit: the class Notepad uses. Unlike the plain TextBox it
+         does not publish a usable Value pattern, so the resolver falls to the
+         Win32-message route - the case this screen exists to force. -->
+    <TextBlock Grid.Row="3" Grid.Column="0" Text="RichEdit(原生):" VerticalAlignment="Top" Margin="0,6,0,0" />
+    <wfi:WindowsFormsHost Grid.Row="3" Grid.Column="1" Height="80" Margin="0,4,0,0">
+      <wf:RichTextBox x:Name="RichBox" ScrollBars="Vertical" />
+    </wfi:WindowsFormsHost>
+
+    <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,10,0,0">
+      <Button Content="复制到状态"
+              AutomationProperties.Name="复制到状态"
+              AutomationProperties.AutomationId="native_copy"
+              Click="OnCopyClick" />
+      <Button Content="清空"
+              AutomationProperties.Name="清空"
+              AutomationProperties.AutomationId="native_clear"
+              Click="OnClearClick" />
+    </StackPanel>
+
+    <!-- The record: it names what every control holds, so a write is verifiable
+         from the observation alone, without reading process memory. -->
+    <TextBlock Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2" x:Name="StatusText"
+               Margin="0,10,0,0" FontWeight="SemiBold"
+               AutomationProperties.AutomationId="native_status" />
+
+    <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,8,0,0"
+               TextWrapping="Wrap" Foreground="#666"
+               Text="原生 Win32 控件（WinForms 宿主）：有 HWND。写入走 Value 模式，不需要焦点。" />
+  </Grid>
+</Window>

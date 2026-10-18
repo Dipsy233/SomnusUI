@@ -1,0 +1,491 @@
+"""Deterministic in-memory provider used for tests, CI and demos.
+
+The mock provider is a first-class component, not a test stub:
+
+* :mod:`somnus.providers.mock` can *record* a real provider's snapshots to JSON
+  and *replay* them on any platform.
+* It can execute a small scripted action model so actions produce real deltas
+  during compiler / runtime tests without Windows.
+
+Fixture format (JSON)::
+
+    {
+      "window": {"window_id": "w1", "title": "...", "process": "...", "pid": 1},
+      "root": {<raw node>},
+      "actions": [
+        {"match": {"role": "button", "name": "Add"},
+         "effect": [{"op": "set_attr", "ref_path": "0/1", "attr": "value", ...}]}
+      ]
+    }
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+from somnus.ir.action import ExecResult, UiEvent
+from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
+from somnus.providers.base import NullSubscription
+
+# ---------------------------------------------------------------------------
+# Serialization of raw trees
+# ---------------------------------------------------------------------------
+
+
+def raw_node_to_dict(node: RawNode, include_native: bool = True) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "role": node.role,
+        "name": node.name,
+        "value": node.value,
+        "description": node.description,
+        "states": sorted(node.states),
+        "patterns": sorted(node.patterns),
+    }
+    if node.truncated:
+        data["truncated"] = True
+    if node.virtual_count is not None:
+        data["virtual_count"] = node.virtual_count
+    if include_native:
+        data["native"] = {
+            "window_id": node.native.window_id,
+            "runtime_id": list(node.native.runtime_id),
+            "automation_id": node.native.automation_id,
+            "class_name": node.native.class_name,
+            "control_type": node.native.control_type,
+            "path": list(node.native.path),
+        }
+    data["children"] = [raw_node_to_dict(c, include_native) for c in node.children]
+    return data
+
+
+def raw_node_from_dict(data: dict[str, Any], window_id: str) -> RawNode:
+    native = data.get("native") or {}
+    ref = NativeRef(
+        window_id=native.get("window_id", window_id),
+        runtime_id=tuple(native.get("runtime_id", ())),
+        automation_id=native.get("automation_id"),
+        class_name=native.get("class_name"),
+        control_type=native.get("control_type"),
+        path=tuple(native.get("path", ())),
+    )
+    return RawNode(
+        native=ref,
+        role=data.get("role", "unknown"),
+        name=data.get("name"),
+        value=data.get("value"),
+        description=data.get("description"),
+        states=frozenset(data.get("states", ())),
+        patterns=frozenset(data.get("patterns", ())),
+        truncated=bool(data.get("truncated")),
+        virtual_count=data.get("virtual_count"),
+        children=[raw_node_from_dict(c, window_id) for c in data.get("children", ())],
+    )
+
+
+def raw_tree_to_dict(tree: RawTree, include_native: bool = True) -> dict[str, Any]:
+    return {
+        "window": {
+            "window_id": tree.window.window_id,
+            "title": tree.window.title,
+            "process": tree.window.process,
+            "pid": tree.window.pid,
+            "active": tree.window.active,
+            "visible": tree.window.visible,
+            "rect": list(tree.window.rect) if tree.window.rect else None,
+        },
+        "root": raw_node_to_dict(tree.root, include_native),
+        "raw_revision": tree.raw_revision,
+    }
+
+
+def raw_tree_from_dict(data: dict[str, Any]) -> RawTree:
+    win = data["window"]
+    rect = win.get("rect")
+    window = WindowInfo(
+        window_id=win["window_id"],
+        title=win.get("title", ""),
+        process=win.get("process", ""),
+        pid=win.get("pid", 0),
+        active=bool(win.get("active")),
+        visible=bool(win.get("visible", True)),
+        rect=tuple(rect) if rect else None,
+    )
+    return RawTree(
+        window=window,
+        root=raw_node_from_dict(data["root"], window.window_id),
+        raw_revision=data.get("raw_revision", 0),
+    )
+
+
+def save_tree(tree: RawTree, path: str | Path, include_native: bool = True) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(raw_tree_to_dict(tree, include_native), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_tree(path: str | Path) -> RawTree:
+    return raw_tree_from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------------------
+# Scripted mutation model
+# ---------------------------------------------------------------------------
+
+#: A mutation is applied to the raw tree after an action matches.
+MUTATIONS: dict[str, list[dict[str, Any]]] = {
+    # increment the numeric value of a node selected by role/name
+    "increment": [
+        {"op": "bump", "select": "self", "field": "value", "by": 1},
+    ],
+}
+
+
+class MockProvider:
+    """Replays fixtures and applies scripted, deterministic mutations."""
+
+    name = "mock"
+
+    #: A replay has no thread of its own: the tree changes only inside
+    #: ``execute``, and is always the same when the call returns. The settler
+    #: therefore has nothing to wait for (see ``AccessibilityProvider``).
+    is_deterministic = True
+
+    def __init__(
+        self,
+        fixtures: Iterable[RawTree] | None = None,
+        scripts: dict[str, list[dict[str, Any]]] | None = None,
+        *,
+        fixture_paths: Iterable[str | Path] | None = None,
+        callbacks: dict[str, Callable[[RawNode, RawNode], None]] | None = None,
+        **_: Any,
+    ) -> None:
+        self._trees: dict[str, RawTree] = {}
+        if fixtures:
+            for tree in fixtures:
+                self._trees[tree.window.window_id] = tree
+        for p in fixture_paths or ():
+            tree = load_tree(p)
+            self._trees[tree.window.window_id] = tree
+        #: capability name -> list of mutation dicts
+        self.scripts = scripts or {}
+        #: name -> mutator(node, root) used by the `callback` mutation op. Lets a
+        #: fixture replay an application's behaviour without the mock having to
+        #: know about that application (see `tests/fixtures/scenarios.py`).
+        self.callbacks = callbacks or {}
+        self._listeners: dict[str, list[Callable[[UiEvent], None]]] = {}
+        self._rev = {wid: t.raw_revision for wid, t in self._trees.items()}
+        self.executed: list[tuple[NativeRef, str, Any]] = []
+
+    # -- provider API -------------------------------------------------------
+
+    def list_windows(self) -> list[WindowInfo]:
+        return [t.window for t in self._trees.values()]
+
+    def peek(self, window_id: str) -> WindowInfo | None:
+        """Replay the window's metadata; a replay has no desktop to raise."""
+        tree = self._trees.get(window_id)
+        return tree.window if tree is not None else None
+
+    def snapshot(
+        self,
+        window_id: str,
+        scope: NativeRef | None = None,
+        max_depth: int = 12,
+    ) -> RawTree:
+        tree = self._trees.get(window_id)
+        if tree is None:
+            raise KeyError(window_id)
+        if scope is None:
+            return tree
+        node = tree.root.find_native(scope)
+        if node is None:
+            raise KeyError(scope)
+        return RawTree(window=tree.window, root=node, raw_revision=tree.raw_revision)
+
+    @staticmethod
+    def _supports(node: RawNode, primitive: str) -> bool:
+        """Whether the element exposes the interface a primitive needs.
+
+        Mirrors the provider contract: the mapping is pattern -> primitive, so
+        a fixture that omits a pattern really cannot run the primitive. A
+        scripted mutation still runs when the interface is there.
+        """
+        required = {
+            "activate": "invoke",
+            "set_text": "value",
+            "toggle": "toggle",
+            "select": "selectionitem",
+            "expand": "expandcollapse",
+            "collapse": "expandcollapse",
+            "scroll_into_view": "scrollitem",
+        }
+        # `context_menu` is deliberately absent: it needs no pattern of its own
+        # (ShowContextMenu is callable on any element and does nothing when the
+        # application registered no menu), so a fixture may exercise it
+        # wherever the capability was granted.
+        #
+        # `paste_text` and `type_text` are absent for the same reason: neither is
+        # a UIA pattern, both are synthetic-input routes whose real gate is the
+        # capability chain's condition plus the policy, so a fixture can exercise
+        # them wherever their step was declared.
+        pattern = required.get(primitive)
+        if pattern is None:
+            return True  # focus / read / scroll / type_text / paste_text
+        return pattern in node.patterns
+
+    def execute(
+        self,
+        ref: NativeRef,
+        primitive: str,
+        value: Any = None,
+        timeout_s: float = 3.0,
+    ) -> ExecResult:
+        self.executed.append((ref, primitive, value))
+        tree = self._trees.get(ref.window_id)
+        if tree is None:
+            return ExecResult(ok=False, error="TARGET_NOT_FOUND")
+        node = tree.root.find_native(ref)
+        if node is None:
+            return ExecResult(ok=False, error="STALE_TARGET")
+
+        # A primitive the element has no interface for is reported as
+        # unsupported, not as a failure, exactly as the real provider does.
+        # Without this the fallback chains a capability declares (write through
+        # the Value pattern, else type) could never be exercised by a test,
+        # because every step would appear to work.
+        if not self._supports(node, primitive):
+            return ExecResult(
+                ok=False,
+                error="ACTION_NOT_SUPPORTED",
+                message=f"{primitive} not available on this element",
+                unsupported=True,
+            )
+
+        # Apply scripted mutation keyed by primitive (and by capability alias).
+        #
+        # The label key tries the node's own name and then the name of its
+        # first named descendant. A row in a WPF list is an unnamed container
+        # whose label is a child text node, so keying only on the container's
+        # own name would make every per-row action unaddressable - and per-row
+        # actions are the whole point of a list (row 5's handler is not row 7's).
+        #
+        # The candidate keys are de-duplicated: for a control that *is* named
+        # (a button), the own-name key and the label key are the same string, and
+        # running the script twice would double every effect.
+        mutated = False
+        keys = [primitive]
+        for candidate in (node.name, _row_label(node)):
+            if candidate:
+                key = f"{candidate}:{primitive}"
+                if key not in keys:
+                    keys.append(key)
+        for key in keys:
+            for mut in self.scripts.get(key, ()):
+                self._apply(node, mut, value)
+                mutated = True
+        if primitive == "scroll_into_view":
+            # Bring the item into view and clear its offscreen state.
+            node.states = frozenset(s for s in node.states if s != "offscreen")
+            mutated = True
+        if primitive in ("set_text", "type_text", "paste_text") and value is not None and not mutated:
+            if primitive in ("type_text",):
+                # The keyboard fallback appends to whatever is already there,
+                # unlike set_text which replaces the value. A paste replaces the
+                # selection, so it behaves like set_text here.
+                node.value = (node.value or "") + str(value)
+            else:
+                node.value = str(value)
+            mutated = True
+        if primitive in ("toggle",) and not mutated:
+            if "checked" in node.states:
+                node.states = frozenset(s for s in node.states if s != "checked")
+            else:
+                node.states = node.states | {"checked"}
+            mutated = True
+
+        if mutated:
+            self._bump(ref.window_id)
+        return ExecResult(ok=True)
+
+    def subscribe(
+        self, window_id: str, on_event: Callable[[UiEvent], None]
+    ) -> NullSubscription:
+        self._listeners.setdefault(window_id, []).append(on_event)
+        return NullSubscription()
+
+    def close(self) -> None:  # pragma: no cover - trivial
+        self._trees.clear()
+
+    # -- test helpers -------------------------------------------------------
+
+    def set_tree(self, tree: RawTree) -> None:
+        """Install/replace a tree and notify listeners (simulates a UI change)."""
+        self._trees[tree.window.window_id] = tree
+        self._rev[tree.window.window_id] = self._rev.get(tree.window.window_id, 0) + 1
+        self._emit(tree.window.window_id, "structure")
+
+    def mutate(self, window_id: str, helper: Callable[[RawTree], None]) -> None:
+        tree = self._trees[window_id]
+        helper(tree)
+        self._bump(window_id)
+
+    def _bump(self, window_id: str) -> None:
+        self._rev[window_id] = self._rev.get(window_id, 0) + 1
+        self._trees[window_id].raw_revision = self._rev[window_id]
+        self._emit(window_id, "structure")
+
+    def _emit(self, window_id: str, kind: str) -> None:
+        for cb in self._listeners.get(window_id, ()):
+            cb(UiEvent(window_id=window_id, kind=kind))
+
+    def _apply(self, node: RawNode, mut: dict[str, Any], value: Any) -> None:
+        op = mut.get("op")
+        if op == "set_value":
+            node.value = mut.get("to", value)
+        elif op == "set_name":
+            node.name = mut.get("to")
+        elif op == "bump":
+            current = _as_number(node.value)
+            node.value = str((current or 0) + mut.get("by", 1))
+        elif op == "add_state":
+            node.states = node.states | {mut["state"]}
+        elif op == "remove_state":
+            node.states = frozenset(s for s in node.states if s != mut["state"])
+        elif op == "add_child":
+            child = raw_node_from_dict(mut["child"], node.native.window_id)
+            node.children.append(child)
+        elif op == "remove_child":
+            idx = mut["index"]
+            if 0 <= idx < len(node.children):
+                node.children.pop(idx)
+        elif op == "set_attr":
+            setattr(node, mut["attr"], mut.get("to", value))
+        elif op == "cart_add":
+            # Demo-level mutation: find the cart text node and bump its count and
+            # total, matching the restaurant pack's effects.
+            price = mut.get("price")
+            if price is None:
+                price = _sibling_price(
+                    self._trees[node.native.window_id].root, node
+                )
+            _cart_add(self._trees[node.native.window_id].root, float(price or 0.0))
+        elif op == "open_screen":
+            _open_screen(
+                self._trees[node.native.window_id].root,
+                mut.get("name", "cart"),
+                mut.get("count_text", ""),
+            )
+        elif op == "callback":
+            # A named mutator from the caller's registry, called with the root
+            # of the window the action targeted. This is how an application's
+            # own behaviour is replayed without teaching the mock every app:
+            # the mutator lives with the fixture that describes the window, and
+            # the mock just calls it. `node` is passed so a mutator can react to
+            # *which* row was acted on, which is exactly what a per-row Add or
+            # a per-conversation Send needs.
+            fn = self.callbacks.get(mut.get("fn", ""))
+            if fn is not None:
+                fn(node, self._trees[node.native.window_id].root)
+
+
+def _as_number(text: str | None) -> float | None:
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _row_label(node: RawNode) -> str | None:
+    """The label of a row: its own name, else its first named descendant.
+
+    A row in a WPF list is an unnamed container whose visible text is a child
+    node, so a script keyed only on the container's own name could never address
+    a single row. Falling back to the first named descendant is what makes
+    per-row scripts (row 5 adds row 5's product) possible without inventing a
+    name the platform does not report.
+    """
+    if node.name:
+        return node.name
+    for child in node.walk():
+        if child is not node and child.name:
+            return child.name
+    return None
+
+
+def _cart_add(root: RawNode, price: float) -> None:
+    """Simulate adding an item: bump the cart's count/total text node."""
+    for node in root.walk():
+        if node.native.automation_id == "cart_count" and node.name:
+            m = _COUNT_RE.search(node.name)
+            t = _TOTAL_RE.search(node.name)
+            count = int(m.group(1)) + 1 if m else 1
+            total = (float(t.group(1)) if t else 0.0) + price
+            node.name = f"{count} items ${total:.2f}"
+            return
+
+
+def _open_screen(root: RawNode, name: str, count_text: str) -> None:
+    """Add (or refresh) a named child screen, so an `open` shows up in the
+    delta as ``+ SCREEN s? "<name>"``.
+
+    Idempotent: opening twice does not add the screen again.
+    """
+    for node in root.children:
+        if node.name == name and node.role in ("group", "pane", "list"):
+            return
+    idx = len(root.children)
+    screen = RawNode(
+        native=NativeRef(root.native.window_id, (5000 + idx,), class_name="Demo"),
+        role="group",
+        name=name,
+        children=[
+            RawNode(
+                native=NativeRef(root.native.window_id, (5100 + idx,), class_name="Demo"),
+                role="text",
+                name=count_text or "",
+                patterns=frozenset({"text"}),
+            ),
+            RawNode(
+                native=NativeRef(root.native.window_id, (5200 + idx,), class_name="Demo"),
+                role="button",
+                name="Close",
+                patterns=frozenset({"invoke"}),
+            ),
+        ],
+    )
+    root.children.append(screen)
+
+
+import re as _re
+
+_COUNT_RE = re.compile(r"(\d+)\s*items?")
+_TOTAL_RE = re.compile(r"\$?(\d+\.\d{2})")
+count_re = _COUNT_RE
+total_re = _TOTAL_RE
+
+
+
+def _sibling_price(root: RawNode, add_button: RawNode) -> float:
+    """Read the price text sibling of an Add button inside a product group.
+
+    Uses the native path: siblings of ``<group>/2`` are ``<group>/0`` and
+    ``<group>/1``. The Add button is the last child of the product group.
+    """
+    group_path = add_button.native.path[:-1]
+    for node in root.walk():
+        if node.native.path[: len(group_path)] != group_path:
+            continue
+        if node.role == "text" and node.name:
+            m = total_re.search(node.name)
+            if m:
+                return float(m.group(1))
+    return 0.0

@@ -1,0 +1,59 @@
+<Window x:Class="ScenarioSuite.MenuWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Scenario Suite - menu" Height="440" Width="640"
+        AutomationProperties.AutomationId="menu_window">
+  <DockPanel Margin="12">
+    <!-- A real menu bar. The items are only realized when the menu is opened,
+         which is what makes a menu navigation: the agent must activate the bar
+         entry, read the delta to find the item, then choose it. -->
+    <Menu DockPanel.Dock="Top" x:Name="MenuBar"
+          AutomationProperties.Name="菜单栏"
+          AutomationProperties.AutomationId="menu_bar">
+      <MenuItem Header="文件" AutomationProperties.AutomationId="menu_bar_file">
+        <MenuItem Header="新建" AutomationProperties.AutomationId="menu_item_new"
+                  Click="OnItemClick" />
+        <MenuItem Header="保存" AutomationProperties.AutomationId="menu_item_save"
+                  Click="OnItemClick" />
+        <Separator />
+        <MenuItem Header="退出" AutomationProperties.AutomationId="menu_item_exit"
+                  Click="OnItemClick" />
+      </MenuItem>
+      <MenuItem Header="编辑" AutomationProperties.AutomationId="menu_bar_edit">
+        <MenuItem Header="撤销" AutomationProperties.AutomationId="menu_item_undo"
+                  Click="OnItemClick" />
+        <MenuItem Header="重做" AutomationProperties.AutomationId="menu_item_redo"
+                  Click="OnItemClick" />
+      </MenuItem>
+      <MenuItem Header="帮助" AutomationProperties.AutomationId="menu_bar_help">
+        <MenuItem Header="关于" AutomationProperties.AutomationId="menu_item_about"
+                  Click="OnItemClick" />
+      </MenuItem>
+    </Menu>
+
+    <StackPanel>
+      <ListBox x:Name="Documents" Height="160"
+               AutomationProperties.Name="文档"
+               AutomationProperties.AutomationId="menu_documents">
+        <ListBoxItem Content="文档 1"
+                     AutomationProperties.AutomationId="menu_row">
+          <ListBoxItem.ContextMenu>
+            <!-- A context menu: the shape the runtime's context_menu gesture
+                 opens, and the items the agent reaches through it. -->
+            <ContextMenu x:Name="RowMenu">
+              <MenuItem Header="重命名"
+                        AutomationProperties.AutomationId="menu_ctx_rename"
+                        Click="OnItemClick" />
+              <MenuItem Header="删除"
+                        AutomationProperties.AutomationId="menu_ctx_delete"
+                        Click="OnItemClick" />
+            </ContextMenu>
+          </ListBoxItem.ContextMenu>
+        </ListBoxItem>
+      </ListBox>
+      <TextBlock x:Name="StatusText" Margin="0,10,0,0" FontWeight="SemiBold"
+                 Text="就绪"
+                 AutomationProperties.AutomationId="menu_status" />
+    </StackPanel>
+  </DockPanel>
+</Window>
