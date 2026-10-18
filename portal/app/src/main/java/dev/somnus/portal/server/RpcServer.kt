@@ -57,10 +57,31 @@ class RpcServer(
                 // a [::1]-only listener accepts nothing from adb (found live:
                 // the port showed up in `ss` as [::1]:8677 while every host
                 // connection timed out or was reset).
-                serverSocket = ServerSocket(
-                    port, 8,
-                    InetAddress.getByAddress("127.0.0.1", byteArrayOf(127, 0, 0, 1))
-                )
+                // Bind failure retries with backoff: a too-early start (the
+                // previous process's socket not yet released after a
+                // force-stop) used to kill the accept thread silently and
+                // leave the service "running" with no listener (found live:
+                // after a restart the port answered nothing until the whole
+                // app was cold-started again).
+                var bound = false
+                for (attempt in 0 until 10) {
+                    try {
+                        serverSocket = ServerSocket(
+                            port, 16,
+                            InetAddress.getByAddress("127.0.0.1", byteArrayOf(127, 0, 0, 1))
+                        )
+                        bound = true
+                        break
+                    } catch (e: Exception) {
+                        System.err.println("[somnus-rpc] bind attempt $attempt failed: $e")
+                        Thread.sleep(1000L * (attempt + 1))
+                    }
+                }
+                if (!bound) {
+                    System.err.println("[somnus-rpc] giving up after 10 bind attempts")
+                    running = false
+                    return@Thread
+                }
                 while (running) {
                     val socket = try {
                         serverSocket!!.accept()
@@ -87,12 +108,18 @@ class RpcServer(
 
     private fun handleConnection(socket: Socket) {
         try {
-            socket.soTimeout = 0
+            // Handshake must not wait forever: a half-open connection (host
+            // died mid-handshake, adb forward flapped) would park a pool
+            // thread on readLine() indefinitely. The idle read timeout is
+            // re-set to 0 after the handshake - an established RPC session
+            // may idle arbitrarily long between calls.
+            socket.soTimeout = 10_000
             val reader = BufferedReader(InputStreamReader(socket.inputStream, Charsets.UTF_8))
             if (!handshake(socket, reader)) {
-                socket.close()
+                runCatching { socket.close() }
                 return
             }
+            socket.soTimeout = 0
             val input = FrameReader(socket.getInputStream())
             val output = BufferedWriter(OutputStreamWriter(socket.outputStream, Charsets.UTF_8))
 
@@ -105,8 +132,12 @@ class RpcServer(
                 val reply = dispatch(payload)
                 writeTextFrame(socket, reply)
             }
+        } catch (e: java.io.IOException) {
+            // A dropped client or a timed-out handshake is normal (host
+            // restart, adb reconnect, half-open forward); the socket is
+            // closed in finally and the pool thread is released.
         } catch (e: Exception) {
-            // A dropped client is normal (host restart, adb reconnect).
+            e.printStackTrace()
         } finally {
             runCatching { socket.close() }
         }
