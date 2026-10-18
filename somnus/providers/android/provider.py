@@ -108,10 +108,13 @@ class AndroidProvider:
         try:
             return self.transport.call(method, params)
         except PortalError as err:
-            if err.code == "SERVICE_DISCONNECTED":
-                # The Portal process died or the service was unbound: the
-                # next call reconnects through adb forward (doc §13).
-                self.transport.close()
+            # Any transport-level failure retires the socket: a timeout or
+            # dead connection leaves a half-open WebSocket that every later
+            # call would trip over (found live: the device was unplugged, the
+            # next calls timed out forever because the stale socket was never
+            # closed; SERVICE_DISCONNECTED was the one code that recovered).
+            # The next call reconnects through adb forward (doc §13).
+            self.transport.close()
             raise
 
     def _snapshot_display(self) -> dict[str, Any]:

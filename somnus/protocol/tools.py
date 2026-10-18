@@ -154,10 +154,15 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             )
             return session.inspect(action).text
         if name == "call":
+            # Route through dispatch, not session.call: the action string is
+            # SUI-Text, which includes the session-level forms (SYSTEM back,
+            # APP open, FIND ... scroll) that parse_action accepts but
+            # session.call would mis-handle as a node CALL (found live: MCP
+            # `call {"action": "SYSTEM home"}` errored with STALE_TARGET).
             from somnus.sui.parse import parse_action
 
             action = parse_action(args.get("action", ""), rev=args.get("rev"))
-            return session.call(action, confirmed=args.get("confirmed")).text
+            return session.run(action, confirmed=args.get("confirmed"))
         if name == "switch":
             target = (args.get("target") or "main").strip().lower()
             if target == "open":
