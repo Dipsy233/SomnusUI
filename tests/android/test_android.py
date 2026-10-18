@@ -153,6 +153,25 @@ def test_blanket_select_is_not_a_capability_on_labels():
     assert "select" not in caps
 
 
+def test_select_is_suppressed_on_android_entirely():
+    """On a phone, selection is the click.
+
+    QQ paints ACTION_SELECT across whole hierarchies and every measured
+    control (list rows, tabs, radios) switches via CLICK while ignoring
+    ACTION_SELECT - so `select` would only ever duplicate `activate`, and on
+    nodes without a CLICK (tab strips) it is a dead gesture next to `tap`.
+    Windows keeps the cap: SelectionItem is the canonical gesture there.
+    """
+    # A list row with CLICK + SELECT: activate is the real gesture.
+    caps = _caps_for(["CLICK", "SELECT"], "android.widget.LinearLayout")
+    assert "activate" in caps
+    assert "select" not in caps
+    # A tab-strip item with SELECT but no CLICK: still no select (tap covers it).
+    caps = _caps_for(["SELECT"], "android.widget.TextView")
+    assert "select" not in caps
+    assert "tap" in caps  # the gesture fallback stays
+
+
 def test_context_menu_on_android_needs_long_click():
     """Android's context menu IS the long press: offered only where the
     element advertises LONG_CLICK, and routed to ACTION_LONG_CLICK."""

@@ -17,27 +17,11 @@ from somnus.ir.capability import (
 from somnus.ir.node import RawNode
 
 #: role -> implicit capabilities granted purely by semantics (even without a
-#: matching native pattern). These are what the SUI-Text default table hides.
-ROLE_DEFAULT_CAPS: dict[str, tuple[str, ...]] = {
-    "button": ("activate",),
-    "link": ("activate",),
-    "menuitem": ("activate",),
-    "listitem": ("select",),
-    "tab": ("select",),
-    "treeitem": ("select", "expand"),
-    "checkbox": ("toggle",),
-    "switch": ("toggle",),
-    "radio": ("select",),
-    "input": ("set_text",),
-    "slider": ("increment", "decrement"),
-    "select": ("select", "expand"),
-    "list": ("scroll",),
-    "tree": ("scroll",),
-    "table": ("scroll",),
-    "pane": ("scroll",),
-}
-
-
+#: Role-derived caps live in :func:`primitive_capabilities`, next to the
+#: pattern evidence that must accompany them. There was once a table here
+#: granting caps by role alone ("tab": select, "pane": scroll, ...); every
+#: entry turned out to be either dead (never read) or a guess that betrayed
+#: the evidence-only rule, so it is gone.
 def _cap(name: str, params: dict[str, ParamSpec] | None = None) -> Capability:
     risk = "safe" if name in SAFE_CAPABILITIES else "normal"
     return Capability(
@@ -322,12 +306,23 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # the toolkit's blanket ACTION_SELECT (MIUI paints it on every launcher
     # label), and the agent that taps `select` on a label gets a highlight at
     # best. A selectable text surface is an input, which keeps its caps.
+    #
+    # On Android `select` is suppressed entirely: there it overlaps with the
+    # gestures that actually work. Every measured control switches via CLICK
+    # (list rows, tabs) and ignores ACTION_SELECT - QQ paints it across whole
+    # hierarchies (found live: every GROUP/LIST/LISTITEM in the app carried
+    # `+select`), tabs answer tap/activate, radios answer click. A phone node
+    # is therefore activated or tapped, never "selected"; the Windows UIA
+    # path keeps the cap, where SelectionItem is the canonical tab/cell
+    # gesture.
+    _android = (node.native.class_name or "").startswith("android.")
     if (
         "selectionitem" in patterns
         or "griditem" in patterns
         or role in ("listitem", "tab", "radio", "row", "treeitem")
     ) and role not in ("text", "image", "unknown"):
-        caps.setdefault("select", _cap("select"))
+        if not _android:
+            caps.setdefault("select", _cap("select"))
 
     if "expandcollapse" in patterns or role in ("treeitem", "select", "group", "pane"):
         if "collapsed" in node.states or "expandcollapse" in patterns:
@@ -405,7 +400,6 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # long-press interface existed behind it (found live: TIM's launcher
     # icons). An element that says LONG_CLICK can be long-pressed; one that
     # does not, cannot.
-    _android = (node.native.class_name or "").startswith("android.")
     _menu_plausible = (
         "long_click" in patterns if _android else bool(node.patterns & _CONTEXT_MENU_PATTERNS)
     )
