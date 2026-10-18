@@ -1,6 +1,6 @@
-"""MCP server (stdio) exposing SomnusUI's tools.
+"""MCP server (stdio) exposing SomnusDroid's tools.
 
-Uses the official ``mcp`` package when installed. Kept separate from
+Uses the official ``mcp`` package (>=2) when installed. Kept separate from
 :mod:`somnus.protocol.jsonrpc` so a host can embed either transport.
 
 **Settings are read here too.** An MCP client launches this process itself, so it
@@ -13,7 +13,6 @@ wins.
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from typing import Any
 
@@ -41,63 +40,70 @@ def build_session(**kwargs: Any) -> Session:
             allow_keyboard=settings.allow_keyboard,
         )
 
-    provider = get_provider(kwargs.pop("provider", "auto"), **kwargs)
+    provider = get_provider(kwargs.pop("provider", "android"), **kwargs)
     return Session(provider, policy=policy)
 
 
+def _make_list_tools(session: Session):
+    """Build the ``on_list_tools`` handler bound to *session*."""
+    from mcp.types import ListToolsResult, Tool
+
+    async def _list_tools(ctx, params) -> ListToolsResult:
+        return ListToolsResult(
+            tools=[
+                Tool(
+                    name=spec["name"],
+                    description=spec["description"],
+                    inputSchema=spec["inputSchema"],
+                )
+                for spec in TOOL_SPECS
+            ]
+        )
+
+    return _list_tools
+
+
+def _make_call_tool(session: Session):
+    """Build the ``on_call_tool`` handler bound to *session*."""
+    from mcp.types import CallToolRequestParams, CallToolResult, TextContent
+
+    async def _call_tool(ctx, params: CallToolRequestParams) -> CallToolResult:
+        text = call_tool(session, params.name, params.arguments)
+        return CallToolResult(content=[TextContent(type="text", text=text)])
+
+    return _call_tool
+
+
 def make_mcp_server(session: Session):
-    """Create an MCP ``Server`` bound to ``session`` (requires ``mcp``)."""
+    """Create an MCP ``Server`` bound to ``session`` (requires ``mcp>=2``).
+
+    mcp 2.x dropped the ``@server.list_tools()`` / ``@server.call_tool()``
+    decorators in favour of constructor-registered ``on_*`` handlers that take
+    ``(ctx, params)`` and return full result models.
+    """
     try:
         from mcp.server import Server
-        from mcp.server.lowlevel import NotificationOptions
-        from mcp.server.models import InitializationOptions
-        from mcp.types import TextContent, Tool
     except Exception as exc:  # pragma: no cover - optional dependency
-        raise RuntimeError("the 'mcp' package is required for somnus-mcp") from exc
+        raise RuntimeError("the 'mcp' package (>=2) is required for somnus-mcp") from exc
 
-    server = Server("somnusui")
-
-    @server.list_tools()
-    async def _list_tools() -> list[Tool]:
-        return [
-            Tool(
-                name=spec["name"],
-                description=spec["description"],
-                inputSchema=spec["inputSchema"],
-            )
-            for spec in TOOL_SPECS
-        ]
-
-    @server.call_tool()
-    async def _call_tool(name: str, arguments: dict[str, Any] | None) -> list[TextContent]:
-        text = call_tool(session, name, arguments)
-        return [TextContent(type="text", text=text)]
-
-    return server
+    return Server(
+        "somnusdroid",
+        on_list_tools=_make_list_tools(session),
+        on_call_tool=_make_call_tool(session),
+    )
 
 
 async def _run_stdio(session: Session) -> None:  # pragma: no cover - runtime
-    import mcp
-    from mcp.server.lowlevel import NotificationOptions
-    from mcp.server.models import InitializationOptions
     from mcp.server.stdio import stdio_server
 
     server = make_mcp_server(session)
     async with stdio_server() as (read, write):
-        init_options = InitializationOptions(
-            server_name="somnusui",
-            server_version=getattr(mcp, "__version__", "0.0.0"),
-            capabilities=server.get_capabilities(
-                notification_options=NotificationOptions(),
-                experimental_capabilities={},
-            ),
-        )
-        await server.run(read, write, init_options)
+        await server.run(read, write, server.create_initialization_options())
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - entry point
     argv = argv if argv is not None else sys.argv[1:]
-    provider = argv[0] if argv else "auto"
+    provider = argv[0] if argv else "android"
     # ``--allow-gesture`` (any position) turns on the gesture channel: taps at
     # node bounds for widgets that publish no CLICK action (MIUI search bars,
     # some editors). Off by default - coordinates are unverified.
