@@ -52,7 +52,15 @@ class RpcServer(
         running = true
         val thread = Thread({
             try {
-                serverSocket = ServerSocket(port, 8, InetAddress.getLoopbackAddress())
+                // Bind IPv4 loopback explicitly: InetAddress.getLoopbackAddress()
+                // may resolve to ::1, and adb forward's tcp: speaks IPv4 only -
+                // a [::1]-only listener accepts nothing from adb (found live:
+                // the port showed up in `ss` as [::1]:8677 while every host
+                // connection timed out or was reset).
+                serverSocket = ServerSocket(
+                    port, 8,
+                    InetAddress.getByAddress("127.0.0.1", byteArrayOf(127, 0, 0, 1))
+                )
                 while (running) {
                     val socket = try {
                         serverSocket!!.accept()
