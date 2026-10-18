@@ -193,6 +193,45 @@ def test_call_toggle_switches_the_form_switch():
     assert "checked" in switch2.states
 
 
+# ---------------------------------------------------------------------------
+# screen following + switch navigation
+# ---------------------------------------------------------------------------
+
+
+def test_observe_follows_the_active_window():
+    """A phone shows one screen: the read must always target it.
+
+    Observing a background window returned a bare shell (measured live:
+    MIUI home behind another app), which read as 'the observation lost
+    everything'.
+    """
+    provider = AndroidMockProvider(snapshots=[A.settings_tree(), A.form_tree()])
+    session = Session(provider, policy=Policy())
+    session.observe()
+    # The active window is the one the fixture marks active; force a different
+    # target, then observe again - the session must follow the active one.
+    other = next(w.window_id for w in provider.list_windows()
+                 if w.window_id != session.target_window)
+    provider.trees[other].window.active = True
+    provider.trees[session.target_window].window.active = False
+    obs = session.observe()
+    assert session.target_window == other
+    assert "SWITCH" in obs.text  # the form screen's switch, not settings
+
+
+def test_switch_home_and_pages_go_through_platform_actions():
+    """SWITCH home/next/prev on Android are platform actions, not UI calls."""
+    session = make_session("settings")
+    session.observe()
+    assert session.dispatch("SWITCH home").startswith("OK switched=home")
+    assert session.provider.globals == ["home"]
+    assert session.dispatch("SWITCH next").startswith("OK switched=next")
+    assert session.provider.pages == ["next"]
+    assert session.dispatch("SWITCH prev").startswith("OK switched=prev")
+    # Every switch discards the refs: the screen changed wholesale.
+    assert session.result is None
+
+
 def _longpress_tree() -> dict:
     """One icon whose row advertises CLICK + LONG_CLICK (a MIUI launcher icon)."""
     from tests.fixtures.android_scenarios import _node, _window

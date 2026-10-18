@@ -87,6 +87,14 @@ class AndroidProvider:
     #: settler must always run its quiet window.
     is_deterministic = False
 
+    #: A phone has one screen and the user is always on it: the window to
+    #: observe is whichever is active *right now*, not one pinned earlier.
+    #: Observing a background window returns a bare shell (MIUI home behind
+    #: another app renders nothing to a11y), which read as "the observation
+    #: lost everything after a focus". The session checks this flag and
+    #: re-targets the active window before every read.
+    follows_active_window = True
+
     def __init__(
         self,
         *,
@@ -188,8 +196,12 @@ class AndroidProvider:
     # -- provider API --------------------------------------------------------
 
     def list_windows(self) -> list[WindowInfo]:
+        # metadataOnly: the Portal honours this flag and skips the node walk.
+        # The host previously sent max_depth (ignored server-side) and paid a
+        # full-tree serialization for every window enumeration - and the
+        # session refreshes the window list on every observe/find/call.
         try:
-            snapshot = self._rpc("snapshot", {"max_depth": 0})
+            snapshot = self._rpc("snapshot", {"metadataOnly": True})
         except PortalError as err:
             log.warning("list_windows failed: %s", err)
             return []
@@ -355,6 +367,37 @@ class AndroidProvider:
             self._bump_events()
             return ExecResult(ok=True)
         return ExecResult(ok=False, error="NATIVE_EXECUTION_FAILED")
+
+    def page(self, direction: str) -> ExecResult:
+        """Turn the launcher / pager one page (``SWITCH next`` / ``prev``).
+
+        The pagers do not expose SCROLL_FORWARD to the tree and unshown pages
+        are not instantiated, so there is no node to perform against: the
+        page turn is the platform's own swipe gesture, synthesized inside the
+        Portal where the screen size is known.
+        """
+        if direction not in ("next", "prev"):
+            return ExecResult(
+                ok=False, error="ACTION_NOT_SUPPORTED",
+                message=f"no page direction {direction!r} (use next|prev)",
+            )
+        try:
+            result = self._rpc("page", {"direction": direction})
+        except PortalError as err:
+            return ExecResult(
+                ok=False,
+                error=PORTAL_ERROR_CODES.get(err.code or "", "NATIVE_EXECUTION_FAILED"),
+                message=str(err),
+            )
+        if bool((result or {}).get("ok")):
+            self._bump_events()
+            return ExecResult(ok=True)
+        err_name = str((result or {}).get("error") or "ACTION_FAILED")
+        return ExecResult(
+            ok=False,
+            error=PORTAL_ERROR_CODES.get(err_name, "NATIVE_EXECUTION_FAILED"),
+            message=str((result or {}).get("message") or err_name),
+        )
 
     def launch_app(self, package: str) -> ExecResult:
         try:

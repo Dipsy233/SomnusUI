@@ -47,6 +47,10 @@ class AndroidMockProvider:
     #: A replay cannot change on its own.
     is_deterministic = True
 
+    #: Mirrors the real provider: a replay stands in for the phone's screen,
+    #: so the session must follow whichever window the fixture marks active.
+    follows_active_window = True
+
     def __init__(
         self,
         snapshots: list[dict[str, Any]] | None = None,
@@ -63,6 +67,8 @@ class AndroidMockProvider:
         self.callbacks = callbacks or {}
         self.executed: list[tuple[NativeRef, str, Any]] = []
         self.launchable: list[dict[str, str]] = []
+        self.globals: list[str] = []
+        self.pages: list[str] = []
         for snap in snapshots or ():
             self._install(snap)
         for path in snapshot_paths or ():
@@ -168,6 +174,15 @@ class AndroidMockProvider:
     # -- Android-specific surface --------------------------------------------
 
     def global_action(self, name: str) -> ExecResult:
+        self.globals.append(name)
+        return ExecResult(ok=True)
+
+    def page(self, direction: str) -> ExecResult:
+        if direction not in ("next", "prev"):
+            return ExecResult(
+                ok=False, error="ACTION_NOT_SUPPORTED", message=direction
+            )
+        self.pages.append(direction)
         return ExecResult(ok=True)
 
     def launch_app(self, package: str) -> ExecResult:

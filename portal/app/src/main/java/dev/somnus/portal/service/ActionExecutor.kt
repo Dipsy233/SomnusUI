@@ -40,6 +40,12 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
         return svc.global(action)
     }
 
+    /** Launcher page turn (see [SomnusAccessibilityService.page]). */
+    fun page(direction: String): JSONObject {
+        val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
+        return svc.page(direction)
+    }
+
     fun gesture(windowId: Int, key: String, kind: String): JSONObject {
         val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
         return svc.gesture(windowId, key, kind)

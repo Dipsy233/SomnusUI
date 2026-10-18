@@ -11,7 +11,7 @@ pixels: no coordinates, keys or native ids exist for you to guess.
 | `find` | locate, incl. inside folded lists | `FIND [type] "query" [in ref]` |
 | `inspect` | all caps/args/relations of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | act | `CALL ref.cap(args)` |
-| `switch` | move between desktops | `SWITCH main\|child` / `SESSION open\|close\|detach` |
+| `switch` | navigate screens / move between desktops | `SWITCH home\|back\|next\|prev` (Android) · `SWITCH main\|child` (desktop) / `SESSION open\|close\|detach` |
 
 `observe` describes **one window**. `OBSERVE windows` lists windows only (the
 cheapest way to find the one you want); `OBSERVE w2 desktop` adds the others.
@@ -128,13 +128,15 @@ cannot disturb them. You are always on exactly one.
 
 | Command | Effect |
 | --- | --- |
-| `SWITCH main` / `SWITCH child` | move (child must already be open) |
+| `SWITCH home` / `SWITCH back` | Android: launcher / previous screen (platform action) |
+| `SWITCH next` / `SWITCH prev` | Android: turn the launcher or pager one page |
+| `SWITCH main` / `SWITCH child` | desktops: move (child must already be open) |
 | `SESSION open` | start the child session and move into it |
 | `SESSION close` | end it, return to main |
 | `SESSION detach` | leave it running after this program exits |
 
-**A switch discards every ref** — they name windows on the new desktop. Re-
-`observe` before acting.
+**A switch discards every ref** — on Android they named the previous screen; on
+a desktop, windows on the new one. Re-`observe` before acting.
 
 Switch when the user wants work done *without being disturbed* (`SESSION open`
 does it in one step), or needs a window that is on the other side. Do not switch

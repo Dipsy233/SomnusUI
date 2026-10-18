@@ -76,7 +76,8 @@ _OBSERVE_RE = re.compile(
 #: session. The agent drives one session at a time; this is how it moves.
 #: ``SESSION open`` / ``SESSION close`` create and end the child session.
 _SWITCH_RE = re.compile(
-    r"^SWITCH\s+(?P<target>main|local|host|primary|child|other|remote|sub)\s*$",
+    r"^SWITCH\s+(?P<target>main|local|host|primary|child|other|remote|sub"
+    r"|home|back|next|prev)\s*$",
     re.IGNORECASE,
 )
 _SESSION_RE = re.compile(

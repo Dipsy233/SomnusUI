@@ -22,9 +22,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "observe",
         "description": (
-            "Semantic overview (L0) of one window: screens, entities and "
-            "their capabilities. Never pixels or native ids. Call it first - "
-            "it assigns the refs every other tool uses."
+            "Semantic overview (L0) of the CURRENT screen: screens, entities "
+            "and their capabilities. Always reflects what is on screen right "
+            "now - on a phone it follows the active window automatically. "
+            "Never pixels or native ids. Call it first - it assigns the refs "
+            "every other tool uses."
         ),
         "inputSchema": {
             "type": "object",
@@ -47,8 +49,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "find",
         "description": (
-            "Search the current window, including inside folded lists. Returns "
-            "whole entity lines with their capabilities."
+            "Search the CURRENT screen (re-snapshotted first), including "
+            "inside folded lists. Returns whole entity lines with their "
+            "capabilities."
         ),
         "inputSchema": {
             "type": "object",
@@ -98,20 +101,27 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "switch",
         "description": (
-            "Move between the user's desktop (main) and a separate session "
-            "(child). One desktop at a time: a switch discards every ref. Use "
-            "`open` when the work must not disturb the user."
+            "On Android: navigate the phone itself - home (back to the "
+            "launcher), back (previous screen), next/prev (turn the launcher "
+            "or pager one page). Runs through the platform's own actions, not "
+            "the UI tree, and discards every ref. On a desktop: move between "
+            "the user's desktop (main) and a separate session (child)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "target": {
                     "type": "string",
-                    "enum": ["main", "child", "open", "close", "detach"],
+                    "enum": [
+                        "home", "back", "next", "prev",
+                        "main", "child", "open", "close", "detach",
+                    ],
                     "description": (
-                        "main = user's desktop; child = the separate session; "
-                        "open = start it and move in; close = end it, back to "
-                        "main; detach = keep it after this process exits"
+                        "Android: home = launcher; back = previous screen; "
+                        "next/prev = pager page. Desktop: main = user's "
+                        "desktop; child = the separate session; open = start "
+                        "it and move in; close = end it; detach = keep it "
+                        "after this process exits"
                     ),
                 }
             },

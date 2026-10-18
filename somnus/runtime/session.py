@@ -280,6 +280,19 @@ class Session:
         return select_pack(win.process, forced=self.pack_id)
 
     def _snapshot(self) -> RawTree:
+        # A single-screen provider (a phone) is always showing the user
+        # exactly one screen: observe/find/inspect/call must describe *that*
+        # screen, not a window pinned earlier. Observing a background window
+        # returns a bare shell (MIUI home behind another app publishes an
+        # empty tree), which read as "the observation lost everything". The
+        # provider declares this behaviour with ``follows_active_window``; a
+        # desktop keeps the pinned target (a desktop really does have several
+        # visible windows at once).
+        if getattr(self.provider, "follows_active_window", False):
+            self.refresh_windows()
+            active = next((w for w in self.windows if w.active), None)
+            if active is not None:
+                self.target_window = active.window_id
         if self.target_window is None:
             self.refresh_windows()
         if self.target_window is None:
@@ -1761,6 +1774,46 @@ class Session:
         from somnus.session import childsession
 
         target = (target or "").strip().lower()
+
+        # A phone has no second desktop to switch to - what a user moves
+        # between on Android are *screens*. The same tool becomes navigation,
+        # and every one of these runs through the platform's own APIs (global
+        # actions, a synthesized pager swipe) rather than the UI tree, because
+        # what they reach is precisely what no tree can name: the home screen,
+        # the previous app, the launcher page that is not instantiated yet.
+        android_global = getattr(self.provider, "global_action", None)
+        if android_global is not None and target in (
+            "home", "back", "next", "prev",
+        ):
+            if target in ("home", "back"):
+                result = android_global(target)
+            else:
+                pager = getattr(self.provider, "page", None)
+                if pager is None:
+                    return self._err(
+                        "ACTION_NOT_SUPPORTED",
+                        "this provider cannot turn launcher pages",
+                    )
+                result = pager(target)
+            if result.ok:
+                # The screen just changed wholesale: every ref named the old
+                # one. Same contract as SYSTEM home (discards, re-orient).
+                self.registry = SessionRegistry()
+                self.result = None
+                self._prev_windows = {}
+                self._window_refs = {}
+                self._window_refs_by_id = {}
+                self._last_signature = None
+                self._bump_rev()
+                return (
+                    f"OK switched={target} rev={self.rev}\n"
+                    "~ refs discarded; OBSERVE to re-orient"
+                )
+            return SomnusError(
+                result.error or ErrorCode.NATIVE_EXECUTION_FAILED,
+                message=result.message or target,
+            ).render()
+
         want_child = target in ("child", "other", "remote", "sub")
         if not want_child and target not in ("main", "local", "host", "primary"):
             return (

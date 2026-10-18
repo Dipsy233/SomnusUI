@@ -281,6 +281,37 @@ class SomnusAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Launcher / pager page turn: a horizontal swipe across the screen.
+     *
+     * A pager (the home workspace, a ViewPager) almost never exposes
+     * SCROLL_FORWARD to the accessibility tree, and the pages it holds are
+     * not instantiated until shown - so there is no node to perform against
+     * and the host cannot reach page 2 at all (measured live: MIUI home
+     * reported "第 1 页共 2 页" with no scrollable anywhere). The platform's
+     * own way to turn a page is the same gesture a user makes; synthesize
+     * it here, where the screen size is known, instead of asking the host
+     * for coordinates it must never see.
+     */
+    fun page(direction: String): JSONObject {
+        val metrics = resources.displayMetrics
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
+        val y = h / 2f
+        // Swipe well into the opposite half so even a lazy pager commits.
+        val (x0, x1) = if (direction == "next") w * 0.85f to w * 0.15f
+                       else w * 0.15f to w * 0.85f
+        val path = Path().apply { moveTo(x0, y); lineTo(x1, y) }
+        val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(
+            path, 0, 250L
+        )
+        val ok = dispatchGesture(
+            android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(stroke).build(), null, null
+        )
+        return if (ok) okResult() else err("ACTION_FAILED", "page swipe refused")
+    }
+
+    /**
      * Gesture channel (doc §7.1): synthesize tap / long_press at the node's
      * bounds centre. Coordinates exist only inside the Portal; the host marks
      * the result OK_UNVERIFIED unless its delta proves the effect.

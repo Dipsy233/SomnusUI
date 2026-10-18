@@ -215,6 +215,7 @@ class RpcServer(
                     params.optString("value").takeIf { params.has("value") },
                 )
                 "global" -> executor.global(params.getString("action"))
+                "page" -> executor.page(params.optString("direction", "next"))
                 "gesture" -> executor.gesture(
                     params.getInt("window"), params.getString("node"),
                     params.optString("kind", "tap")
