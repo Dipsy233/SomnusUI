@@ -14,7 +14,7 @@
 
 ```
 @rev 1
-WINDOW w1 "agent 属性" +scroll_into_view
+WINDOW w1 "agent 属性"
   SCREEN s1 "网络文件和文件夹共享"
   IMAGE im1 "网络文件和文件夹共享"
   TEXT tx1 "agent"
@@ -47,7 +47,7 @@ WINDOW w1 "agent 属性" +scroll_into_view
 
 | 信息 | 来源 |
 |---|---|
-| 界面是否就绪、目标窗口是否就位 | `WINDOW` 行（`+scroll_into_view` 表示已就绪） |
+| 界面是否就绪、目标窗口是否就位 | `WINDOW` 行 |
 | 界面的语义分区 | `SCREEN s1 "网络文件和文件夹共享"` 等 |
 | 哪些是输入框 | `INPUT q1`（`+set_text(text)` 表示可写；只读字段会显示 `readonly` 且**不带** `+set_text`） |
 | 哪些能点 | `BUTTON b1 "共享(S)..."` |

@@ -280,25 +280,22 @@ def test_all_interfaces_missing_reports_honestly():
 
 
 def test_preparatory_step_completes_only_when_more_follows():
-    """`focus`/`scroll_into_view` 是准备动作——但在链尾时它们就是动作本身。
+    """`focus` 是准备动作——但在链尾时它就是动作本身。
 
-    回归：之前无条件把 focus 当成"已准备，继续"，于是
-    `CALL x.scroll_into_view()`（链里只有这一步）什么也没做却报成功。
+    回归：之前无条件把 focus 当成"已准备，继续"，于是链尾的 focus
+    什么也没确认就报成功。
     """
-    row = _n("listitem", "Far row", patterns=frozenset({"scrollitem"}),
+    row = _n("listitem", "Far row", patterns=frozenset({"selectionitem"}),
              states=frozenset({"offscreen"}))
     session = _session(_tree([row]))
     session.observe()
     node = next(n for n in session.result.root.walk() if n.name == "Far row")
 
-    out = session.dispatch(f"CALL {node.ref}.scroll_into_view()")
+    out = session.dispatch(f"CALL {node.ref}.focus()")
     assert out.startswith("OK"), out
 
-    # 真的执行了，且真的把 offscreen 清掉了
-    assert "scroll_into_view" in [p for _r, p, _v in session.provider.executed]
-    session.observe()
-    node = next(n for n in session.result.root.walk() if n.name == "Far row")
-    assert "offscreen" not in node.states
+    # 真的执行了
+    assert "focus" in [p for _r, p, _v in session.provider.executed]
 
 
 def test_focus_followed_by_typing_does_not_stop_early():

@@ -354,7 +354,11 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
             {
                 "direction": ParamSpec(
                     type="enum",
-                    enum=("up", "down", "top", "bottom"),
+                    # top/bottom are the typed SCROLL_UP/DOWN actions, and
+                    # every measured app (TIM, Settings) refuses them while
+                    # answering FORWARD/BACKWARD - so they are not offered:
+                    # the LLM should not spend a call on a gesture that dies.
+                    enum=("up", "down"),
                     required=True,
                 )
             },
@@ -367,19 +371,12 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         cap.via = [PrimitiveStep(primitive="scroll", target="$self", value="$direction")]
         caps.setdefault("scroll", cap)
 
-    # A ScrollItem (a row in a virtualised list) can be brought into view; this
-    # is how an off-screen item is reached without scrolling blindly. It is a
-    # real native capability, not a heuristic.
-    if "scrollitem" in patterns:
-        caps.setdefault(
-            "scroll_into_view",
-            Capability(
-                name="scroll_into_view",
-                level="primitive",
-                via=[PrimitiveStep(primitive="scroll_into_view", target="$self")],
-                risk="safe",
-            ),
-        )
+    # A ScrollItem (SHOW_ON_SCREEN / SCROLL_TO_POSITION) is deliberately NOT
+    # granted as a capability on Android: a virtualised list only instantiates
+    # the rows on screen, so the rows that need bringing into view do not
+    # exist in the tree, and the rows in the tree are already visible - the
+    # action is refused by every measured app (TIM, Settings). Reaching an
+    # off-screen row is `CALL list.scroll(up/down)` + FIND (found live).
 
     if "window" in patterns and role in ("window", "dialog"):
         caps.setdefault("close", _cap("close"))

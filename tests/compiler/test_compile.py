@@ -248,31 +248,11 @@ def test_generic_mode_grants_capabilities_from_patterns_only():
     # A read-only Value pattern must not advertise set_text.
     assert "set_text" not in by_name["Read only"].cap_names()
     assert "select" in by_name["Cell"].cap_names()
-    # ScrollItem is a real capability, not a guess.
-    assert "scroll_into_view" in by_name["Far row"].cap_names()
-
-
-def test_scroll_into_view_clears_offscreen_in_mock():
-    from somnus.providers.mock import MockProvider
-    from somnus.runtime.session import Session
-    from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
-
-    row = RawNode(
-        native=NativeRef("w1", (1,)),
-        role="listitem", name="Far row",
-        states=frozenset({"offscreen"}),
-        patterns=frozenset({"scrollitem"}),
-    )
-    root = RawNode(
-        native=NativeRef("w1", (0,)),
-        role="window", name="w", patterns=frozenset(),
-        children=[row],
-    )
-    tree = RawTree(window=WindowInfo("w1", "w", "app.exe", 1), root=root)
-    session = Session(MockProvider(fixtures=[tree]))
-    session.observe()
-    ref = next(n.ref for n in session.result.root.walk() if n.name == "Far row")
-    assert session.dispatch(f"CALL {ref}.scroll_into_view()").startswith("OK")
+    # ScrollItem is NOT a capability on Android-path trees: virtualised lists
+    # only instantiate the rows on screen, so a row needing "bringing into
+    # view" either does not exist (call scroll(up)/scroll(down) + FIND) or is
+    # already visible. The action was refused by every measured app.
+    assert "scroll_into_view" not in by_name["Far row"].cap_names()
 
 
 def test_duplicate_siblings_get_distinct_fingerprints():

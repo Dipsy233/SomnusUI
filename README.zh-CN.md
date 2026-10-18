@@ -70,11 +70,11 @@ somnus-mcp android
 ```
 @rev 12
 WINDOW w3 "com.tencent.mobileqq" active
-  GROUP g1 +scroll_into_view +select +tap
-    LIST l5 +context_menu +scroll_into_view +select
-    TEXT tx147 "我的电脑" +activate +focus +read +scroll_into_view
+  GROUP g1 +select +tap
+    LIST l5 +context_menu +select
+    TEXT tx147 "我的电脑" +activate +focus +read
     INPUT q1 +activate +context_menu +set_text(text)
-    BUTTON b4 "发送" disabled +focus +read +scroll_into_view +select +tap
+    BUTTON b4 "发送" disabled +focus +read +select +tap
 ```
 
 动作就是以 ref 为主语的普通句子：

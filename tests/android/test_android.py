@@ -128,15 +128,18 @@ def _caps_for(actions: list[str], cls: str = "android.widget.TextView"):
     return {c.name for c in primitive_capabilities(node)}
 
 
-def test_show_on_screen_does_not_advertise_scroll():
-    """SCROLL_TO_POSITION / SHOW_ON_SCREEN mean *be scrolled to*, not scroll.
+def test_show_on_screen_grants_nothing():
+    """SCROLL_TO_POSITION / SHOW_ON_SCREEN grant nothing on Android.
 
-    Every MIUI launcher label publishes them; granting `scroll` there made a
-    TEXT render `+scroll(to:up|down|top|bottom)` it could never perform.
+    Every MIUI launcher label publishes them. They once painted
+    `+scroll(...)` on labels that cannot scroll; scroll_into_view is equally
+    dead on a phone - a virtualised list only instantiates on-screen rows,
+    so a row needing "bringing into view" does not exist in the tree, and
+    the apps measured refuse the action on the rows that do.
     """
     caps = _caps_for(["SHOW_ON_SCREEN", "SCROLL_TO_POSITION"])
     assert "scroll" not in caps
-    assert "scroll_into_view" in caps  # the capability the node really has
+    assert "scroll_into_view" not in caps
 
 
 def test_scroller_still_advertises_scroll():
