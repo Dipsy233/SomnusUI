@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "somnus": {
+      "command": "python",
+      "args": ["-m", "somnus.cli", "mcp", "android"],
+      "cwd": "E:\\0down\\SomnusUIm",
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": "E:\\0down\\SomnusUIm"
+      }
+    }
+  }
+}
