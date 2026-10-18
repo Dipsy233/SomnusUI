@@ -274,7 +274,22 @@ class Session:
             self.refresh_windows()
         if self.target_window is None:
             raise SomnusError(ErrorCode.TARGET_NOT_FOUND, message="no window")
-        return self.provider.snapshot(self.target_window)
+        try:
+            return self.provider.snapshot(self.target_window)
+        except KeyError:
+            # The target window closed (Android window ids are per-activity:
+            # BACK from a settings subpage retires the id). Windows-side the
+            # same situation resolves through refresh_windows; here the id is
+            # simply gone from the enumeration, so re-pick the active window
+            # instead of dead-ending the agent with a bare KeyError.
+            self.refresh_windows()
+            if self.target_window in {w.window_id for w in self.windows}:
+                return self.provider.snapshot(self.target_window)
+            active = next((w.window_id for w in self.windows if w.active), None)
+            if active is None:
+                raise SomnusError(ErrorCode.TARGET_NOT_FOUND, message="no window") from None
+            self.target_window = active
+            return self.provider.snapshot(active)
 
     def _recompile(self) -> CompileResult:
         tree = self._snapshot()

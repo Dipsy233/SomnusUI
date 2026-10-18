@@ -33,6 +33,7 @@ import org.json.JSONObject
  *   launch {package}                  -> {ok, error?}
  *   apps                              -> [{package, label}]
  *   clipboard.set {text}              -> {ok, error?}
+ *   config {gestures?, clipboard?}    -> {ok, gestures, clipboard}
  *   events                            -> {rev, events, lastChangeMs}
  *   ping                              -> {ok, pong}
  */
@@ -179,6 +180,7 @@ class RpcServer(
                     params.getInt("window"), params.getString("node"),
                     params.optString("kind", "tap")
                 )
+                "config" -> executor.config(params)
                 "launch" -> executor.launch(params.getString("package"))
                 "apps" -> executor.apps()
                 "clipboard.set" -> executor.setClipboard(params.getString("text"))

@@ -10,7 +10,7 @@
 | M0 录制 fixture + mock provider | **完成** | `somnus --android-fixture <json> observe` 可跑;Portal 快照 JSON 走真实转换 + 共享编译器;录制文件在 `tests/fixtures/android/` |
 | M1 Portal:snapshot / click / back / launch | **完成(真机验收通过)** | 真机 Android 16(MIUI):snapshot wire 93–281ms(门禁 300);打开设置→点 WLAN 进入详情页;BACK;搜索框 set_text "蓝牙"→列表实时过滤;launch/apps 全通 |
 | M2 Android 编译规则 | **完成** | 标签上提、包装折叠、裸 View→UNKNOWN;真机设置/桌面/WLAN/搜索页 L0 全部 ≤ 305 token(门禁 400) |
-| M3 settle / verify / delta | **复用即得** | 共享 runtime 直接工作;Android mock `is_deterministic=True`;真机侧靠 Portal `rev`/`events` 计数器(已实现) |
+| M3 settle / verify / delta | **完成(真机验收通过)** | toggle WLAN 开关 wifi_on 1→0→1;set_text "蓝牙"→搜索列表实时过滤,delta `~ q1 text="蓝牙"`;click 跨窗口时 delta 报窗口替换 |
 | M4 FIND scroll、set_text 降级 | **host 端完成** | `somnus/runtime/scrollfind.py` + `FIND ... in REF scroll` 语法;store 屏滚动查找通过;set_text 通道 2/3(剪贴板/IME)Portal 侧已留接口,未实装 |
 | M5 策略与确认 | **部分复用** | 共享 Policy 生效(包名白名单/critical 确认);中文高风险词表未加 |
 | M6 MCP + AndroidWorld | 未开始 | |
@@ -67,6 +67,30 @@ Windows 行为零改动:`tests` 全绿(468 passed;clipboard 4 个失败为上游
 ### 待办(部署形态)
 
 - ~~RpcServer 生命周期挂在 MainActivity~~ ✅ 已迁入前台 `RpcService`(见下)
+
+## M3 真机验收 + 端到端缺陷修复(2026-10-18)
+
+走通完整 Session 流程(`Session` + 真实 AndroidProvider)时暴露三个缺陷,全部修复:
+
+1. **perform 的 node key 缺 window id 前缀(致命)**:Portal `findByKey` 把 key 首段当 window id(`"6779/0/3"`),host 发的是裸路径 `"0/0/..."` → 永远 NODE_GONE。修复:host 侧拼上 window id(`execute` + `_key_of`)。
+2. **观察目标窗口消失后 `_recompile` 死路**:BACK 退出子页后 Android 的 activity window id 被回收,`observe()` 直接抛 KeyError。修复:`_snapshot` 捕获 KeyError 后重枚举并回落到 active 窗口。
+3. **gesture 通道无开启入口 + 缓存误否决**:Portal 无 config RPC;host `_gesture` 在缓存里找不到 ref 就拒绝执行(但 Portal 是走 live 树的)。修复:Portal 新增 `config {gestures, clipboard}`;host 去掉缓存否决。
+
+真机验证(门禁全过):
+
+| 项 | 结果 |
+|---|---|
+| CALL li.activate() 进入 WLAN 详情页(delta 报窗口替换) | ✅ |
+| CALL sw1.toggle() → wifi_on 1→0→1,回包 OK rev=2 | ✅ |
+| gesture tap 主页搜索 → INPUT q1 focused +set_text 出现 | ✅ |
+| CALL q1.set_text("蓝牙") → delta `~ q1 text="蓝牙"`,列表实时过滤 | ✅ |
+| host 回归 | 487 passed |
+
+### 遗留
+
+- MIUI 设置主页的搜索条对无障碍不可点(无 CLICK action),需 gesture 通道兜底 → 通道双开关已实现,Session 层路由 gesture 未接。
+- set_text 通道 2/3 仍未实装(通道 1 已验证足够覆盖 EditText)。
+- M5 中文高风险词表、M6 AndroidWorld。
 
 ## 前台 Service 改造(2026-10-18,真机 M332BF 验收通过)
 

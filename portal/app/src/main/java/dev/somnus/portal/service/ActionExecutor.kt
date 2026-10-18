@@ -42,6 +42,21 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
         return svc.gesture(windowId, key, kind)
     }
 
+    /**
+     * Channel toggles (doc §7.1: both sides must opt in). Currently only
+     * `gestures` is settable; unknown keys are ignored so future channels
+     * can be added without a protocol bump.
+     */
+    fun config(params: org.json.JSONObject): JSONObject {
+        val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
+        if (params.has("gestures")) svc.gesturesEnabled = params.optBoolean("gestures", false)
+        if (params.has("clipboard")) clipboardAllowed = params.optBoolean("clipboard", true)
+        return JSONObject()
+            .put("ok", true)
+            .put("gestures", svc.gesturesEnabled)
+            .put("clipboard", clipboardAllowed)
+    }
+
     fun launch(packageName: String): JSONObject {
         val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
         return try {

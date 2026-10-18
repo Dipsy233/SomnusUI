@@ -201,10 +201,13 @@ class AndroidProvider:
 
         params: dict[str, Any] = {
             # The window id as the Portal expects it (int); the node key in
-            # the Portal's slash-separated form ("6642/0/3"), which its
-            # findByKey splits on.
+            # the Portal's slash-separated form. The Portal's findByKey treats
+            # the key's FIRST segment as the window id ("6779/0/3"), so the
+            # runtime_id path must be prefixed with it (found on device: a
+            # bare path "0/0/..." never matched -> NODE_GONE for every node).
             "window": int(window_part.rsplit("/", 1)[1]),
-            "node": "/".join(str(p) for p in ref.runtime_id),
+            "node": f"{window_part.rsplit('/', 1)[1]}/"
+            + "/".join(str(p) for p in ref.runtime_id),
             "action": action,
         }
         if value is not None and primitive in ("set_text", "paste_text", "type_text"):
@@ -312,11 +315,13 @@ class AndroidProvider:
     # -- internals -----------------------------------------------------------
 
     def _gesture(self, ref: NativeRef, value: Any) -> bool:
+        # The node lookup is only for a bounds sanity check; the Portal
+        # resolves the key itself. A stale cache must not veto the gesture:
+        # the Portal walks the live tree, so skip the check when the cached
+        # snapshot no longer contains the ref (found on device: the search
+        # text sat in a snapshot older than the current window id).
         tree = self._snapshot_cache.get(ref.window_id)
         node = tree.root.find_native(ref) if tree else None
-        if node is None:
-            return False
-        bounds = getattr(node.native, "bounds", None)
         kind = value if isinstance(value, str) else "tap"
         try:
             result = self._rpc(
@@ -329,7 +334,6 @@ class AndroidProvider:
             )
         except PortalError:
             return False
-        _ = bounds
         return bool((result or {}).get("ok"))
 
     def _bump_events(self) -> None:
@@ -351,4 +355,10 @@ class AndroidProvider:
 
 
 def _key_of(ref: NativeRef) -> str:
-    return ".".join(str(p) for p in ref.runtime_id)
+    """Portal node key: the window id followed by the runtime_id path.
+
+    The Portal's findByKey treats the key's first segment as the window id,
+    so a bare dotted path never matches. Same rule as ``execute``.
+    """
+    window = ref.window_id.rsplit("/", 1)[1]
+    return "/".join([window, *(".".join(str(p) for p in ref.runtime_id)).split(".")])
