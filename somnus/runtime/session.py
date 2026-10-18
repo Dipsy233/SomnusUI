@@ -793,8 +793,16 @@ class Session:
     # ------------------------------------------------------------------ find
 
     def find(self, action: Action, *, limit: int = 50) -> str:
-        if self.result is None:
-            self._recompile()
+        # Find always re-snapshots: the screen may have moved since the last
+        # observation (the user navigated, or the app refreshed itself), and
+        # find's whole job is to hand out refs the very next call can use -
+        # serving them from the previous compilation meant find returned a
+        # node that call then rejected as STALE_TARGET (found live: TIM's
+        # conversation rows kept being handed out after the chat page had
+        # replaced the list). Refs survive a recompile when the element does
+        # (the registry reconciles by fingerprint), so the refresh cannot
+        # invalidate a ref that is still valid.
+        self._recompile()
         assert self.result is not None
         nodes = list(self.result.root.walk())
 
@@ -897,11 +905,26 @@ class Session:
         return self.inspect(Action(kind="inspect", ref=ref, depth=depth)).text
 
     def inspect(self, action: Action) -> Observation:
-        if self.result is None:
-            self._recompile()
+        # Same rule as find: inspect re-snapshots first, so what it renders
+        # (and the refs it names) describe the screen as it is now, not as it
+        # was when the agent last observed. The ref the agent asked for is
+        # resolved after the refresh; a ref that died with the old screen is
+        # reported as STALE_TARGET rather than silently showing a stranger.
+        was = self.result.find(action.ref or "") if self.result is not None else None
+        self._recompile()
         assert self.result is not None
         node = self.result.find(action.ref or "")
         if node is None:
+            if was is not None:
+                raise SomnusError(
+                    ErrorCode.STALE_TARGET,
+                    ref=action.ref,
+                    message=(
+                        f"was {was.display_type} "
+                        + (f"{was.name!r} " if was.name else "")
+                        + "; the screen changed - re-observe"
+                    ),
+                )
             raise target_not_found(action.ref or "")
 
         # Long text range read.
@@ -1171,6 +1194,14 @@ class Session:
         self.registry.reconcile(result)
         self.result = result
         self._bump_rev()
+        # Keep the projection digest in step with the rev this call minted.
+        # The digest is what decides whether a *later* observe/find bumps rev
+        # again; leaving it at the pre-call value made the next read-only
+        # operation report a change the call had already been counted for
+        # (found live: CALL p1.add() returned rev=2, the next FIND returned
+        # rev=3 without anything else having changed, and the second add was
+        # expected at rev=3 but arrived at rev=4).
+        self._last_signature = self._projection_signature(result)
 
         if _TRACE_STATES:
             # The ref the agent used may be gone after a recompile; compare by
@@ -1299,6 +1330,20 @@ class Session:
             n.role == "menu" and n.fingerprint not in before_index
             for n in result.root.walk()
         )
+        if is_context_menu and not menu_appeared:
+            # Android's long-press menu is not a `menu` node: MIUI renders the
+            # popup as ordinary tappable items inside the launcher's own tree
+            # (found live: long-pressing a launcher icon added 扫一扫/加好友
+            # as TEXT+tap lines in the delta while the verdict claimed no
+            # menu). Added interactive nodes right after the gesture ARE the
+            # menu, so they count; a gesture that produced nothing adds
+            # nothing and is still reported as such.
+            menu_appeared = any(
+                node.fingerprint not in before_index
+                and (node.name or node.entity)
+                and ({"tap", "activate", "select", "toggle"} & node.cap_names())
+                for node in delta.added
+            )
         # Did the gesture really open a menu? Any of the three routes counts:
         # the menu is in this window's tree, it was handed to the shell as a
         # popup, or it became a separate top-level window.

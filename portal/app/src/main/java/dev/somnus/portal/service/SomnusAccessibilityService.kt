@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import dev.somnus.portal.RpcService
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -64,6 +65,13 @@ class SomnusAccessibilityService : AccessibilityService() {
         }
         revision = 0
         eventCount = 0
+        // Self-heal: the accessibility service is the longest-lived component
+        // (it survives activity sweeps and ROM service cleanups), so it is
+        // the right place to guarantee the RPC service exists. The activity
+        // only covers the case where the user opens the app; a service-only
+        // restart (reinstall, a11y re-enable) previously left no RPC listener
+        // at all until someone tapped the icon (found live).
+        RpcService.start(this)
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
@@ -123,6 +131,35 @@ class SomnusAccessibilityService : AccessibilityService() {
                 compareByDescending<WindowEntry> { it.window.isActive }
                     .thenBy { it.window.type != AccessibilityWindowInfo.TYPE_APPLICATION }
             )
+
+            // `windows` is served from an event-fed internal cache, and some
+            // app / ROM combinations let it go stale (measured live: TIM's
+            // chat activity never entered the enumeration while its page was
+            // open - every snapshot kept reporting the previous screen -
+            // until the IME appearing forced a windows change). The active
+            // window's root, fetched directly, is always current: when it
+            // names a window the enumeration does not contain, serialize it
+            // as its own entry first, or the host would keep reading a
+            // screen the user has already left.
+            val activeRoot = rootInActiveWindow
+            if (activeRoot != null && windowList.none { it.root.windowId == activeRoot.windowId }) {
+                val entry = JSONObject()
+                    .put("id", activeRoot.windowId)
+                    .put("type", "application")
+                    .put("pkg", activeRoot.packageName?.toString() ?: "")
+                    .put("title", activeRoot.packageName?.toString() ?: "")
+                    .put("active", true)
+                    .put("visible", true)
+                    .put("layer", Int.MAX_VALUE)
+                if (!metadataOnly) {
+                    entry.put("root", serializeRoot(activeRoot, activeRoot.windowId))
+                } else {
+                    activeRoot.recycle()
+                }
+                windowsArray.put(entry)
+            } else {
+                activeRoot?.recycle()
+            }
 
             for (item in windowList) {
                 val entry = JSONObject()

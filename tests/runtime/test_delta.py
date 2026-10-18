@@ -92,6 +92,34 @@ def test_unchanged_node_produces_no_delta():
     assert diff_trees(before, after).empty
 
 
+def test_state_flip_is_reported():
+    """A toggle whose only effect is its own state must not read as `no effect`.
+
+    Found live on Android: the switch's label is static and its state lives
+    in `checked`, so the name/value comparison saw nothing and the call was
+    reported as having done nothing.
+    """
+    before = index_by_fingerprint(leaf("sw1", "switch", "Wi-Fi"))
+    after = index_by_fingerprint(leaf("sw1", "switch", "Wi-Fi", fp="fp-sw1"))
+    after["fp-sw1"].states = frozenset({"checked"})
+    delta = diff_trees(before, after)
+    assert not delta.empty
+    assert ("sw1", "checked", False, True) in delta.changed
+
+
+def test_input_name_change_is_reported():
+    """Android carries an editable field's content as its name, not a value.
+
+    A written text was invisible to the delta: value stayed None on both
+    sides while the name changed, and only the write-echo told the agent
+    anything at all.
+    """
+    before = index_by_fingerprint(leaf("q1", "input", ""))
+    after = index_by_fingerprint(leaf("q1", "input", "你好"))
+    delta = diff_trees(before, after)
+    assert ("q1", "name", "", "你好") in delta.changed
+
+
 def test_a_parent_whose_child_changed_is_not_double_reported():
     """The name comparison is for leaves.
 

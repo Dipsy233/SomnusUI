@@ -12,6 +12,7 @@ All COM/UIA types stay behind this boundary.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from somnus.ir.action import ExecResult, UiEvent
@@ -86,6 +87,31 @@ class NullSubscription:
         return None
 
 
+def _wire_android_recovery(provider: Any) -> None:
+    """Give the Android provider a recovery callback (mobilerun's pattern):
+    after consecutive RPC failures, re-enable the accessibility service via
+    adb - ROMs like MIUI silently drop it (measured live: the service vanishes
+    from `dumpsys accessibility` after an app update or a force-stop, and
+    nothing re-enables it)."""
+    import subprocess
+
+    service = "dev.somnus.portal/dev.somnus.portal.service.SomnusAccessibilityService"
+
+    def recover() -> None:
+        subprocess.run(
+            ["adb", "shell", "settings", "put", "secure",
+             "enabled_accessibility_services", service],
+            check=True, timeout=15, capture_output=True,
+        )
+        subprocess.run(
+            ["adb", "shell", "settings", "put", "secure", "accessibility_enabled", "1"],
+            check=True, timeout=15, capture_output=True,
+        )
+        time.sleep(2)
+
+    provider.recovery = recover
+
+
 def get_provider(name: str = "auto", **kwargs: Any) -> AccessibilityProvider:
     """Factory resolving a provider by name.
 
@@ -100,7 +126,9 @@ def get_provider(name: str = "auto", **kwargs: Any) -> AccessibilityProvider:
     if name in ("android", "droid"):
         from somnus.providers.android.provider import AndroidProvider
 
-        return AndroidProvider(**kwargs)
+        provider = AndroidProvider(**kwargs)
+        _wire_android_recovery(provider)
+        return provider
 
     if name in ("auto", "uia", "windows"):
         try:

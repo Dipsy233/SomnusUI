@@ -48,6 +48,12 @@ ACTION_FOR_PRIMITIVE: dict[str, str] = {
     # set_text channel 2 (doc §7.2): the text rides the clipboard (written
     # first via ``clipboard.set``); PASTE itself takes no value argument.
     "paste_text": "PASTE",
+    # Android's context menu IS the long press, and Portal executes exactly
+    # that. Without this entry the primitive had no Portal action at all, so
+    # every `+context_menu` the observation advertised died with
+    # ACTION_NOT_SUPPORTED - the escape hatch the caps advertise could never
+    # be used on a phone (found live: TIM's launcher icons).
+    "context_menu": "LONG_CLICK",
 }
 
 #: Global actions for the ``system`` tool (doc §6.1).
@@ -97,6 +103,16 @@ class AndroidProvider:
         #: it worked (doc §7.1).
         self.allow_gesture = allow_gesture
         self.transport = transport or PortalTransport(serial=serial)
+        #: Snapshot fetch retries (mobilerun's fetch_state_with_retry pattern):
+        #: a transient failure (app mid-transition, ROM pausing processes)
+        #: should not kill a whole observation - retry a few times first.
+        self.snapshot_retries = 3
+        self.retry_delays = (0.5, 1.0, 2.0)
+        #: Recovery callback (set by the host/CLI): invoked once after
+        #: consecutive failures - re-enables the accessibility service, which
+        #: ROMs like MIUI silently drop (measured live).
+        self.recovery: Callable[[], None] | None = None
+        self._consecutive_failures = 0
         self._event_count = 0
         self._listeners: list[Callable[[UiEvent], None]] = []
         self._lock = threading.Lock()
@@ -109,7 +125,9 @@ class AndroidProvider:
 
     def _rpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
         try:
-            return self.transport.call(method, params)
+            result = self.transport.call(method, params)
+            self._consecutive_failures = 0
+            return result
         except PortalError as err:
             # Any transport-level failure retires the socket: a timeout or
             # dead connection leaves a half-open WebSocket that every later
@@ -118,16 +136,53 @@ class AndroidProvider:
             # closed; SERVICE_DISCONNECTED was the one code that recovered).
             # The next call reconnects through adb forward (doc §13).
             self.transport.close()
+            self._maybe_recover(err)
             raise
 
+    def _maybe_recover(self, err: PortalError) -> None:
+        """mobilerun's recovery pattern: after consecutive failures, run the
+        recovery callback once (re-enable the accessibility service) before
+        the caller's own retries see the next attempt (measured live: MIUI
+        silently drops the service; without this the only fix is manual)."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= 2 and self.recovery is not None:
+            self._consecutive_failures = 0
+            try:
+                log.warning("portal failing (%s), running recovery", err)
+                self.recovery()
+            except Exception:  # noqa: BLE001 - recovery must not mask the error
+                log.exception("recovery failed")
+
     def _snapshot_display(self) -> dict[str, Any]:
-        result = self._rpc("snapshot", {"max_depth": self.max_depth})
-        rev = int((result or {}).get("rev") or 0)
-        if rev != self._cache_rev:
-            self._snapshot_cache = {
-                t.window.window_id: t for t in portal_json_to_tree(result or {})
-            }
-            self._cache_rev = rev
+        # Retry with backoff (uiautomator2 retries empty dumps 3 times):
+        # an app mid-transition returns an empty/failed snapshot that is
+        # perfectly fine a beat later (measured live on QQ's chat screen).
+        last_err: Exception | None = None
+        for attempt in range(self.snapshot_retries):
+            try:
+                result = self._rpc("snapshot", {"max_depth": self.max_depth})
+                break
+            except PortalError as err:
+                last_err = err
+                if attempt < self.snapshot_retries - 1:
+                    delay = self.retry_delays[min(attempt, len(self.retry_delays) - 1)]
+                    log.warning("snapshot attempt %d failed (%s), retrying in %.1fs",
+                                attempt + 1, err, delay)
+                    time.sleep(delay)
+        else:
+            raise last_err if last_err else PortalError("snapshot failed")
+        # Re-parse EVERY fresh reply; never gate the cache on the Portal's
+        # `rev`. The service's revision counter only moves on window-state
+        # events, so an in-app navigation that posted no such event (measured
+        # live: TIM opening its chat page kept rev frozen while the screen
+        # changed) served the previous screen forever - every find handed out
+        # refs to nodes that no longer existed, and every call died with
+        # STALE_TARGET. The full JSON is already on this side of the wire;
+        # parsing it again is the cheap part.
+        self._snapshot_cache = {
+            t.window.window_id: t for t in portal_json_to_tree(result or {})
+        }
+        self._cache_rev = int((result or {}).get("rev") or 0)
         return result or {}
 
     # -- provider API --------------------------------------------------------

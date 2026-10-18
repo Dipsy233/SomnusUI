@@ -140,13 +140,21 @@ object TreeSerializer {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             try {
-                // Every real child must be serialized (or represented) even
-                // when filtered: the key path uses the LIVE child indices, so
-                // skipping a child without keeping its slot would shift every
-                // later sibling's key and make `perform` miss (found on a real
-                // device: the walk landed on the wrong node). Invisible,
-                // inert children are replaced by a null placeholder instead.
-                val meaningful = child.isVisibleToUser || child.isClickable || child.isScrollable
+                // Every real child must be represented even when filtered:
+                // the key path uses the LIVE child indices, so dropping a
+                // slot would shift every later sibling's key and make
+                // `perform` miss (found on a real device: the walk landed on
+                // the wrong node). Filtered children become null placeholders.
+                //
+                // Invisible subtrees are NOT recursed into (Maestro's rule):
+                // a virtualised list's off-screen rows are invisible but
+                // clickable, and recursing them is hundreds of extra binder
+                // round trips per snapshot - measured live: QQ's chat screen
+                // froze the serializer while uiautomator (which skips them)
+                // dumped the same screen in under a second. The rows come
+                // back with real bounds when scrolled into view, at which
+                // point they are visible and get serialized.
+                val meaningful = child.isVisibleToUser || child.isScrollable
                 if (!meaningful) {
                     children.put(JSONObject.NULL)
                 } else {

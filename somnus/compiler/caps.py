@@ -317,13 +317,16 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         caps.setdefault("toggle", _cap("toggle"))
 
     # GridItem cells are selectable, like list items (Excel, WPF DataGrid).
-    if "selectionitem" in patterns or "griditem" in patterns or role in (
-        "listitem",
-        "tab",
-        "radio",
-        "row",
-        "treeitem",
-    ):
+    # Leaf *content* roles are excluded: a TextView / IMAGE / unknown surface
+    # is not a selection unit - what looks like selection evidence there is
+    # the toolkit's blanket ACTION_SELECT (MIUI paints it on every launcher
+    # label), and the agent that taps `select` on a label gets a highlight at
+    # best. A selectable text surface is an input, which keeps its caps.
+    if (
+        "selectionitem" in patterns
+        or "griditem" in patterns
+        or role in ("listitem", "tab", "radio", "row", "treeitem")
+    ) and role not in ("text", "image", "unknown"):
         caps.setdefault("select", _cap("select"))
 
     if "expandcollapse" in patterns or role in ("treeitem", "select", "group", "pane"):
@@ -335,12 +338,17 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
         caps.setdefault("increment", _cap("increment"))
         caps.setdefault("decrement", _cap("decrement"))
 
-    if "scroll" in patterns or "scrollitem" in patterns or role in (
-        "list",
-        "tree",
-        "table",
-        "pane",
-    ):
+    # `scroll` is granted on the element's own Scroll evidence only: a
+    # SCROLL_FORWARD/BACKWARD action on the node itself. `scrollitem`
+    # (Android's SCROLL_TO_POSITION / SHOW_ON_SCREEN, UIA's ScrollItem) says
+    # "this element can be *brought into view*" - a property of list rows and
+    # of leaf icons alike - and used to be read as "this element can scroll",
+    # which painted `+scroll(to:up|down|top|bottom)` on every TextView and
+    # button a MIUI launcher publishes (found live: TIM's search BUTTON and
+    # the launcher's app labels advertised a scroll they cannot perform).
+    # The role table is likewise not evidence: an element that reports no
+    # scroll interface has nothing for the provider to run.
+    if "scroll" in patterns:
         caps.setdefault(
             "scroll",
             _cap(
@@ -386,24 +394,21 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     # alongside it rather than instead of it: the runtime cannot know which of
     # the two the application honours, and that choice is the caller's.
     #
-    # The platform exposes **no** query for "does this element have a context
-    # menu": `ShowContextMenu` is callable on any element and simply does
-    # nothing when the application registered no menu. So this can only be an
-    # *offer*, never a promise. What it did is reported honestly instead: a
-    # call that produces no menu comes back `OK_UNVERIFIED` with a body that
-    # says the element registers none, rather than a bare `OK` that leaves the
-    # agent believing a menu is open somewhere (observed live: the Notepad
-    # title-bar buttons).
-    #
-    # An element with no operable patterns at all is excluded, as is a menu
-    # item and a menu itself: there is nothing for a menu to act on, and a menu
-    # is what `context_menu` produces - offering "open a menu on the menu" is
-    # meaningless. `_is_control` keeps a disabled button (or a self-drawn
-    # control that reports no pattern) in scope, which is what lets the menu
-    # remain the escape hatch for exactly those elements.
+    # On Android the context menu IS the long press, and the Portal routes the
+    # primitive to ACTION_LONG_CLICK - so there the menu is offered only when
+    # the element itself advertises LONG_CLICK. The Windows plausibility rule
+    # painted `+context_menu` on every clickable MIUI label (they all say
+    # CLICK), and the call then died with ACTION_NOT_SUPPORTED because no
+    # long-press interface existed behind it (found live: TIM's launcher
+    # icons). An element that says LONG_CLICK can be long-pressed; one that
+    # does not, cannot.
+    _android = (node.native.class_name or "").startswith("android.")
+    _menu_plausible = (
+        "long_click" in patterns if _android else bool(node.patterns & _CONTEXT_MENU_PATTERNS)
+    )
     if (
         _is_control(node)
-        and node.patterns & _CONTEXT_MENU_PATTERNS
+        and _menu_plausible
         and node.role not in ("menuitem", "menu")
     ):
         caps.setdefault(

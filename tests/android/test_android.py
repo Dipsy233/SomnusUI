@@ -104,6 +104,62 @@ def test_password_field_renders_without_a_value():
 
 
 # ---------------------------------------------------------------------------
+# capabilities are the control's own: no inheritance from the toolkit's
+# blanket actions (found live on MIUI, where every label advertised
+# SHOW_ON_SCREEN / SELECT and rendered as a scroller with a context menu)
+# ---------------------------------------------------------------------------
+
+
+def _caps_for(actions: list[str], cls: str = "android.widget.TextView"):
+    from somnus.compiler.caps import primitive_capabilities
+    from somnus.ir.node import NativeRef, RawNode
+
+    node = RawNode(
+        native=NativeRef("0/12", (0,), class_name=cls),
+        role="text" if "textview" in cls.lower() else "button",
+        name="微信",
+        patterns=frozenset(),
+    )
+    # Mirror the rawtree mapping: actions -> patterns.
+    from somnus.providers.android.rawtree import ACTION_TO_PATTERN
+    node.patterns = frozenset(
+        p for p in (ACTION_TO_PATTERN.get(a) for a in actions) if p
+    )
+    return {c.name for c in primitive_capabilities(node)}
+
+
+def test_show_on_screen_does_not_advertise_scroll():
+    """SCROLL_TO_POSITION / SHOW_ON_SCREEN mean *be scrolled to*, not scroll.
+
+    Every MIUI launcher label publishes them; granting `scroll` there made a
+    TEXT render `+scroll(to:up|down|top|bottom)` it could never perform.
+    """
+    caps = _caps_for(["SHOW_ON_SCREEN", "SCROLL_TO_POSITION"])
+    assert "scroll" not in caps
+    assert "scroll_into_view" in caps  # the capability the node really has
+
+
+def test_scroller_still_advertises_scroll():
+    caps = _caps_for(["SCROLL_FORWARD", "SCROLL_BACKWARD"], "androidx.recyclerview.widget.RecyclerView")
+    assert "scroll" in caps
+
+
+def test_blanket_select_is_not_a_capability_on_labels():
+    """A label with the toolkit's blanket ACTION_SELECT is not selectable."""
+    caps = _caps_for(["CLICK", "SELECT"])
+    assert "select" not in caps
+
+
+def test_context_menu_on_android_needs_long_click():
+    """Android's context menu IS the long press: offered only where the
+    element advertises LONG_CLICK, and routed to ACTION_LONG_CLICK."""
+    assert "context_menu" not in _caps_for(["CLICK"])
+    assert "context_menu" in _caps_for(["CLICK", "LONG_CLICK"])
+    from somnus.providers.android.provider import ACTION_FOR_PRIMITIVE
+    assert ACTION_FOR_PRIMITIVE["context_menu"] == "LONG_CLICK"
+
+
+# ---------------------------------------------------------------------------
 # runtime: observe / find / call on the mock
 # ---------------------------------------------------------------------------
 
@@ -135,6 +191,58 @@ def test_call_toggle_switches_the_form_switch():
         n for n in session.result.root.walk() if n.role == "switch"
     )
     assert "checked" in switch2.states
+
+
+def _longpress_tree() -> dict:
+    """One icon whose row advertises CLICK + LONG_CLICK (a MIUI launcher icon)."""
+    from tests.fixtures.android_scenarios import _node, _window
+
+    icon = _node(
+        "12/1.0", "android.widget.LinearLayout",
+        actions=["CLICK", "LONG_CLICK"], desc="微信",
+        children=[
+            _node("12/1.0.0", "android.widget.TextView", text="微信"),
+        ],
+    )
+    return _window(12, "com.miui.home", "桌面", icon)
+
+
+def test_context_menu_that_opens_items_reports_ok():
+    """Android long-press menus are ordinary tappable items, not `menu` nodes.
+
+    Found live: long-pressing a MIUI launcher icon added 扫一扫/加好友 as
+    TEXT+tap lines in the delta while the verdict claimed `context_menu
+    produced no menu` - the agent would have concluded the gesture failed
+    and the popup was left undismissed on screen.
+    """
+    from somnus.ir.node import NativeRef, RawNode
+
+    def grow_menu(node: RawNode, root: RawNode) -> None:
+        for label in ("扫一扫", "加好友"):
+            node.children.append(
+                RawNode(
+                    native=NativeRef(root.native.window_id, (abs(hash(label)) % 9999,),
+                                     class_name="android.widget.TextView"),
+                    role="text", name=label,
+                    patterns=frozenset({"invoke"}),
+                )
+            )
+
+    provider = AndroidMockProvider(
+        snapshots=[_longpress_tree()],
+        scripts={"微信:context_menu": [{"op": "callback", "fn": "grow_menu"}]},
+        callbacks={"grow_menu": grow_menu},
+    )
+    session = Session(provider, policy=Policy())
+    session.observe()
+    row = next(
+        n for n in session.result.root.walk()
+        if n.name == "微信" and "long_click" in n.patterns
+    )
+    out = session.dispatch(f"CALL {row.ref}.context_menu()")
+    assert out.startswith("OK"), out
+    assert "produced no menu" not in out
+    assert "扫一扫" in out
 
 
 def test_disabled_button_refuses():

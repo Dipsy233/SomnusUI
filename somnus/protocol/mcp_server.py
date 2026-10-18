@@ -98,7 +98,11 @@ async def _run_stdio(session: Session) -> None:  # pragma: no cover - runtime
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - entry point
     argv = argv if argv is not None else sys.argv[1:]
     provider = argv[0] if argv else "auto"
-    session = build_session(provider=provider)
+    # ``--allow-gesture`` (any position) turns on the gesture channel: taps at
+    # node bounds for widgets that publish no CLICK action (MIUI search bars,
+    # some editors). Off by default - coordinates are unverified.
+    allow_gesture = "--allow-gesture" in argv
+    session = build_session(provider=provider, allow_gesture=allow_gesture)
     try:
         asyncio.run(_run_stdio(session))
     except KeyboardInterrupt:

@@ -60,6 +60,13 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // Re-issue the service start on every resume: startForegroundService is
+        // idempotent, and if the service was killed while the process stayed
+        // alive (MIUI sweeps services but keeps activities cached) only a fresh
+        // start() brings the RPC listener back (found live: after a reinstall
+        // the warm-started activity never re-created the service, and shell
+        // cannot start it because RpcService is exported=false).
+        RpcService.start(this)
         refreshStatus()
     }
 

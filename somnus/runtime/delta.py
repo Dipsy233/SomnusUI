@@ -165,6 +165,15 @@ _STATEFUL_NAME_ROLES = frozenset(
     {"radio", "checkbox", "check", "toggle", "switch", "option"}
 )
 
+#: State flags whose flip is worth a `~` line. Ordered so the rendered lines
+#: read predictably. `focused` is included on purpose: it flips as a side
+#: effect of the call itself (focus-then-type), and telling the agent so
+#: prevents a pointless second focus call. `offscreen` tracks the element the
+#: action scrolled into or out of view.
+_WATCHED_STATES = (
+    "checked", "selected", "disabled", "focused", "offscreen",
+)
+
 
 def _diff_node(old: SemanticNode, new: SemanticNode) -> list[tuple[str, str, Any, Any]]:
     out: list[tuple[str, str, Any, Any]] = []
@@ -184,8 +193,17 @@ def _diff_node(old: SemanticNode, new: SemanticNode) -> list[tuple[str, str, Any
     # line of the delta ("the cart total moved") never appeared - the agent saw
     # a new row appear with no statement of what it did to the totals.
     #
-    # Restricted to named leaves: on a container the name is a stable label
-    # ("购物车", "商品") whose churn is noise, and entities carry attrs instead.
+    # `input` belongs here too, and for a platform reason: Android reports an
+    # editable field's content as its accessible name and carries no separate
+    # value, so a written text (set_text) was invisible to the delta - the
+    # agent got the write-echo only, and a write performed by the *app* (a
+    # field auto-filling) looked like nothing happened. For an input the
+    # one-sided transition (empty -> written) is exactly the interesting one,
+    # so the both-sides-named restriction is lifted there.
+    #
+    # Restricted otherwise to named leaves: on a container the name is a
+    # stable label ("购物车", "商品") whose churn is noise, and entities carry
+    # attrs instead.
     elif (
         (old.role in ("text", "statusbar", "link") or old.role in _STATEFUL_NAME_ROLES)
         and not old.children
@@ -194,6 +212,24 @@ def _diff_node(old: SemanticNode, new: SemanticNode) -> list[tuple[str, str, Any
         and old.name != new.name
     ):
         out.append((new.ref, "name", old.name, new.name))
+    elif (
+        old.role in ("input", "slider")
+        and not old.children
+        and (old.name or "") != (new.name or "")
+        and (old.name or new.name)
+    ):
+        out.append((new.ref, "name", old.name or "", new.name or ""))
+    # State flips are the cheapest honest signal a call left behind: the
+    # button the agent was about to press went disabled→enabled, the switch
+    # checked→unchecked, the row selected. Without comparing states a toggle
+    # whose only effect is its own state read as `no effect` whenever its
+    # label happened not to change (found live on Android switches, whose
+    # label is static and whose state lives in `checked`).
+    for state in _WATCHED_STATES:
+        if (state in old.states) != (state in new.states):
+            out.append(
+                (new.ref, state, state in old.states, state in new.states)
+            )
     return out
 
 
