@@ -1872,10 +1872,22 @@ def _breadcrumb_entry(node: SemanticNode) -> str:
     """One breadcrumb entry: named nodes carry their type and name; anonymous
     structural wrappers (the GROUP/Pane nesting every Android screen is built
     from) carry only the ref - they exist to be scoped into, not read.
+
+    An interactive ancestor also carries its activation cap: a plain text
+    with no claim of its own still answers a tap when a clickable ancestor
+    consumes the touch (Android bubbles unhandled touches up to the
+    clickable container), so `TEXT tx2 / in: ... LISTITEM li1 "Wellcee"
+    +activate` is how the agent tells a live text from a dead one without
+    paying for a full cap list on every line.
     """
     if node.name:
-        return f"{node.display_type} {node.ref} {_q(node.name)}"
-    return node.ref
+        base = f"{node.display_type} {node.ref} {_q(node.name)}"
+    else:
+        base = node.ref
+    for cap in ("activate", "tap", "open"):
+        if cap in node.cap_names():
+            return f"{base} +{cap}"
+    return base
 
 
 def _node_matches(node: SemanticNode, query: str) -> bool:
