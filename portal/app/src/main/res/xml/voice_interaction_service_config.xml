@@ -1,6 +1,9 @@
-<?xml version="1.0" encoding="utf-8"?>
 <!-- The meta-data the system reads for a VoiceInteractionService (doc §
-     android.service.voice): which session service to launch on wake. -->
+     android.service.voice): which session service to launch on wake, and
+     which RecognitionService answers SpeechRecognizer. On MIUI the latter
+     is Xiaomi's own ASR (mibrain.speech) - naming it here reuses the
+     system's recognizer instead of shipping one. -->
 <voice-interaction-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:sessionService="dev.somnus.portal.voice.SomnusVoiceSessionService" />
+    android:sessionService="dev.somnus.portal.voice.SomnusVoiceSessionService"
+    android:recognitionService="com.xiaomi.mibrain.speech/.asr.AsrService" />
