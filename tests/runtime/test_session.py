@@ -40,6 +40,25 @@ def test_find_returns_entity_line():
     assert 'PRODUCT p1 "Big Mac" price=5.99' in out
 
 
+def test_find_reports_ancestor_chain():
+    """A hit is never an orphan: the line is followed by the parent chain
+    (window first, parent last, refs included) so the agent knows *where*
+    the match lives - which dialog a "确定" belongs to - and can scope into
+    an ancestor without another INSPECT."""
+    session = _new_session()
+    session.observe()
+    out = session.dispatch('FIND "Big Mac"')
+    assert (
+        '  in: WINDOW w1 "Restaurant Demo" > SCREEN s1 "menu" > LIST l1 "Products"'
+        in out
+    )
+    # The hit itself stays first on its line, breadcrumb second.
+    lines = out.splitlines()
+    assert lines[0] == "FOUND 1"
+    assert lines[1].startswith("PRODUCT p1")
+    assert lines[2].strip().startswith("in: WINDOW w1")
+
+
 def test_find_no_match():
     session = _new_session()
     session.observe()

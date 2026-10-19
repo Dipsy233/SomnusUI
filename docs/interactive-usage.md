@@ -57,9 +57,10 @@ WINDOW w15 "Steam"
   LIST l1 "库" +find
     LINK lnk32 "..."
 
-sui> FIND link "..."              ← 定位，返回完整实体行
+sui> FIND link "..."              ← 定位，返回完整实体行 + 父级链
 FOUND 1
 LINK lnk32 "..." +activate +context_menu +focus +read
+  in: WINDOW w15 "Steam" > SCREEN s3 "库" > LIST l1
 
 sui> INSPECT lnk32                 ← 需要时展开全部能力与参数
 LINK lnk32 "..." +activate +context_menu +focus +read

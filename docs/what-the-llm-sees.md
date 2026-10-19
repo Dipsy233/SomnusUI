@@ -67,15 +67,26 @@ WINDOW w1 "agent 属性"
 FIND "共享"
 → FOUND 7
 SCREEN s1 "网络文件和文件夹共享"
+  in: WINDOW w1 "网络" > SCREEN s0 "网络和 Internet"
 INPUT q1 "网络路径(N):" +set_text(text)
+  in: WINDOW w1 "网络" > SCREEN s1 "网络文件和文件夹共享"
 BUTTON b1 "共享(S)..."
+  in: WINDOW w1 "网络" > SCREEN s1 "网络文件和文件夹共享"
 SCREEN s2 "高级共享"
+  in: WINDOW w1 "网络"
 BUTTON b2 "高级共享(D)..."
+  in: WINDOW w1 "网络" > SCREEN s2 "高级共享"
 SCREEN s4 "用户必须具有此计算机的用户帐户和密码，才能访问共享文件夹。…"
+  in: WINDOW w1 "网络"
 LINK lnk1 "网络和共享中心"
+  in: WINDOW w1 "网络"
 ```
 
-返回的是**完整实体行**，不是只给 ref —— 省掉一次 `inspect`。
+返回的是**完整实体行**，不是只给 ref —— 省掉一次 `inspect`。每个命中下面
+还跟着一行 `in:` **面包屑**（父级链，从窗口到父节点，含 ref）：同名控件
+（比如多个“确定”按钮）从此可以区分位于哪个窗口、哪个对话框里，而且拿到
+祖先 ref 后可以直接 `FIND "…" in REF` 定向搜索，无需先 `INSPECT`。连续
+命中的父级链相同时只显示一次，避免长列表翻倍。
 
 ---
 

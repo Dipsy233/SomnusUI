@@ -923,8 +923,43 @@ class Session:
         # activate was unavailable (found live: the Steam game row showed only
         # context_menu and the agent right-clicked instead of opening).
         opts = RenderOptions(include_default_caps=True, show_relations=False)
+        root = result_root(self)
+        prev_chain: list[str] | None = None
         for hit in matches[:limit]:
             out.append(render_node_line(hit, opts))
+            # Breadcrumb: where this hit lives in the tree. A bare entity line
+            # answers *what* matched but not *where* - without it, every
+            # "确定" (OK) on screen is indistinguishable. The chain names the
+            # window down to the parent (e.g. WINDOW w1 "系统设置" > t4 "是否删除"),
+            # and carries refs so the next action can scope into an ancestor
+            # (FIND "…" in t4) without another inspect.
+            chain = _ancestor_chain(root, hit)
+            chain_str = " > ".join(_breadcrumb_entry(n) for n in chain)
+            if chain_str:
+                # Consecutive hits under the same parent repeat the same
+                # chain; collapsing the duplicates keeps a 30-row list find
+                # from doubling in size while still telling the agent which
+                # subtree each hit came from. Hits that differ only in the
+                # tail (siblings) show just the shared prefix elided.
+                if prev_chain is not None:
+                    shared = 0
+                    for a, b in zip(prev_chain, chain):
+                        if a != b:
+                            break
+                        shared += 1
+                    # Siblings differ only in the tail: show just the shared
+                    # prefix elided. An identical chain still repeats in full -
+                    # a hit with no breadcrumb at all reads as "unknown
+                    # parent", which is exactly what the chain exists to fix.
+                    if 2 <= shared < len(chain):
+                        tail = " > ".join(_breadcrumb_entry(n) for n in chain[shared:])
+                        out.append(f"  in: … > {tail}")
+                        prev_chain = chain
+                        continue
+                out.append(f"  in: {chain_str}")
+                prev_chain = chain
+            else:
+                prev_chain = None
         if len(matches) > limit:
             out.append(f"… +{len(matches) - limit} more")
         return "\n".join(out)
@@ -1451,21 +1486,29 @@ class Session:
     # ------------------------------------------------------------------ helpers
 
     def _resolve_with_hint(self, resolver: "Resolver", action: Action):
-        """Resolve an action, turning a missing capability into a hint that names
-        the nodes which do expose it (e.g. `add` lives on the product, not the
-        cart), so the agent can retarget instead of looping."""
+        """Resolve an action, turning a missing capability into a hint that
+        names the nodes which do expose it (e.g. `add` lives on the product,
+        not the cart), so the agent can retarget instead of looping - and
+        what the target itself offers, so a wrong verb (``click`` vs
+        ``activate`` vs the always-available ``tap``) is corrected in one
+        round-trip instead of an INSPECT.
+        """
         from somnus.errors import ErrorCode as _E
 
         try:
             return resolver.resolve(action)
         except SomnusError as err:
             if err.code == _E.CAPABILITY_NOT_FOUND and action.capability:
+                node = self.result.find(action.ref or "") if self.result else None
+                own = node.cap_names() if node else []
+                if own:
+                    err.message = (
+                        f"no {action.capability} on {action.ref}; it has: "
+                        f"{', '.join(own)} (tap always works via gesture)"
+                    )
                 holders = self._capability_holders(action.capability)
                 if holders:
-                    err.message = (
-                        f"{action.ref} has no {action.capability}; "
-                        f"try one of: {', '.join(holders)}"
-                    )
+                    err.message += f"; {action.capability} on: {', '.join(holders)}"
             raise
 
     def _capability_holders(self, capability: str, *, limit: int = 3) -> list[str]:
@@ -1805,6 +1848,34 @@ def _find_parent(root: SemanticNode, target: SemanticNode) -> SemanticNode | Non
                 return node
             stack.append(child)
     return None
+
+
+def _ancestor_chain(root: SemanticNode, target: SemanticNode) -> list[SemanticNode]:
+    """The ancestors of ``target``, window first, parent last.
+
+    Find reports these so a hit is never an orphan: a BUTTON "确定" is only
+    meaningful once the agent knows it sits in WINDOW "系统设置" > TEXT
+    "是否删除". The chain runs window first, parent last, and carries refs so
+    the next action can scope into an ancestor (FIND "…" in REF) without
+    another inspect.
+    """
+    chain: list[SemanticNode] = []
+    parent = _find_parent(root, target)
+    while parent is not None:
+        chain.append(parent)
+        parent = _find_parent(root, parent)
+    chain.reverse()
+    return chain
+
+
+def _breadcrumb_entry(node: SemanticNode) -> str:
+    """One breadcrumb entry: named nodes carry their type and name; anonymous
+    structural wrappers (the GROUP/Pane nesting every Android screen is built
+    from) carry only the ref - they exist to be scoped into, not read.
+    """
+    if node.name:
+        return f"{node.display_type} {node.ref} {_q(node.name)}"
+    return node.ref
 
 
 def _node_matches(node: SemanticNode, query: str) -> bool:
