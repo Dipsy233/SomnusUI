@@ -118,10 +118,22 @@ def run_agent(
     system_prompt: str | None = None,
 ) -> str:
     """Drive ``session``'s tools until the model stops calling them."""
+    # Fast path first: an utterance the router can answer deterministically
+    # (打开X / a remembered plan) skips the LLM entirely - the vendor
+    # assistants' latency advantage, minus their integrations.
+    from somnus.runtime import fastpath
+
+    routed = fastpath.try_route(task, session)
+    if routed is not None:
+        if verbose:
+            print(f"\n⚡ fastpath:\n   {routed}")
+        return routed.splitlines()[0]
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt or SYSTEM_PROMPT + TOOL_RULES},
         {"role": "user", "content": task},
     ]
+    first_action: str | None = None
 
     for step in range(1, max_steps + 1):
         response = client.chat(messages)
@@ -139,6 +151,11 @@ def run_agent(
 
         if not tool_calls:
             final = (message.get("content") or "").strip()
+            if first_action:
+                # Plan solved and short enough to be a reach, not a
+                # manipulation: let the router replay it verbatim next time.
+                if step <= 3:
+                    fastpath.remember(task, first_action)
             if verbose:
                 print(f"\n🤖 完成: {final}")
             return final
@@ -149,6 +166,15 @@ def run_agent(
                 args = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
+            # Remember how this plan started: a system-level opener (launch /
+            # deeplink / switch) is about reaching a screen, not touching live
+            # tree state, so the fastpath router may replay it verbatim next
+            # time the same utterance comes.
+            if first_action is None:
+                if name == "switch" and args.get("target") == "launch" and args.get("app"):
+                    first_action = f'APP launch "{args["app"]}"'
+                elif name == "call" and str(args.get("action", "")).upper().startswith("APP "):
+                    first_action = str(args["action"])
             result = call_tool(session, name, args)
 
             if verbose:

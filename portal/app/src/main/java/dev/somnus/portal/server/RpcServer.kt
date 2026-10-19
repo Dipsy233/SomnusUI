@@ -224,6 +224,7 @@ class RpcServer(
                 )
                 "config" -> executor.config(params)
                 "launch" -> executor.launch(params.getString("package"))
+                "openuri" -> executor.openUri(params.getString("uri"))
                 "apps" -> executor.apps()
                 "clipboard.set" -> executor.setClipboard(params.getString("text"))
                 "events" -> executor.events()

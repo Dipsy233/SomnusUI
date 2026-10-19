@@ -454,6 +454,27 @@ class AndroidProvider:
                 self._apps = []
         return self._apps
 
+    def open_uri(self, uri: str) -> ExecResult:
+        """Deep link: ACTION_VIEW at ``uri`` (``CALL system.open("...")``
+        / ``APP open <uri>``). The fast lane the vendor assistants ride - an
+        in-app page reached by scheme skips every navigation step."""
+        try:
+            result = self._rpc("openuri", {"uri": uri})
+        except PortalError as err:
+            code = "APP_NOT_FOUND" if err.code == "APP_NOT_FOUND" else (
+                PORTAL_ERROR_CODES.get(err.code or "", "NATIVE_EXECUTION_FAILED")
+            )
+            return ExecResult(ok=False, error=code, message=str(err))
+        if bool((result or {}).get("ok")):
+            self._bump_events()
+            return ExecResult(ok=True)
+        err_name = str((result or {}).get("error") or "ACTION_FAILED")
+        return ExecResult(
+            ok=False,
+            error=PORTAL_ERROR_CODES.get(err_name, "APP_NOT_FOUND"),
+            message=str((result or {}).get("message") or uri),
+        )
+
     def set_clipboard(self, text: str) -> bool:
         """The clipboard write half of the paste route (doc §4.2)."""
         try:

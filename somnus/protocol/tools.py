@@ -92,7 +92,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "back, next/prev (launcher pages), recents (task switcher), "
             "notifications / quick_settings (the pull-down shades; on merged-"
             "shade devices both open the same panel), launch (open an app "
-            "through the platform's own API with `app`). Discards every ref."
+            "through the platform's own API with `app`), open (deep-link: "
+            "jump straight to an in-app page via a scheme URI in `app`, e.g. "
+            "taobao://home; ERR APP_NOT_FOUND means no app handles it - fall "
+            "back to launch + UI navigation). Discards every ref."
         ),
         "inputSchema": {
             "type": "object",
@@ -101,20 +104,21 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": [
                         "home", "back", "next", "prev", "recents",
-                        "notifications", "quick_settings", "launch",
+                        "notifications", "quick_settings", "launch", "open",
                     ],
                     "description": (
                         "home = launcher; back = previous screen; next/prev = "
                         "pager page; recents = task switcher; notifications / "
                         "quick_settings = the pull-down panels; launch = open "
-                        "the app named in `app`"
+                        "the app named in `app`; open = deep-link URI in `app`"
                     ),
                 },
                 "app": {
                     "type": "string",
                     "description": (
                         "with target=launch: app label or package, e.g. '微信' "
-                        "or 'com.tencent.mm'"
+                        "or 'com.tencent.mm'; with target=open: scheme URI, "
+                        "e.g. 'taobao://home'"
                     ),
                 },
             },

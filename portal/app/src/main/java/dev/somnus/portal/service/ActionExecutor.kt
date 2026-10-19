@@ -143,6 +143,54 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
         return out
     }
 
+    /**
+     * Deep link: jump straight to a URI the app registers for
+     * (ACTION_VIEW). This is the fast lane the vendor assistants ride: an
+     * in-app page reached by intent skips every navigation step (and every
+     * LLM round-trip between them). Same foreground verification as
+     * [launch] - a dropped start must not read as success.
+     */
+    fun openUri(uri: String): JSONObject {
+        val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
+        return try {
+            val context = svc.applicationContext
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(uri)
+            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (intent.resolveActivity(context.packageManager) == null) {
+                return err("APP_NOT_FOUND", "no app handles $uri")
+            }
+            context.startActivity(intent)
+            val targetPkg = intent.resolveActivity(context.packageManager)?.packageName ?: ""
+            val verified = java.util.concurrent.atomic.AtomicBoolean(false)
+            val verifier = Thread {
+                try {
+                    Thread.sleep(1200)
+                    val windows = svc.snapshot(true).optJSONArray("windows") ?: JSONArray()
+                    for (i in 0 until windows.length()) {
+                        val w = windows.optJSONObject(i) ?: continue
+                        if (w.optBoolean("active") && w.optString("pkg") == targetPkg) {
+                            verified.set(true)
+                            break
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+            verifier.isDaemon = true
+            verifier.start()
+            verifier.join(5000)
+            if (verified.get()) ok()
+            else JSONObject()
+                .put("ok", false)
+                .put("error", "APP_NOT_IN_FOREGROUND")
+                .put("message", "opened $uri but could not confirm it reached the foreground")
+        } catch (t: Throwable) {
+            err("ACTION_FAILED", t.message ?: "openUri failed")
+        }
+    }
+
     /** set_text channel 2's clipboard write half (doc §4.2 clipboard.set). */
     fun setClipboard(text: String): JSONObject {
         val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")

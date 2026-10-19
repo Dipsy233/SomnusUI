@@ -102,12 +102,13 @@ _SYSTEM_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: ``APP launch "<label or package>"`` / ``APP search "..."`` - launch an app
-#: through the platform's own API, no tree needed. The verb is `launch`, not
-#: `open`: `+open` is a capability some controls print, and the two must not
-#: read as the same gesture.
+#: ``APP launch "<label or package>"`` / ``APP search "..."`` /
+#: ``APP open <uri>`` - launch an app through the platform's own API, no tree
+#: needed; ``open`` is the deep-link lane (ACTION_VIEW at a scheme URI). The
+#: launch verb is `launch`, not `open`: `+open` is a capability some controls
+#: print, and the two must not read as the same gesture.
 _APP_RE = re.compile(
-    r"^APP\s+(?P<op>launch|search)\s+(?P<query>\"(?:[^\"\\]|\\.)*\"|\S+)\s*$",
+    r"^APP\s+(?P<op>launch|search|open)\s+(?P<query>\"(?:[^\"\\]|\\.)*\"|\S+)\s*$",
     re.IGNORECASE,
 )
 

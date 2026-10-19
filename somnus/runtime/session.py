@@ -1620,7 +1620,11 @@ class Session:
         * ``launch`` (with ``app=``) - open an app through the platform's own
           launch API. No tree, no icon clicking: what it reaches (a not-yet-
           instantiated app, a folder page away) is exactly what no tree can
-          name.
+          name;
+        * ``open`` (with ``app=`` a scheme URI) - deep link: jump straight to
+          an in-app page (``taobao://home``). The fast lane the vendor
+          assistants ride - one intent replaces a whole navigation
+          conversation. ERR APP_NOT_FOUND means no app handles the URI.
 
         Every switch discards every ref - the screen they named is gone.
         """
@@ -1639,6 +1643,13 @@ class Session:
                     "SWITCH launch needs an app: SWITCH launch <label-or-package>",
                 )
             return self.app_action(Action(kind="app", query=app, scope="launch"))
+        if target == "open":
+            if not app:
+                return _err(
+                    "INVALID_ARGUMENT",
+                    "SWITCH open needs a scheme URI: SWITCH open <uri>",
+                )
+            return self.app_action(Action(kind="app", query=app, scope="open"))
         if target in ("home", "back", "recents", "notifications", "quick_settings"):
             result = android_global(target)
         elif target in ("next", "prev"):
@@ -1653,7 +1664,7 @@ class Session:
             return _err(
                 "INVALID_ARGUMENT",
                 f"unknown switch target {target!r}; use "
-                "home|back|next|prev|recents|notifications|quick_settings|launch <app>",
+                "home|back|next|prev|recents|notifications|quick_settings|launch <app>|open <uri>",
             )
         if not result.ok:
             return SomnusError(
@@ -1705,12 +1716,16 @@ class Session:
         ).render()
 
     def app_action(self, action: Action) -> str:
-        """``APP launch "<label or package>"`` / ``APP search "..."``.
+        """``APP launch "<label or package>"`` / ``APP open <uri>`` /
+        ``APP search "..."``.
 
         Launch goes through the platform's own API (PackageManager launch
         intent), never by clicking icons in a tree: what it reaches is
         exactly what no tree can name - an app whose launcher icon is pages
-        deep in a folder, or not instantiated at all.
+        deep in a folder, or not instantiated at all. ``open`` is the same
+        lane one level deeper: a deep-link URI lands on an in-app page
+        directly, skipping every navigation step (the fast lane the vendor
+        assistants ride).
         """
         lister = getattr(self.provider, "list_apps", None)
         launcher = getattr(self.provider, "launch_app", None)
@@ -1720,6 +1735,23 @@ class Session:
                 "APP is an Android action; this provider cannot launch apps",
             )
         query = action.query or ""
+        if action.scope == "open":
+            opener = getattr(self.provider, "open_uri", None)
+            if opener is None:
+                return _err(
+                    "ACTION_NOT_SUPPORTED",
+                    "APP open needs a provider with the deep-link channel",
+                )
+            result = opener(query)
+            if result.ok:
+                self.registry = SessionRegistry()
+                self.result = None
+                self._bump_rev()
+                return f"OK app={query} rev={self.rev}\n~ refs discarded; OBSERVE"
+            return SomnusError(
+                result.error or ErrorCode.NATIVE_EXECUTION_FAILED,
+                message=result.message or query,
+            ).render()
         if action.scope == "search":
             apps = lister() if lister else []
             hits = [
