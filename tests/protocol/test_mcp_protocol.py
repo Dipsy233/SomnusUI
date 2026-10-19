@@ -237,18 +237,16 @@ def test_serve_answers_malformed_json_with_a_parse_error(session):
 def test_make_mcp_server_lists_the_same_tools(session):
     mcp = pytest.importorskip("mcp")  # the optional dependency
 
-    from somnus.protocol.mcp_server import make_mcp_server
+    from somnus.protocol.mcp_server import _make_list_tools, make_mcp_server
 
-    server = make_mcp_server(session)
-    # The low-level Server keeps its handlers on a request-handler table; the
-    # tool list is produced by the registered list_tools callback. Calling it
-    # through the server is the closest check that does not start a transport.
+    make_mcp_server(session)
+    # mcp 2.x registers handlers as constructor callbacks taking (ctx, params);
+    # call the list_tools handler directly - the closest check that does not
+    # start a transport.
     import asyncio
 
-    listed = asyncio.run(server.request_handlers[mcp.types.ListToolsRequest](
-        mcp.types.ListToolsRequest(method="tools/list")
-    ))
-    tools = listed.root.tools
+    listed = asyncio.run(_make_list_tools(session)(None, None))
+    tools = listed.tools
     assert [t.name for t in tools] == [spec["name"] for spec in TOOL_SPECS]
 
 
