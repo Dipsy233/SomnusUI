@@ -37,6 +37,13 @@ class NativeRef:
     class_name: str | None = None
     control_type: str | None = None
     path: tuple[int, ...] = ()
+    #: The element's own visible label (text or contentDescription) at
+    #: snapshot time. Android's Portal re-resolves a node key by walking the
+    #: live tree by index - after a re-render the path can land on a stranger
+    #: - so the label rides along as the identity the Portal verifies before
+    #: acting (a mismatch is STALE_TARGET, never a mis-fire). Not part of the
+    #: fingerprint: fingerprint evidence rules live in compute_fingerprint.
+    label: str | None = None
     #: The element's own Win32 window handle, or 0 when it maps none.
     #:
     #: This is the precondition for the ``WM_SETTEXT`` / ``EM_REPLACESEL`` write

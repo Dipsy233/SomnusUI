@@ -229,7 +229,13 @@ class SomnusAccessibilityService : AccessibilityService() {
      * {ok:false, error, message}; error codes match the host's
      * PORTAL_ERROR_CODES table.
      */
-    fun perform(windowId: Int, key: String, actionName: String, value: String?): JSONObject {
+    fun perform(
+        windowId: Int,
+        key: String,
+        actionName: String,
+        value: String?,
+        expect: org.json.JSONObject?,
+    ): JSONObject {
         val actionId = TreeSerializer.actionId(actionName)
             ?: return err("UNSUPPORTED", "unknown action $actionName")
 
@@ -237,6 +243,7 @@ class SomnusAccessibilityService : AccessibilityService() {
             ?: return err("NODE_GONE", "no node for key $key; re-observe")
 
         return node.use { target ->
+            identityMismatch(target, expect)?.let { return@use it }
             if (!target.isEnabled) return@use err("TARGET_DISABLED", "node is disabled")
             when (actionName.uppercase()) {
                 "SET_TEXT" -> {
@@ -320,11 +327,12 @@ class SomnusAccessibilityService : AccessibilityService() {
      * bounds centre. Coordinates exist only inside the Portal; the host marks
      * the result OK_UNVERIFIED unless its delta proves the effect.
      */
-    fun gesture(windowId: Int, key: String, kind: String): JSONObject {
+    fun gesture(windowId: Int, key: String, kind: String, expect: org.json.JSONObject?): JSONObject {
         if (!gesturesEnabled) return err("UNSUPPORTED", "gesture channel disabled")
         val node = findByKey(windowId, key)
             ?: return err("NODE_GONE", "no node for key $key")
         return node.use { target ->
+            identityMismatch(target, expect)?.let { return@use it }
             val r = Rect()
             target.getBoundsInScreen(r)
             if (r.isEmpty) return@use err("ACTION_FAILED", "empty bounds")
@@ -375,6 +383,36 @@ class SomnusAccessibilityService : AccessibilityService() {
             runCatching { root.recycle() }
             return null
         }
+    }
+
+    /**
+     * Verify the live node still matches the identity the host snapshotted.
+     *
+     * The key path is the walk order of the last snapshot, so after a
+     * re-render it can land on a DIFFERENT node - and only checking "did we
+     * resolve anything" would act on a stranger (found live: a tap aimed at
+     * a launcher folder icon opened an unrelated app after the desktop
+     * re-paged). The host sends the identity it compiled the ref from
+     * (`expect`: cls, label); a mismatch means the screen moved and the
+     * agent must re-observe, not mis-fire.
+     *
+     * Only fields the host actually provides are compared, so an unnamed
+     * icon (no text, no description) is verified by class alone.
+     */
+    private fun identityMismatch(node: AccessibilityNodeInfo, expect: org.json.JSONObject?): JSONObject? {
+        if (expect == null) return null
+        val cls = expect.optString("cls", "")
+        if (cls.isNotEmpty() && node.className?.toString() != cls) {
+            return err("NODE_GONE", "stale key: class ${node.className} != $cls; re-observe")
+        }
+        val label = expect.optString("label", "")
+        if (label.isNotEmpty()) {
+            val live = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
+            if (live != label) {
+                return err("NODE_GONE", "stale key: label '$live' != '$label'; re-observe")
+            }
+        }
+        return null
     }
 
     private fun rootForWindow(windowId: Int): AccessibilityNodeInfo? {

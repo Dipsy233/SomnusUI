@@ -249,6 +249,11 @@ def convert_node(data: dict[str, Any], window_id: str) -> RawNode | None:
             class_name=cls,
             control_type=role,
             path=runtime_id,
+            # The identity the Portal verifies before acting on a key: after
+            # a re-render the key's path can land on a different node, and
+            # only cls+label distinguish "the element I snapshotted" from
+            # "whatever sits at that index now".
+            label=(data.get("desc") or data.get("text") or None),
         ),
         role=role,
         # Android's ``text`` IS the visible label: it becomes ``name`` (the

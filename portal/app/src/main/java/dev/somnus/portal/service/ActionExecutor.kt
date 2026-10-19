@@ -30,9 +30,15 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
         }
     }
 
-    fun perform(windowId: Int, key: String, action: String, value: String?): JSONObject {
+    fun perform(
+        windowId: Int,
+        key: String,
+        action: String,
+        value: String?,
+        expect: org.json.JSONObject?,
+    ): JSONObject {
         val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
-        return svc.perform(windowId, key, action, value)
+        return svc.perform(windowId, key, action, value, expect)
     }
 
     fun global(action: String): JSONObject {
@@ -46,9 +52,19 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
         return svc.page(direction)
     }
 
-    fun gesture(windowId: Int, key: String, kind: String): JSONObject {
+    fun gesture(windowId: Int, key: String, kind: String, expect: org.json.JSONObject?): JSONObject {
         val svc = service() ?: return err("SERVICE_DISCONNECTED", "accessibility service not bound")
-        return svc.gesture(windowId, key, kind)
+        return svc.gesture(windowId, key, kind, expect)
+    }
+
+    /** Brain-side: take the spoken request (null request = nothing pending). */
+    fun assistantPoll(): JSONObject =
+        dev.somnus.portal.voice.AssistantBus.pollJson()
+
+    /** Brain-side: post the final answer (the session speaks/shows it). */
+    fun assistantReply(id: String, text: String): JSONObject {
+        dev.somnus.portal.voice.AssistantBus.reply(id, text)
+        return org.json.JSONObject().put("ok", true)
     }
 
     /**

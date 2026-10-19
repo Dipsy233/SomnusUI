@@ -291,6 +291,10 @@ class AndroidProvider:
             "node": f"{window_part.rsplit('/', 1)[1]}/"
             + "/".join(str(p) for p in ref.runtime_id),
             "action": action,
+            # Identity the Portal verifies before acting: the key path is a
+            # walk-order hint and lands on a stranger after a re-render; cls
+            # + label catch that (mismatch -> NODE_GONE -> STALE_TARGET).
+            "expect": _expect_of(ref),
         }
         if value is not None and primitive in ("set_text", "paste_text", "type_text"):
             params["value"] = str(value)
@@ -476,6 +480,7 @@ class AndroidProvider:
                     "window": int(ref.window_id.rsplit("/", 1)[1]),
                     "node": _key_of(ref),
                     "kind": kind,
+                    "expect": _expect_of(ref),
                 },
             )
         except PortalError:
@@ -508,3 +513,18 @@ def _key_of(ref: NativeRef) -> str:
     """
     window = ref.window_id.rsplit("/", 1)[1]
     return "/".join([window, *(".".join(str(p) for p in ref.runtime_id)).split(".")])
+
+
+def _expect_of(ref: NativeRef) -> dict[str, str]:
+    """The identity the Portal checks before acting on a node key.
+
+    Only non-empty fields are sent: an unnamed icon is verified by class
+    alone. (An older Portal ignores the field entirely - ``perform`` and
+    ``gesture`` accept unknown params - so this is backward-compatible.)
+    """
+    expect: dict[str, str] = {}
+    if ref.class_name:
+        expect["cls"] = ref.class_name
+    if ref.label:
+        expect["label"] = ref.label
+    return expect

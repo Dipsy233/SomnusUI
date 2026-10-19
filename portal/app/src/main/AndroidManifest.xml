@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Android 11+ package visibility: launch/apps must see every installed
          app's launcher activity, which is the whole point of the launch
@@ -53,5 +54,27 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- The device's digital assistant: long-press home / power-menu
+             assistant / corner swipe (ROM-mapped) wake the session. The
+             user picks Somnus in Settings → Apps → Default apps →
+             Digital assistant app. -->
+        <service
+            android:name=".voice.SomnusVoiceService"
+            android:exported="true"
+            android:label="Somnus 助手"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.voice"
+                android:resource="@xml/voice_interaction_service_config" />
+        </service>
+
+        <service
+            android:name=".voice.SomnusVoiceSessionService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
     </application>
 </manifest>

@@ -115,10 +115,11 @@ def run_agent(
     client: LlmClient,
     max_steps: int = 12,
     verbose: bool = True,
+    system_prompt: str | None = None,
 ) -> str:
     """Drive ``session``'s tools until the model stops calling them."""
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT + TOOL_RULES},
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT + TOOL_RULES},
         {"role": "user", "content": task},
     ]
 

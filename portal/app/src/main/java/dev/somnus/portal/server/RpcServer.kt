@@ -213,12 +213,18 @@ class RpcServer(
                     params.getString("node"),
                     params.getString("action"),
                     params.optString("value").takeIf { params.has("value") },
+                    params.optJSONObject("expect"),
                 )
                 "global" -> executor.global(params.getString("action"))
                 "page" -> executor.page(params.optString("direction", "next"))
                 "gesture" -> executor.gesture(
                     params.getInt("window"), params.getString("node"),
-                    params.optString("kind", "tap")
+                    params.optString("kind", "tap"),
+                    params.optJSONObject("expect"),
+                )
+                "assistant.poll" -> executor.assistantPoll()
+                "assistant.reply" -> executor.assistantReply(
+                    params.getString("id"), params.getString("text")
                 )
                 "config" -> executor.config(params)
                 "launch" -> executor.launch(params.getString("package"))
