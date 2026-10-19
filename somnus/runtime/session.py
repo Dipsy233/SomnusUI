@@ -1876,9 +1876,11 @@ def _breadcrumb_entry(node: SemanticNode) -> str:
     An interactive ancestor also carries its activation cap: a plain text
     with no claim of its own still answers a tap when a clickable ancestor
     consumes the touch (Android bubbles unhandled touches up to the
-    clickable container), so `TEXT tx2 / in: ... LISTITEM li1 "Wellcee"
-    +activate` is how the agent tells a live text from a dead one without
-    paying for a full cap list on every line.
+    clickable container). The annotation is one-directional: a cap is
+    platform-proven, so its presence guarantees the tap lands; its absence
+    only means the tree has no evidence - a touch listener sets no
+    clickable flag and stays invisible (found live: MIUI folder labels,
+    chain shows no cap, tap still opens the folder).
     """
     if node.name:
         base = f"{node.display_type} {node.ref} {_q(node.name)}"
