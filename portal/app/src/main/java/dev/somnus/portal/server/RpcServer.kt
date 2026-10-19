@@ -222,10 +222,6 @@ class RpcServer(
                     params.optString("kind", "tap"),
                     params.optJSONObject("expect"),
                 )
-                "assistant.poll" -> executor.assistantPoll()
-                "assistant.reply" -> executor.assistantReply(
-                    params.getString("id"), params.getString("text")
-                )
                 "config" -> executor.config(params)
                 "launch" -> executor.launch(params.getString("package"))
                 "apps" -> executor.apps()

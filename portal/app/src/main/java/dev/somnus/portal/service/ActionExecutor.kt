@@ -57,16 +57,6 @@ class ActionExecutor(private val service: () -> SomnusAccessibilityService?) {
         return svc.gesture(windowId, key, kind, expect)
     }
 
-    /** Brain-side: take the spoken request (null request = nothing pending). */
-    fun assistantPoll(): JSONObject =
-        dev.somnus.portal.voice.AssistantBus.pollJson()
-
-    /** Brain-side: post the final answer (the session speaks/shows it). */
-    fun assistantReply(id: String, text: String): JSONObject {
-        dev.somnus.portal.voice.AssistantBus.reply(id, text)
-        return org.json.JSONObject().put("ok", true)
-    }
-
     /**
      * Channel toggles (doc §7.1: both sides must opt in). Currently only
      * `gestures` is settable; unknown keys are ignored so future channels
