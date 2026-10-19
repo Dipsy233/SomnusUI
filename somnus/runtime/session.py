@@ -1014,8 +1014,18 @@ class Session:
     # ------------------------------------------------------------------ call
 
     def call(self, action: Action, *, confirmed: bool | None = None) -> CallOutcome:
-        if self.result is None:
-            self._recompile()
+        # Re-snapshot before acting. find/inspect already refresh for the same
+        # reason; call is where a stale ref does damage: the Portal resolves a
+        # node key by walking the live tree by index, so a key captured before
+        # the screen moved lands on whatever occupies that path NOW (found
+        # live: a tap aimed at a folder icon opened an unrelated app after the
+        # desktop re-paged between the observation and the call). The
+        # registry reconciles by fingerprint, so a ref whose element survives
+        # still points at it and carries a FRESH node key; one whose element
+        # died raises STALE_TARGET below instead of mis-firing. rev only
+        # moves when the semantic projection changes, so an unchanged screen
+        # costs one snapshot and nothing else.
+        self._recompile()
         assert self.result is not None
 
         # Window focus is a special session-level capability. The ref -> id
@@ -1032,25 +1042,23 @@ class Session:
         if win is not None and action.capability == "focus":
             return self.focus_window(action.ref or "")
 
-        # Stale check: the ref must still resolve in the current compilation.
+        # Stale check: the ref must resolve in the FRESH compilation (the
+        # snapshot above); the registry kept refs whose element survived.
         if self.result.find(action.ref or "") is None:
-            self._recompile()
-            assert self.result is not None
-            if self.result.find(action.ref or "") is None:
-                # Tell the agent what the ref *was*, so it can decide whether
-                # the element moved (find again) or is gone (give up).
-                record = self.registry.records.get(action.ref or "")
-                if record is not None:
-                    raise SomnusError(
-                        ErrorCode.STALE_TARGET,
-                        ref=action.ref,
-                        message=(
-                            f"was {record.role} "
-                            + (f"{record.name!r} " if record.name else "")
-                            + "; refind by name (FIND) or observe"
-                        ),
-                    )
-                raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
+            # Tell the agent what the ref *was*, so it can decide whether
+            # the element moved (find again) or is gone (give up).
+            record = self.registry.records.get(action.ref or "")
+            if record is not None:
+                raise SomnusError(
+                    ErrorCode.STALE_TARGET,
+                    ref=action.ref,
+                    message=(
+                        f"was {record.role} "
+                        + (f"{record.name!r} " if record.name else "")
+                        + "; refind by name (FIND) or observe"
+                    ),
+                )
+            raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
 
         # Ambiguity check: the ref's fingerprint matched more than one element.
         if action.ref in self._ambiguous_refs:

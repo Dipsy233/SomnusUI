@@ -46,6 +46,38 @@ def _session(tree, **policy_kw):
     return Session(MockProvider(fixtures=[tree]), allow_packs=False, policy=Policy(**policy_kw))
 
 
+def _inject_fill_on_recompile(session):
+    """Make every (re)compile carry a hand-written two-route `fill` capability.
+
+    call() re-snapshots before acting, so a capability appended to the
+    compiled node once would be wiped by the pre-call refresh. Hooking the
+    compile itself is the identity-stable way to simulate a pack-granted cap.
+    """
+    from somnus.ir.capability import Capability, ParamSpec, PrimitiveStep
+
+    base = session._recompile
+
+    def recompile():
+        result = base()
+        for n in result.root.walk():
+            if n.role == "input" and not any(c.name == "fill" for c in n.caps):
+                n.caps.append(
+                    Capability(
+                        name="fill",
+                        level="semantic",
+                        params={"text": ParamSpec(type="string", required=True)},
+                        via=[
+                            PrimitiveStep(primitive="set_text", target="$self", value="$text"),
+                            PrimitiveStep(primitive="focus", target="$self"),
+                            PrimitiveStep(primitive="type_text", target="$self", value="$text"),
+                        ],
+                    )
+                )
+        return result
+
+    session._recompile = recompile
+
+
 # ---------------------------------------------------------------------------
 # 缺失接口 -> 试用下一条路线
 # ---------------------------------------------------------------------------
@@ -82,28 +114,13 @@ def test_a_chain_step_that_declines_is_skipped():
     contenteditable 都是这个形状）。所以运行时还要再筛一次。
     """
     # 一条链里同时有原生和键盘两条路线：用 pack 写死，不受 pattern 门控影响
-    from somnus.compiler.pack_schema import Pack
-    from somnus.ir.capability import Capability, ParamSpec, PrimitiveStep
-
     field = _n("edit", "Name", patterns=frozenset({"value", "text"}))
     session = _session(_tree([field]), allow_keyboard=True)
+    _inject_fill_on_recompile(session)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
 
-    # 手工装一条双路线能力，模拟"原生优先，不行就键入"
-    node.caps.append(
-        Capability(
-            name="fill",
-            level="semantic",
-            params={"text": ParamSpec(type="string", required=True)},
-            via=[
-                PrimitiveStep(primitive="set_text", target="$self", value="$text"),
-                PrimitiveStep(primitive="focus", target="$self"),
-                PrimitiveStep(primitive="type_text", target="$self", value="$text"),
-            ],
-        )
-    )
-
+    # 原生接口存在但运行时被拒：链必须继续走到键盘
     real_supports = MockProvider._supports
     MockProvider._supports = staticmethod(
         lambda n, prim: False if prim == "set_text" else real_supports(n, prim)
@@ -170,24 +187,11 @@ def test_native_routes_are_unaffected_by_the_keyboard_default():
 
 def test_route_is_remembered_and_tried_first():
     """记住上次真正奏效的接口，下次先试它。"""
-    from somnus.ir.capability import Capability, ParamSpec, PrimitiveStep
-
     field = _n("edit", "Name", patterns=frozenset({"value", "text"}))
     session = _session(_tree([field]), allow_keyboard=True)
+    _inject_fill_on_recompile(session)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
-    node.caps.append(
-        Capability(
-            name="fill",
-            level="semantic",
-            params={"text": ParamSpec(type="string", required=True)},
-            via=[
-                PrimitiveStep(primitive="set_text", target="$self", value="$text"),
-                PrimitiveStep(primitive="focus", target="$self"),
-                PrimitiveStep(primitive="type_text", target="$self", value="$text"),
-            ],
-        )
-    )
 
     # 让原生先被拒一次，于是记住的是 type_text
     real_supports = MockProvider._supports
@@ -322,24 +326,11 @@ def test_focus_followed_by_typing_does_not_stop_early():
 
 def test_element_declining_an_interface_is_recorded_in_the_audit():
     """审计里区分"元素没有这个接口"和"有这个接口但调用失败"。"""
-    from somnus.ir.capability import Capability, ParamSpec, PrimitiveStep
-
     field = _n("edit", "Name", patterns=frozenset({"value", "text"}))
     session = _session(_tree([field]), allow_keyboard=True)
+    _inject_fill_on_recompile(session)
     session.observe()
     node = next(n for n in session.result.root.walk() if n.role == "input")
-    node.caps.append(
-        Capability(
-            name="fill",
-            level="semantic",
-            params={"text": ParamSpec(type="string", required=True)},
-            via=[
-                PrimitiveStep(primitive="set_text", target="$self", value="$text"),
-                PrimitiveStep(primitive="focus", target="$self"),
-                PrimitiveStep(primitive="type_text", target="$self", value="$text"),
-            ],
-        )
-    )
 
     real_supports = MockProvider._supports
     MockProvider._supports = staticmethod(
