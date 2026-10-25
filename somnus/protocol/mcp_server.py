@@ -41,8 +41,19 @@ def build_session(**kwargs: Any) -> Session:
             allow_keyboard=settings.allow_keyboard,
         )
 
-    provider = get_provider(kwargs.pop("provider", "auto"), **kwargs)
-    return Session(provider, policy=policy)
+    provider_name = (kwargs.pop("provider", "auto") or "auto").lower()
+    provider = get_provider(provider_name, **kwargs)
+    session = Session(provider, policy=policy)
+    # Remember how to rebuild a local provider: ``SWITCH main`` from the child
+    # session swaps the provider (only one may hold UIA state, so the old one
+    # is released on the way out) and has to construct a fresh one rather than
+    # reuse a closed one. Without this the MCP server could enter the child
+    # session but never leave it. "auto" resolves to the real Windows provider
+    # here; where it falls back to the replay provider the factory simply
+    # rebuilds that, and an empty window list is the honest answer.
+    if provider_name in ("auto", "uia", "windows"):
+        session._local_provider_factory = lambda: get_provider(provider_name)
+    return session
 
 
 def _make_list_tools(session: Session):
