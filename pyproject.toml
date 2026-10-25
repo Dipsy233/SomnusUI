@@ -37,7 +37,11 @@ include = ["somnus*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# The default run is the portable suite. The S2 windows tests drive real
+# applications, so a machine that happens to have the demo app built must not
+# run them by accident; `pytest -m windows` (whose -m overrides this one) is
+# the documented way to run them.
+addopts = "-q -m 'not windows'"
 markers = [
     "windows: tests requiring Windows + UIA",
     "e2e: end-to-end tests requiring a live application",
