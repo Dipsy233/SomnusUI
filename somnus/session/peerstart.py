@@ -64,10 +64,18 @@ def _project_dir() -> Path:
 
 
 def build_command(python: str | None = None, project: str | None = None) -> str:
-    """The exact command line the Run key should hold."""
+    """The exact command line the Run key should hold.
+
+    The entry point is :mod:`somnus.session.peerboot`, not the peer command
+    directly: the key fires during the earliest phase of the child session's
+    logon, where a peer started under ``pythonw`` could exit silently (no
+    console, nowhere for a traceback) and leave the agent side waiting out its
+    whole connect timeout. The boot module logs every attempt and retries the
+    quick-exit startup race, so a failure is at least written down.
+    """
     interpreter = python or _python_for_run_key()
     root = Path(project) if project else _project_dir()
-    return f'"{interpreter}" -m somnus.cli child-session peer --project "{root}"'
+    return f'"{interpreter}" -m somnus.session.peerboot --project "{root}"'
 
 
 def register(
