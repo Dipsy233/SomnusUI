@@ -62,6 +62,106 @@ class Verifier:
             return VerifyResult(status="OK_UNVERIFIED")
         return VerifyResult(status="OK", checked=checked)
 
+    def verify_grouped(
+        self,
+        step_effects: list[tuple[int, str, list[Effect]]],
+        delta,
+    ) -> VerifyResult:
+        """Verify a whole batch's effects against one combined delta.
+
+        A batch settles once, at its end, so a step's effects are checked
+        against the *final* state rather than the state right after that step.
+        Cumulative declarations are therefore grouped per field: two steps that
+        each declare ``cart.count += 1`` expect the final value to be the
+        baseline + 2, and checking each step's own ``+1`` against the combined
+        delta would report a false violation (the first step's ``+1`` is not
+        visible as such once the second has also landed).
+
+        ``step_effects`` carries ``(step number, action ref, effects)`` per
+        executed step; the action ref is what ``$self`` resolves against. Steps
+        that never ran must not be passed in - their effects did not happen.
+        """
+        groups: dict[tuple[str, str], list[tuple[int, str, Effect]]] = {}
+        for step_no, action_ref, effects in step_effects:
+            for effect in effects:
+                target = effect.target
+                if target == "$self":
+                    target = action_ref
+                node = self.by_ref.get(target) or self.by_entity.get(target)
+                if node is None:
+                    # Unknown targets are unverifiable, as in verify().
+                    continue
+                groups.setdefault((node.ref, effect.field), []).append(
+                    (step_no, action_ref, effect)
+                )
+
+        checked = 0
+        failed: list[str] = []
+        for (node_ref, field), entries in groups.items():
+            node = self.by_ref.get(node_ref)
+            if node is None:
+                continue
+            outcome = self._check_group(node, field, entries, delta)
+            if outcome is None:
+                continue
+            checked += 1
+            if outcome is False:
+                steps = ",".join(str(no) for no, _r, _e in entries)
+                failed.append(f"step {steps}: {entries[-1][2].render()}")
+        if failed:
+            return VerifyResult(
+                status="EFFECT_NOT_CONFIRMED",
+                checked=checked,
+                failed=failed,
+            )
+        if checked == 0:
+            return VerifyResult(status="OK_UNVERIFIED")
+        return VerifyResult(status="OK", checked=checked)
+
+    def _check_group(
+        self,
+        node: SemanticNode,
+        field: str,
+        entries: list[tuple[int, str, Effect]],
+        delta,
+    ) -> bool | None:
+        """Check one field's cumulative expectation against the final state.
+
+        ``=``/``!=``/``contains``/``startswith`` are absolute predicates: the
+        last declaration on the field wins, and it must hold at the end.
+        ``+=``/``-=`` accumulate: every declared increment sums onto the
+        pre-batch baseline.
+        """
+        increments = [e for _n, _r, e in entries if e.op in ("+=", "-=")]
+        if increments:
+            total = 0.0
+            saw_increment = False
+            for effect in increments:
+                value = _num(effect.value)
+                if value is None:
+                    return None  # a non-numeric increment cannot be summed
+                saw_increment = True
+                total += value if effect.op == "+=" else -value
+            base = self.baseline.get(f"{node.ref}.{field}")
+            if not saw_increment or base is None:
+                return None
+            # The final value comes from the delta, not from ``node``: the
+            # verifier's node objects predate the batch, so their attributes
+            # are the state *before* any step ran. Only a field the delta does
+            # not mention can be read off the node - it did not change.
+            current = None
+            for ref, field_name, _old, new in getattr(delta, "changed", ()):
+                if ref == node.ref and field_name == field:
+                    current = new
+            if current is None:
+                current = _field_value(node, field)
+            return _loose_eq(_num(current), _num(base) + total)
+
+        # Absolute predicate: the last declaration on this field is the one the
+        # final state must satisfy.
+        _step_no, action_ref, effect = entries[-1]
+        return self._check(effect, action_ref, delta)
+
     # -- effect evaluation --------------------------------------------------
 
     def _check(self, effect: Effect, action_ref: str, delta) -> bool | None:

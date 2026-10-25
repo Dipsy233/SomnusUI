@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from somnus.errors import parse_error
+from somnus.errors import ErrorCode, SomnusError, parse_error
 from somnus.ir.action import Action
 
 # ---------------------------------------------------------------------------
@@ -91,6 +91,11 @@ FORBIDDEN_VERBS = frozenset(
         "invoke_native",
     }
 )
+
+#: Upper bound on the statements one batch call may carry. A batch is a
+#: convenience, not a script: a plan that needs more than this many steps is
+#: long enough that the agent should look at the result halfway through.
+MAX_BATCH_STATEMENTS = 20
 
 _ARG_RE = re.compile(
     r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?(.+?)\s*$', re.DOTALL
@@ -168,6 +173,96 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     if head in FORBIDDEN_VERBS:
         raise parse_error(f"primitive verb '{head}' is not allowed")
     raise parse_error(f"unrecognized action: {raw[:60]}")
+
+def parse_call_block(text: str, rev: int | None = None) -> list[Action]:
+    """Parse a block of CALL statements, one per line, into actions.
+
+    This is the batch form of ``CALL``: the ``call`` tool accepts several
+    statements, which the session then validates as a whole and executes in
+    one round trip. Blank lines and whole-line ``#`` comments are ignored.
+
+    Splitting is quote- and paren-aware: a CALL argument may contain a real
+    line feed (JSON delivers one unescaped), and a naive ``splitlines`` would
+    cut that statement in half. A split therefore only happens outside quotes
+    and at paren depth 0.
+
+    Raises ``PARSE_ERROR`` naming the line number for anything that is not a
+    CALL, and for a block longer than :data:`MAX_BATCH_STATEMENTS`.
+    """
+    raw = text.strip()
+    if not raw:
+        raise parse_error("empty action")
+    statements = _split_statements(raw)
+    statements = [
+        (line_no, stmt) for line_no, stmt in statements if not stmt.startswith("#")
+    ]
+    if not statements:
+        raise parse_error("empty action")
+    if len(statements) > MAX_BATCH_STATEMENTS:
+        raise parse_error(
+            f"a batch takes at most {MAX_BATCH_STATEMENTS} statements "
+            f"(got {len(statements)})"
+        )
+    actions: list[Action] = []
+    for line_no, stmt in statements:
+        try:
+            action = parse_action(stmt, rev)
+        except SomnusError as err:
+            # The inner message already carries the usage hint when
+            # parse_error built it; wrapping adds only the line number.
+            raise SomnusError(
+                ErrorCode.PARSE_ERROR, message=f"line {line_no}: {err.message}"
+            ) from err
+        if action.kind != "call":
+            raise parse_error(
+                f"line {line_no}: a batch takes CALL statements only "
+                f"(got {action.kind.upper()})"
+            )
+        actions.append(action)
+    return actions
+
+
+def _split_statements(text: str) -> list[tuple[int, str]]:
+    """Split a block into ``(1-based line number, statement)`` pairs.
+
+    A newline ends a statement only outside quotes and at paren depth 0, so
+    multi-line argument text stays inside the statement that carries it.
+    """
+    pairs: list[tuple[int, str]] = []
+    current: list[str] = []
+    quote: str | None = None
+    depth = 0
+    line_no = 1
+    start_line = 1
+    for ch in text:
+        if ch == "\n":
+            line_no += 1
+            if quote is None and depth == 0:
+                stmt = "".join(current).strip()
+                if stmt:
+                    pairs.append((start_line, stmt))
+                current = []
+                start_line = line_no
+                continue
+            current.append(ch)
+            continue
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        current.append(ch)
+    tail = "".join(current).strip()
+    if tail:
+        pairs.append((start_line, tail))
+    return pairs
+
 
 def parse_find(text: str) -> Action:
     raw = text.strip()

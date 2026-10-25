@@ -312,8 +312,34 @@ that were tried and rejected are in [docs/child-session.md](docs/child-session.m
 | `observe` | L0 overview of the target window | SUI-Text |
 | `find` | `FIND [type] "query" [in ref]` | matching entity lines |
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 detail |
-| `call` | `CALL ref.cap(args)` | `OK`/`ERR` + delta |
+| `call` | `CALL ref.cap(args)` — several, one per line, run as a batch | `OK`/`ERR` + delta |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` + window list |
+
+### Batch calls
+
+`call` accepts several `CALL` statements, one per line. They run **in order in
+one round trip**: every step is resolved and authorised against the current
+compilation before the first one executes (so a step that could never work
+refuses the whole batch while nothing has moved), the steps then run without
+settling between them, and the batch ends with one settle, one delta and one
+rev.
+
+```
+CALL q1.set_text("张三")
+CALL q2.set_text("a@b.c")
+CALL b5.activate()
+→ BATCH OK steps=3/3 rev=7
+    1. CALL q1.set_text("张三") -> ok
+    …
+  ~ q1 text="张三"
+```
+
+A step that fails stops the batch there; the reply names the failing step,
+says which steps really ran, and carries the delta they produced. Every step
+must name an element that exists when the batch starts — a flow that opens a
+menu and then acts on its items is separate calls, because the items only come
+into being at the settle between them. Grammar and response shapes:
+[`somnus/sui/grammar.md`](somnus/sui/grammar.md).
 
 ## SUI-Text
 

@@ -156,6 +156,61 @@ visible.
 The resolver maps `p1.add` to the entity's `product.add` rule using the ref's
 entity type; the LLM never writes `product.add(target=p1)`.
 
+## Batch calls
+
+The `call` tool accepts several `CALL` statements, one per line (blank lines
+and whole-line `#` comments ignored, at most 20). They run **in order in one
+round trip**: every step is resolved and authorised against the compilation as
+it stands before the first one executes (a step that could never work refuses
+the whole batch while refusing it is free), the steps then run without
+settling between them, and the batch ends with one settle, one delta, one rev.
+
+```
+batch    := statement (NEWLINE statement)*      # max 20, CALL statements only
+statement:= action | "#" ... | ""
+```
+
+The splitting is quote- and paren-aware: a statement may contain a real line
+feed inside a quoted argument (JSON delivers one unescaped) and is not cut
+there.
+
+Two statements are refused at the dry run, with the reason:
+
+- `CALL wN.focus()` — switching windows re-allocates refs;
+- `CALL ref.context_menu()` — the menu only exists after a settle, so no later
+  step could name it.
+
+Consequently every step must name an element that exists **when the batch
+starts**: a flow that opens a menu or a dialog and then acts on what appeared
+is separate calls.
+
+Responses:
+
+```
+BATCH OK steps=2/2 rev=7
+  1. CALL q1.set_text("张三") -> ok
+  2. CALL b5.activate() -> ok
+~ q1 text="张三"
+~ c1 count 0→2
+```
+
+```
+BATCH PARTIAL steps=1/2 failed-at=2 rev=7
+  1. CALL p1.add() -> ok
+  2. CALL p2.add() -> ERR TARGET_DISABLED
+ERR TARGET_DISABLED p2 hint=inspect msg="..."
+~ steps 1-1 really ran; fix the failing step and continue with fresh CALL statements
+~ c1 count 0→1
+```
+
+`steps=` counts what was performed. Step states: `ok`, `dispatched` (sent, the
+outcome is being settled - a modal may be opening, which stops the batch at
+`stopped-at=N`), `ERR <code>`, `not-run`. The delta covers the steps that
+actually ran; steps that never ran have their effects excluded from
+verification. Cumulative effects are verified as a sum per field: two steps
+each declaring `count += 1` expect the final value to be the pre-batch
+baseline + 2.
+
 ## Results and deltas
 
 ```

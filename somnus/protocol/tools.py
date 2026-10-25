@@ -83,12 +83,22 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Invoke a capability printed on a node: CALL p1.add(). It belongs to "
             "that node, not its container. Returns OK/ERR plus a delta, which "
-            "beats the status word. Critical caps need confirmation."
+            "beats the status word. Critical caps need confirmation. Several "
+            "CALL statements (one per line) run in order in this one call - "
+            "every step validated before the first runs, one settle and one "
+            "delta for the whole batch. Steps may only name elements that "
+            "exist when the batch starts."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "description": "CALL ref.cap(args)"},
+                "action": {
+                    "type": "string",
+                    "description": (
+                        "CALL ref.cap(args), or several of them one per line "
+                        "(max 20) to run as a batch"
+                    ),
+                },
                 "rev": {"type": "integer", "description": "the rev you saw"},
                 "confirmed": {"type": "boolean", "description": "user consented"},
             },
@@ -154,10 +164,12 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             )
             return session.inspect(action).text
         if name == "call":
-            from somnus.sui.parse import parse_action
+            from somnus.sui.parse import parse_call_block
 
-            action = parse_action(args.get("action", ""), rev=args.get("rev"))
-            return session.call(action, confirmed=args.get("confirmed")).text
+            actions = parse_call_block(args.get("action", ""), rev=args.get("rev"))
+            if len(actions) == 1:
+                return session.call(actions[0], confirmed=args.get("confirmed")).text
+            return session.call_batch(actions, confirmed=args.get("confirmed")).text
         if name == "switch":
             target = (args.get("target") or "main").strip().lower()
             if target == "open":

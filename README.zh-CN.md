@@ -281,8 +281,30 @@ somnus child-session close     # 结束并清理
 | `observe` | 目标窗口的 L0 概览 | SUI-Text |
 | `find` | `FIND [type] "query" [in ref]` | 匹配的实体行 |
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 细节 |
-| `call` | `CALL ref.cap(args)` | `OK`/`ERR` + 增量 |
+| `call` | `CALL ref.cap(args)` —— 可写多条，每行一条，作为批处理执行 | `OK`/`ERR` + 增量 |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` + 窗口清单 |
+
+### 批量调用
+
+`call` 可以接受多条 `CALL` 语句（每行一条）。它们在**一次往返内按顺序执行**：
+每一步都先对照当前编译结果做解析与授权（永远不可能成功的那一步会在任何东西
+尚未动过时整批拒绝），然后步与步之间不做 settle 地依次运行，整批以一次
+settle、一份增量、一次 rev 收尾。
+
+```
+CALL q1.set_text("张三")
+CALL q2.set_text("a@b.c")
+CALL b5.activate()
+→ BATCH OK steps=3/3 rev=7
+    1. CALL q1.set_text("张三") -> ok
+    …
+  ~ q1 text="张三"
+```
+
+某一步失败时批量就地停止：响应指明失败步、说明哪些步骤真正执行过，并携带
+它们产生的增量。每一步都必须指向批处理开始时就存在的元素——「先打开菜单、
+再点菜单项」这类流程要拆成多次调用，因为菜单项是在两次调用之间的 settle 里
+才出现的。语法与响应格式见 [`somnus/sui/grammar.md`](somnus/sui/grammar.md)。
 
 ## SUI-Text
 

@@ -76,6 +76,21 @@ class CallOutcome:
 
 
 @dataclass(slots=True)
+class _ChainResult:
+    """Outcome of walking one resolution's route chain.
+
+    ``written`` is the text a write primitive put into the control (echoed in
+    the response); ``undetermined`` means the call may still be in flight - a
+    modal dialog opening - and nothing after it can be judged yet.
+    """
+
+    exec_result: Any
+    route: str = ""
+    written: Any = None
+    undetermined: bool = False
+
+
+@dataclass(slots=True)
 class _FindHit:
     """A find match; ``is_entity`` marks domain entities (rendered first)."""
 
@@ -973,124 +988,9 @@ class Session:
                        if self.result.find(action.ref or "") else []),
             )
 
-        # Execute the declared routes in order. A capability may carry several
-        # `via` steps (write through the Value pattern, *else* focus and type)
-        # and the resolver keeps the ones the node's patterns allow. Which one
-        # actually works is a fact about the live element that no amount of
-        # static inspection can settle - UIA reports patterns the element then
-        # refuses (measured: a Chromium editable advertises `value` and its
-        # setter is a no-op shell) - so the chain is walked here, at execution
-        # time, and the first route that *works* wins.
-        #
-        # Only a missing interface advances the chain. A pattern that exists
-        # and fails (disabled, UIPI, a raised COM error) is a real answer about
-        # this element and is reported instead: silently trying something else
-        # would be the runtime overruling what it was told to do.
-        exec_result = None
-        route = ""
-        written: Any = None
-        ordered_steps = self._order_steps(action.ref or "", resolution.steps)
-        denied: list[str] = []
-        for index, step in enumerate(ordered_steps):
-            # Authorisation is per step: a capability may declare a native
-            # route plus a synthetic-input fallback, and only the fallback
-            # needs the host's consent.
-            #
-            # A refused step is *skipped*, not fatal. A capability declares its
-            # routes as alternatives - paste, else type - and a host that
-            # enabled neither has authorised none of them; failing the call on
-            # the first one would hide the routes further down the chain and
-            # report "unsupported" for a capability whose last declared route is
-            # perfectly allowed. The refusals are collected instead, so that a
-            # chain where *every* route was denied still names what was denied
-            # and how to enable it.
-            try:
-                self.policy.check_step(step.primitive)
-            except SomnusError as err:
-                denied.append((step.primitive, err))
-                continue
-            exec_result = self.provider.execute(step.native, step.primitive, step.value)
-            self._audit_action(action, step, exec_result)
-            is_last = index == len(ordered_steps) - 1
-            if _TRACE_STATES:
-                log.info(
-                    "step primitive=%s ok=%s unsupported=%s undetermined=%s "
-                    "error=%s msg=%s value=%r last=%s",
-                    step.primitive,
-                    exec_result.ok,
-                    exec_result.unsupported,
-                    exec_result.undetermined,
-                    exec_result.error,
-                    (exec_result.message or "")[:120],
-                    step.value,
-                    is_last,
-                )
-            if exec_result.undetermined:
-                # The call may still be in flight (a modal dialog opening); no
-                # later step can be judged yet, so this is the end of the chain.
-                route = step.primitive
-                break
-            if exec_result.ok:
-                if step.primitive in _PREPARATORY_PRIMITIVES and not is_last:
-                    # Preparation for the step that follows: focus succeeded,
-                    # so now the actual action can run. Stopping here would
-                    # report success for an action that never took place.
-                    if _TRACE_STATES:
-                        log.info("preparatory step %s done, continuing", step.primitive)
-                    continue
-                route = step.primitive
-                self._remember_route(action.ref or "", step.primitive)
-                if step.primitive in _WRITE_PRIMITIVES:
-                    written = step.value
-                break
-            if exec_result.unsupported:
-                # This element does not offer this interface; try the next
-                # declared route rather than reporting a dead end.
-                continue
-            code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
-            self.policy.check_native_permission(code)
-            raise SomnusError(code, ref=action.ref, message=exec_result.message)
-        else:
-            # Every declared route was absent. That is the honest
-            # ACTION_NOT_SUPPORTED - the element offers none of them - and it
-            # carries the primitives that were tried so the failure is
-            # diagnosable.
-            if exec_result is not None and exec_result.unsupported:
-                tried = "/".join(s.primitive for s in ordered_steps)
-                raise SomnusError(
-                    ErrorCode.ACTION_NOT_SUPPORTED,
-                    ref=action.ref,
-                    message=f"no usable interface on this element (tried {tried})",
-                )
-            if exec_result is None:
-                # Nothing was even attempted: every route in the chain was
-                # refused by policy. Report the refusal that names the *last*
-                # route (the most capable one the chain ends on), and list what
-                # was refused so the agent knows the whole chain, not just one
-                # flag.
-                if denied:
-                    # Name the *last* route's refusal: the chain ends on the most
-                    # capable fallback (typing), so that is the flag whose absence
-                    # is the real obstacle. Every refused route is then listed with
-                    # its own message, so a host that enabled neither sees both
-                    # flags rather than only the last one.
-                    _primitive, last_err = denied[-1]
-                    detail = "; ".join(
-                        f"{primitive}: {err.message}" for primitive, err in denied
-                    )
-                    raise SomnusError(
-                        ErrorCode.ACTION_NOT_SUPPORTED,
-                        ref=action.ref,
-                        message=f"{last_err.message} (refused routes: {detail})",
-                    )
-                raise SomnusError(ErrorCode.ACTION_NOT_SUPPORTED, ref=action.ref)
-            code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
-            self.policy.check_native_permission(code)
-            raise SomnusError(code, ref=action.ref, message=exec_result.message)
-
-        if exec_result is not None and exec_result.undetermined:
-            # A modal dialog may be opening; settle will capture it.
-            pass
+        # Walk the declared routes in order; the first one that works wins.
+        chain = self._execute_chain(action, resolution)
+        written = chain.written
 
         # Settle, recompile, compute delta, verify. Refresh the window list
         # first: an action may have opened a dialog or replaced the target
@@ -1323,6 +1223,433 @@ class Session:
             + ("\n" + body if body else ""),
             settled=settle_result.settled,
         )
+
+    def _execute_chain(self, action: Action, resolution) -> _ChainResult:
+        """Walk a resolution's route chain at execution time.
+
+        A capability may carry several `via` steps (write through the Value
+        pattern, *else* focus and type) and the resolver keeps the ones the
+        node's patterns allow. Which one actually works is a fact about the
+        live element that no amount of static inspection can settle - UIA
+        reports patterns the element then refuses (measured: a Chromium
+        editable advertises `value` and its setter is a no-op shell) - so the
+        chain is walked here, at execution time, and the first route that
+        *works* wins.
+
+        Only a missing interface advances the chain. A pattern that exists
+        and fails (disabled, UIPI, a raised COM error) is a real answer about
+        this element and is reported instead: silently trying something else
+        would be the runtime overruling what it was told to do.
+
+        Raises :class:`SomnusError` for a real failure - the same codes
+        ``call`` has always raised; a batch step catches it and stops there.
+        """
+        exec_result = None
+        route = ""
+        written: Any = None
+        ordered_steps = self._order_steps(action.ref or "", resolution.steps)
+        denied: list[tuple[str, SomnusError]] = []
+        for index, step in enumerate(ordered_steps):
+            # Authorisation is per step: a capability may declare a native
+            # route plus a synthetic-input fallback, and only the fallback
+            # needs the host's consent.
+            #
+            # A refused step is *skipped*, not fatal. A capability declares its
+            # routes as alternatives - paste, else type - and a host that
+            # enabled neither has authorised none of them; failing the call on
+            # the first one would hide the routes further down the chain and
+            # report "unsupported" for a capability whose last declared route is
+            # perfectly allowed. The refusals are collected instead, so that a
+            # chain where *every* route was denied still names what was denied
+            # and how to enable it.
+            try:
+                self.policy.check_step(step.primitive)
+            except SomnusError as err:
+                denied.append((step.primitive, err))
+                continue
+            exec_result = self.provider.execute(step.native, step.primitive, step.value)
+            self._audit_action(action, step, exec_result)
+            is_last = index == len(ordered_steps) - 1
+            if _TRACE_STATES:
+                log.info(
+                    "step primitive=%s ok=%s unsupported=%s undetermined=%s "
+                    "error=%s msg=%s value=%r last=%s",
+                    step.primitive,
+                    exec_result.ok,
+                    exec_result.unsupported,
+                    exec_result.undetermined,
+                    exec_result.error,
+                    (exec_result.message or "")[:120],
+                    step.value,
+                    is_last,
+                )
+            if exec_result.undetermined:
+                # The call may still be in flight (a modal dialog opening); no
+                # later step can be judged yet, so this is the end of the chain.
+                route = step.primitive
+                return _ChainResult(
+                    exec_result, route=route, undetermined=True
+                )
+            if exec_result.ok:
+                if step.primitive in _PREPARATORY_PRIMITIVES and not is_last:
+                    # Preparation for the step that follows: focus succeeded,
+                    # so now the actual action can run. Stopping here would
+                    # report success for an action that never took place.
+                    if _TRACE_STATES:
+                        log.info("preparatory step %s done, continuing", step.primitive)
+                    continue
+                route = step.primitive
+                self._remember_route(action.ref or "", step.primitive)
+                if step.primitive in _WRITE_PRIMITIVES:
+                    written = step.value
+                return _ChainResult(exec_result, route=route, written=written)
+            if exec_result.unsupported:
+                # This element does not offer this interface; try the next
+                # declared route rather than reporting a dead end.
+                continue
+            code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
+            self.policy.check_native_permission(code)
+            raise SomnusError(code, ref=action.ref, message=exec_result.message)
+        else:
+            # Every declared route was absent. That is the honest
+            # ACTION_NOT_SUPPORTED - the element offers none of them - and it
+            # carries the primitives that were tried so the failure is
+            # diagnosable.
+            if exec_result is not None and exec_result.unsupported:
+                tried = "/".join(s.primitive for s in ordered_steps)
+                raise SomnusError(
+                    ErrorCode.ACTION_NOT_SUPPORTED,
+                    ref=action.ref,
+                    message=f"no usable interface on this element (tried {tried})",
+                )
+            if exec_result is None:
+                # Nothing was even attempted: every route in the chain was
+                # refused by policy. Report the refusal that names the *last*
+                # route (the most capable one the chain ends on), and list what
+                # was refused so the agent knows the whole chain, not just one
+                # flag.
+                if denied:
+                    # Name the *last* route's refusal: the chain ends on the most
+                    # capable fallback (typing), so that is the flag whose absence
+                    # is the real obstacle. Every refused route is then listed with
+                    # its own message, so a host that enabled neither sees both
+                    # flags rather than only the last one.
+                    _primitive, last_err = denied[-1]
+                    detail = "; ".join(
+                        f"{primitive}: {err.message}" for primitive, err in denied
+                    )
+                    raise SomnusError(
+                        ErrorCode.ACTION_NOT_SUPPORTED,
+                        ref=action.ref,
+                        message=f"{last_err.message} (refused routes: {detail})",
+                    )
+                raise SomnusError(ErrorCode.ACTION_NOT_SUPPORTED, ref=action.ref)
+            code = exec_result.error or ErrorCode.NATIVE_EXECUTION_FAILED
+            self.policy.check_native_permission(code)
+            raise SomnusError(code, ref=action.ref, message=exec_result.message)
+        # Unreachable: the loop returns or raises on every path.
+        return _ChainResult(exec_result, route=route, written=written)
+
+    def call_batch(
+        self, actions: list[Action], *, confirmed: bool | None = None
+    ) -> CallOutcome:
+        """Execute several CALL statements in one round trip.
+
+        The batch is the unit, not the statement. Every step is resolved and
+        authorised against the compilation as it stands *before* the first one
+        runs - a step that could never work must be refused while refusing it
+        costs nothing, not after the steps before it have moved the desktop.
+        The steps then run in order without settling between them, and the
+        whole batch ends with one settle, one delta and one rev: the response
+        reports what all of the steps did together.
+
+        Consequences of that shape, which the response states rather than
+        hides:
+
+        * steps may only name elements that exist when the batch starts. A
+          flow whose later steps act on something an earlier step *creates*
+          (open a menu, then invoke its items) is two calls, because the menu
+          items only come into being at the settle between them;
+        * a step that fails stops the batch there. The steps before it really
+          ran and their delta is reported; the steps after it are ``not-run``;
+        * a step whose outcome is undetermined (a modal dialog may be opening)
+          stops the batch the same way - no later step can be judged while the
+          call may still be in flight.
+        """
+        if self.result is None:
+            self._recompile()
+        assert self.result is not None
+        if not actions:
+            raise SomnusError(ErrorCode.PARSE_ERROR, message="empty batch")
+
+        # ---------------------------------------------------------- dry run
+        # Resolve and authorise every step against the current compilation.
+        # Nothing has executed yet, so a refusal here is free: the desktop is
+        # exactly as it was, and the caller can fix its arguments and resend.
+        def _first_missing() -> int | None:
+            return next(
+                (
+                    i
+                    for i, a in enumerate(actions)
+                    if self.result.find(a.ref or "") is None
+                ),
+                None,
+            )
+
+        missing_index = _first_missing()
+        if missing_index is not None:
+            # Stale refs get the one recompile `call` grants them; after that
+            # a ref that still resolves nowhere is reported as what it is.
+            self._recompile()
+            missing_index = _first_missing()
+            if missing_index is not None:
+                ref = actions[missing_index].ref or ""
+                record = self.registry.records.get(ref)
+                was = (
+                    f" was {record.role} "
+                    + (f"{record.name!r} " if record.name else "")
+                    if record is not None
+                    else ""
+                )
+                raise SomnusError(
+                    ErrorCode.STALE_TARGET,
+                    ref=ref,
+                    message=(
+                        f"step {missing_index + 1}{was}; "
+                        "refind by name (FIND) or observe"
+                    ),
+                )
+
+        self.policy.check_process(self._target_process())
+        resolver = Resolver(self.result)
+        resolutions = []
+        for index, action in enumerate(actions, start=1):
+            win = self._window_by_ref(action.ref or "")
+            if win is not None and action.capability == "focus":
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    ref=action.ref,
+                    message=(
+                        f"step {index}: CALL wN.focus() cannot be a batch step - "
+                        "switching windows re-allocates refs; call it separately"
+                    ),
+                )
+            if action.capability == "context_menu":
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    ref=action.ref,
+                    message=(
+                        f"step {index}: context_menu cannot be a batch step - the "
+                        "menu only exists after a settle, so later steps could not "
+                        "name it; make it a separate CALL"
+                    ),
+                )
+            if action.ref in self._ambiguous_refs:
+                raise SomnusError(
+                    ErrorCode.TARGET_AMBIGUOUS,
+                    ref=action.ref,
+                    message=f"step {index}: fingerprint matched multiple elements",
+                )
+            resolution = self._resolve_with_hint(resolver, action)
+            self.policy.check_action(resolution, confirmed=confirmed)
+            # A refused *route* is skipped at execution, as in a single call;
+            # a step whose every route is refused can never run, which the
+            # dry run refuses here while refusal is still free.
+            authorized = False
+            for step in resolution.steps:
+                try:
+                    self.policy.check_step(step.primitive)
+                    authorized = True
+                except SomnusError:
+                    continue
+            if resolution.steps and not authorized:
+                raise SomnusError(
+                    ErrorCode.ACTION_NOT_SUPPORTED,
+                    ref=action.ref,
+                    message=f"step {index}: every declared route is refused by policy",
+                )
+            resolutions.append(resolution)
+
+        # ------------------------------------------------------- baseline
+        before_index = index_by_fingerprint(self.result.root)
+        #: Window list before the batch: a window that appears mid-batch is
+        #: reported through the window delta at the end, as a single call does.
+        self._windows_before_action = list(self.windows)
+        verifier = Verifier(
+            by_ref={n.ref: n for n in self.result.root.walk()},
+            by_entity={
+                n.entity: n for n in self.result.root.walk() if n.entity
+            },
+        )
+        for resolution in resolutions:
+            for name in (resolution.ref, *(e.target for e in resolution.effects)):
+                if not name or name.startswith("$"):
+                    continue
+                verifier.capture(name)
+                entity_node = verifier.by_entity.get(name)
+                if entity_node is not None:
+                    verifier.capture(entity_node.ref)
+
+        # -------------------------------------------------------- execute
+        #: Per-step state, in order: ``ok``, ``dispatched`` (sent, outcome
+        #: being settled), ``ERR <code>``, or ``not-run`` (the batch stopped
+        #: before reaching it).
+        step_states: list[str] = []
+        writes: list[tuple[str, Any]] = []
+        error_line: str | None = None
+        stopped_at = 0
+        undetermined_at = 0
+        for index, (action, resolution) in enumerate(
+            zip(actions, resolutions), start=1
+        ):
+            try:
+                chain = self._execute_chain(action, resolution)
+            except SomnusError as err:
+                step_states.append(f"ERR {err.code}")
+                writes.append(("", None))
+                error_line = err.render()
+                stopped_at = index
+                break
+            if chain.undetermined:
+                step_states.append("dispatched")
+                writes.append(("", None))
+                undetermined_at = index
+                break
+            step_states.append("ok")
+            writes.append(
+                (action.ref or "", chain.written)
+                if chain.written is not None
+                else ("", None)
+            )
+        ran = len(step_states)
+
+        # ---------------------------------------------------- settle once
+        self.refresh_windows()
+        if self.target_window:
+            self._peek(self.target_window)
+        try:
+            tree, settle_result = self.settler.wait(
+                lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
+                event_source=lambda: self._event_count,
+                deterministic=self._settle_deterministic,
+            )
+        except KeyError:
+            # The target window vanished mid-batch. Whatever ran really ran;
+            # report unverified with a window delta instead of failing all of it.
+            self.refresh_windows()
+            text = (
+                f"BATCH OK_UNVERIFIED steps={ran}/{len(actions)} rev={self.rev}\n"
+                + self._step_lines(actions, step_states)
+                + "\n~ target replaced (window closed)"
+            )
+            return CallOutcome(
+                status="OK_UNVERIFIED",
+                rev=self.rev,
+                delta=Delta(),
+                text=text,
+                settled=False,
+            )
+        result = self.compiler.compile(tree, pack=self._current_pack())
+        self.registry.reconcile(result)
+        self.result = result
+        self._bump_rev()
+
+        after_index = index_by_fingerprint(result.root)
+        delta = diff_trees(before_index, after_index)
+
+        # ------------------------------------------------------- verify
+        # Only the steps that ran have their effects verified: a not-run step's
+        # effects did not happen and must not be checked against the final
+        # state. A dispatched (undetermined) step's effects may still land -
+        # the settle above is what they wait for.
+        verifiable = ran if not error_line else ran - 1
+        grouped = [
+            (index, resolutions[index - 1].ref, resolutions[index - 1].effects)
+            for index in range(1, verifiable + 1)
+            if resolutions[index - 1].effects
+        ]
+        verify = verifier.verify_grouped(grouped, delta)
+
+        # -------------------------------------------------------- render
+        #: ``steps=`` counts what was *performed*: an ok step ran, a
+        #: dispatched step was sent (its outcome is being settled), a failed
+        #: step did not complete and is named by failed-at/stopped-at.
+        performed = sum(1 for s in step_states if s in ("ok", "dispatched"))
+        body = self._window_delta()
+        tree_body = self.delta_text(delta)
+        if tree_body:
+            body = f"{body}\n{tree_body}" if body else tree_body
+        for ref, value in writes:
+            if not ref:
+                continue
+            echo = f"~ {ref} text={_q(str(value))}"
+            body = f"{body}\n{echo}" if body else echo
+
+        settled_tag = "" if settle_result.settled else " settled=false"
+        if error_line:
+            head = (
+                f"BATCH PARTIAL steps={performed}/{len(actions)} "
+                f"failed-at={stopped_at} rev={self.rev}{settled_tag}"
+            )
+            status = "PARTIAL"
+        elif undetermined_at:
+            head = (
+                f"BATCH PARTIAL steps={performed}/{len(actions)} "
+                f"stopped-at={undetermined_at} rev={self.rev}{settled_tag}"
+            )
+            status = "PARTIAL"
+        else:
+            head = f"BATCH {verify.status} steps={performed}/{len(actions)} rev={self.rev}{settled_tag}"
+            status = verify.status
+            if status == "OK_UNVERIFIED" and settle_result.settled and delta.empty:
+                # A settled no-op batch is a plain OK, exactly as a single
+                # call is: agents retry UNVERIFIED work that already succeeded.
+                status = "OK"
+                head = f"BATCH OK steps={performed}/{len(actions)} rev={self.rev}{settled_tag}"
+
+        text = head + "\n" + self._step_lines(actions, step_states)
+        if error_line:
+            text += f"\n{error_line}"
+        elif undetermined_at:
+            text += (
+                f"\n~ step {undetermined_at} may still be in flight (a modal "
+                "dialog opening); the state above is post-settle - judge from "
+                "it before continuing"
+            )
+        if verify.status == "EFFECT_NOT_CONFIRMED":
+            for line in verify.failed:
+                text += f"\n~ not confirmed: {line}"
+        if error_line:
+            text += (
+                f"\n~ steps 1-{ran - 1 if ran > 1 else ran} really ran; fix the "
+                "failing step and continue with fresh CALL statements"
+                if ran > 1
+                else "\n~ the failing step ran first; nothing else was sent"
+            )
+        elif undetermined_at and ran < len(actions):
+            text += (
+                f"\n~ {len(actions) - ran} step(s) not run; continue with fresh "
+                "CALL statements once the outcome is clear"
+            )
+        if body:
+            text += f"\n{body}"
+        return CallOutcome(
+            status=status, rev=self.rev, delta=delta, text=text,
+            settled=settle_result.settled,
+        )
+
+    @staticmethod
+    def _step_lines(actions: list[Action], step_states: list[str]) -> str:
+        """One line per statement: the statement as sent, then its state."""
+        lines = []
+        for index, (action, state) in enumerate(zip(actions, step_states), start=1):
+            raw = action.raw if len(action.raw) <= 60 else action.raw[:57] + "..."
+            lines.append(f"  {index}. {raw} -> {state}")
+        for index in range(len(step_states) + 1, len(actions) + 1):
+            raw = actions[index - 1].raw
+            raw = raw if len(raw) <= 60 else raw[:57] + "..."
+            lines.append(f"  {index}. {raw} -> not-run")
+        return "\n".join(lines)
 
     def delta_text(self, delta: Delta) -> str:
         return delta.render()

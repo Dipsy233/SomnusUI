@@ -10,7 +10,7 @@ pixels: no coordinates, keys or native ids exist for you to guess.
 | `observe` | first, and when lost | `OBSERVE [ref] [windows\|desktop\|full] [expand ref]` |
 | `find` | locate, incl. inside folded lists | `FIND [type] "query" [in ref]` |
 | `inspect` | all caps/args/relations of one node | `INSPECT ref [depth=N] [range=A:B]` |
-| `call` | act | `CALL ref.cap(args)` |
+| `call` | act | `CALL ref.cap(args)` — several, one per line, run as a batch |
 | `switch` | move between desktops | `SWITCH main\|child` / `SESSION open\|close\|detach` |
 
 `observe` describes **one window**. `OBSERVE windows` lists windows only (the
@@ -73,6 +73,23 @@ CALL p1.customize(size="large", qty=2)
 Quote values containing spaces, commas or parentheses. **`=` is the only
 separator** — `set_text(text:"Hello")` writes the literal text `text:"Hello"`.
 After a write the reply echoes what landed: `~ q1 text="Hello"`.
+
+## Batching
+
+Several `CALL` statements, one per line in one `call`, run **in order in one
+round trip** — one settle, one delta:
+
+```
+CALL q1.set_text("张三")
+CALL q2.set_text("a@b.c")
+```
+
+Every step is validated before the first runs, so an impossible step refuses
+the whole batch while nothing has moved; a failing step stops the batch, and
+the reply says which steps ran. Every step must name an element that exists
+**when the batch starts** — open a menu, then invoke its items, is separate
+calls (the items appear at the settle between them). `wN.focus()` and
+`context_menu` are refused inside a batch for the same reason.
 
 ## Gestures
 
@@ -167,6 +184,12 @@ OK rev=8
 `OK_UNVERIFIED` means it ran but declared no verifiable effect, and a plain `OK`
 with an empty delta usually means the app reacted without changing the tree —
 `inspect` instead of retrying.
+
+A batch answers with one line per statement:
+`BATCH OK steps=2/2 rev=7` then `1. CALL q1.set_text("张三") -> ok`, then the
+delta. `BATCH PARTIAL steps=1/3 failed-at=2` means step 2 failed — the `ERR`
+line follows and the delta covers the steps that ran (`not-run` = never sent);
+fix the failing step and continue with fresh `CALL` statements.
 
 | Code | Do |
 | --- | --- |
