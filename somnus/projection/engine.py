@@ -8,6 +8,7 @@ lines once the budget is exhausted, emitting a ``… +N more`` marker).
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 
 from somnus.ir.node import SemanticNode
@@ -17,6 +18,37 @@ from somnus.projection.rules import Projection, Rule
 #: Roles that stay visible at L0 even when anonymous: inputs carry values the
 #: agent may set, and these document/structural roles carry meaning.
 _L0_KEEP_ROLES = frozenset({"input", "document", "list", "tree", "table"})
+
+#: The fields the viewport collector attaches to a container it had to cut at
+#: the viewport edge (docs/viewport-capture-proposal.md, "数据契约"). They are
+#: *metadata about what was not captured*, never rendered as raw attributes:
+#: projection turns them into the `rows=/visible=/scroll=` summary and the
+#: `+more` marker. A node without them renders exactly as it always has.
+_VIEWPORT_KEYS = (
+    "items_total",
+    "items_visible",
+    "items_truncated",
+    "scroll_pct",
+)
+
+
+class _RenderedInt(int):
+    """An ``int`` whose rendered form is custom text.
+
+    Used for the summary pair `visible=12 scroll=5%`: the serializer renders
+    numeric attributes through ``str(value)``, so a combined token keeps the
+    documented field order (`rows`, `visible`, `scroll`) and the bare `%`
+    without touching the serializer or inventing a new attribute name. The
+    value remains an ``int`` for anyone comparing it numerically.
+    """
+
+    def __new__(cls, value: int, text: str) -> "_RenderedInt":
+        obj = super().__new__(cls, value)
+        obj._text = text
+        return obj
+
+    def __str__(self) -> str:
+        return self._text
 
 
 @dataclass(slots=True)
@@ -49,6 +81,11 @@ class ProjectionEngine:
     #: is folded into a single marker. Showing 2-3 examples is enough for the
     #: agent to tell what the collection holds without spending a line each.
     preview_children = 3
+    #: A viewport-truncated container renders at most this many *complete*
+    #: example rows. Three is the same "enough to recognise the shape" budget
+    #: as `preview_children`; the actual count is lowered further when the
+    #: remaining token budget cannot hold them (see `_plan_viewport`).
+    viewport_examples = 3
 
     def __init__(
         self,
@@ -62,6 +99,8 @@ class ProjectionEngine:
         #: When True, anonymous actionless leaves are folded at overview level
         #: (the L0 noise floor). The engine's caller passes level == 0.
         self.l0 = l0
+        #: Root ref used by the viewport `+more` marker; set by ``plan``.
+        self._window_ref: str = ""
 
     def plan(
         self,
@@ -86,6 +125,9 @@ class ProjectionEngine:
             None if full else self.budget.max_depth
         )
         plan = RenderPlan()
+        # The `+more` marker names the window the agent must ask for
+        # (`OBSERVE w1 expand l1`), so the plan needs the root's ref.
+        self._window_ref = root.ref
         counter = {"nodes": 0, "tokens": 0}
         self._walk(
             root, 0, max_depth, projection, plan, counter,
@@ -127,11 +169,6 @@ class ProjectionEngine:
         expanded: set[int] | None = None,
     ) -> None:
         expanded = expanded or set()
-        # In full mode the budget does not apply.
-        if not full and counter["nodes"] >= self.budget.max_nodes:
-            plan.truncated = True
-            plan.hidden_total += 1
-            return
         rule = projection.rule_for(node) if not top else Rule.KEEP
         if rule is Rule.PRUNE:
             return
@@ -141,6 +178,34 @@ class ProjectionEngine:
                     child, depth, max_depth, projection, plan, counter,
                     full=full, expanded=expanded,
                 )
+            return
+
+        # Viewport-aware container: the collector kept every visible row but
+        # cut the rest. Its summary (`rows=/visible=/scroll=`) and `+more`
+        # marker are *metadata the agent needs to know the list exists*, so
+        # they are planned before any budget/depth refusal can swallow them.
+        viewport = _viewport_of(node) if not top else None
+        if viewport is not None:
+            self._plan_viewport(
+                node, depth, max_depth, projection, plan, counter,
+                viewport=viewport, full=full, expanded=expanded,
+            )
+            return
+        # A node that carries the fields but is not actually cut (all rows
+        # visible / a stale flag) must render exactly as it did before: strip
+        # the collector's raw names from the render-facing copy. `count=` etc.
+        # stay untouched here, because the fallback is "today's output".
+        render_node = node
+        if any(key in node.attrs for key in _VIEWPORT_KEYS):
+            render_node = dataclasses.replace(
+                node,
+                attrs={k: v for k, v in node.attrs.items() if k not in _VIEWPORT_KEYS},
+            )
+
+        # In full mode the budget does not apply.
+        if not full and counter["nodes"] >= self.budget.max_nodes:
+            plan.truncated = True
+            plan.hidden_total += 1
             return
 
         # Budget by depth.
@@ -173,7 +238,7 @@ class ProjectionEngine:
             if folded_leaf:
                 counter["folded_leaves"] = counter.get("folded_leaves", 0) + 1
                 return
-        line = Line(node=node, depth=depth, collapsed=collapsed)
+        line = Line(node=render_node, depth=depth, collapsed=collapsed)
         if collapsed:
             line.hidden_count = self._count(node)
 
@@ -216,8 +281,117 @@ class ProjectionEngine:
             )
         self._flush_folded_leaves(counter, plan, depth + 1)
 
+    def _plan_viewport(
+        self,
+        node: SemanticNode,
+        depth: int,
+        max_depth: int | None,
+        projection: Projection,
+        plan: RenderPlan,
+        counter: dict[str, int],
+        *,
+        viewport: tuple[int, int, int | None],
+        full: bool,
+        expanded: set[int],
+    ) -> None:
+        """Plan a container the collector cut at the viewport edge.
+
+        Shape::
+
+            LIST l1 "商品" rows=240 visible=12 scroll=5%
+              LISTITEM li1 "Item 0" ...
+              LISTITEM li2 "Item 1" ...
+              LISTITEM li3 "Item 2" ...
+              +more items=228 use FIND "<name>" or OBSERVE w1 expand l1
+
+        * the summary line is **forced** - it is the only thing that tells the
+          agent a large list exists, so neither the node cap, the token cap nor
+          the depth cap may drop it;
+        * the example rows are complete lines (attributes/capabilities/states
+          intact), never compressed, and their count is `viewport_examples`
+          lowered by what the remaining token budget can hold after the
+          summary and the marker are reserved;
+        * the marker is forced too, and it is the only place the hidden count
+          is stated.
+        """
+        total, visible, scroll = viewport
+        from somnus.sui.serialize import render_line
+
+        display = _viewport_display(node, total, visible, scroll)
+        self._emit(Line(node=display, depth=depth), plan, counter, full=full, force=True)
+
+        hidden = total - visible
+        marker_line = Line(
+            node=display,
+            depth=depth + 1,
+            marker=True,
+            marker_text=self._viewport_more_text(display, hidden),
+        )
+        marker_cost = count_tokens(render_line(marker_line))
+
+        # `OBSERVE ... expand l1` means "give me this page"; when the agent has
+        # already asked, render every captured row instead of the 3 examples.
+        # `full` is the same request stated more broadly.
+        limit = len(node.children) if (full or id(node) in expanded) else self.viewport_examples
+        for child in node.children[:limit]:
+            if not full:
+                # A lower bound on the row's cost (its own line; descendants
+                # add more). It is enough to stop *before* spending the budget
+                # that the marker needs.
+                estimate = count_tokens(render_line(Line(node=child, depth=depth + 1)))
+                if counter["tokens"] + estimate + marker_cost > self.budget.max_tokens:
+                    break
+            before = counter["tokens"]
+            self._walk(
+                child, depth + 1, max_depth, projection, plan, counter,
+                full=full, expanded=expanded,
+            )
+            if counter["tokens"] == before:
+                # The child was pruned/folded and produced no text; further
+                # examples would not either.
+                break
+
+        # The marker's own cost was reserved above, so it is emitted even when
+        # the examples used the rest of the budget. The hidden count is
+        # `total - visible` ("rows outside the viewport") rather than
+        # `total - rendered_examples`, which is what makes it agree with the
+        # `visible=` summary.
+        plan.lines.append(marker_line)
+        counter["tokens"] += marker_cost
+
+    def _viewport_more_text(self, node: SemanticNode, hidden: int) -> str:
+        """`+more items=N use FIND "<name>" or OBSERVE wN expand <ref>`.
+
+        Each route is named **only when it is really available on this node**:
+
+        * `FIND` is printed only when the container carries the `find`
+          capability. Compile grants it to list/table/tree and to containers of
+          one entity type; a viewport-cut `pane` of mixed content has no such
+          capability, and promising a name search the node does not expose - or
+          printing a bare `+find` that is not there - would be a lie.
+        * `OBSERVE wN expand <ref>` is the session's existing expanded-set
+          mechanism; it needs no capability and no new grammar.
+
+        Both routes already exist in the protocol; nothing here invents syntax.
+        """
+        head = f"+more items={hidden}"
+        parts: list[str] = []
+        if "find" in node.cap_names():
+            parts.append('FIND "<name>"')
+        if self._window_ref:
+            parts.append(f"OBSERVE {self._window_ref} expand {node.ref}")
+        if not parts:
+            return head
+        return f"{head} use " + " or ".join(parts)
+
     def _emit(
-        self, line: Line, plan: RenderPlan, counter: dict[str, int], *, full: bool = False
+        self,
+        line: Line,
+        plan: RenderPlan,
+        counter: dict[str, int],
+        *,
+        full: bool = False,
+        force: bool = False,
     ) -> bool:
         # Pre-render through the shared formatter to measure tokens.
         from somnus.sui.serialize import render_line
@@ -225,7 +399,8 @@ class ProjectionEngine:
         text = render_line(line)
         cost = count_tokens(text)
         if (
-            not full
+            not force
+            and not full
             and counter["tokens"] + cost > self.budget.max_tokens
             and counter["nodes"] > 0
         ):
@@ -268,3 +443,95 @@ class ProjectionEngine:
     @staticmethod
     def _count(node: SemanticNode) -> int:
         return len(node.children)
+
+
+# ---------------------------------------------------------------------------
+# viewport metadata helpers
+# ---------------------------------------------------------------------------
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "y", "on")
+    return False
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _scroll_text(value: object) -> str | None:
+    """`scroll_pct` (0-100) as the bare token `5%`, or None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        pct = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if pct != pct or pct < 0 or pct > 100:  # NaN or out of range
+        return None
+    if pct.is_integer():
+        return f"{int(pct)}%"
+    return f"{pct:g}%"
+
+
+def _viewport_of(node: SemanticNode) -> tuple[int, int, object] | None:
+    """The (total, visible, scroll) summary of a viewport-cut container, or None.
+
+    Requirements for this rendering to engage, all from the metadata contract:
+
+    * ``items_truncated`` is truthy;
+    * both ``items_total`` and ``items_visible`` are readable integers;
+    * more rows exist than are visible. ``visible >= total`` means the screen
+      shows the whole list, so the node renders exactly as before - the fields
+      are stripped and no summary/marker is emitted;
+    * anything missing (old data, mock fixtures, a non-list node) returns
+      ``None`` and the node keeps today's rendering byte for byte.
+    """
+    attrs = node.attrs
+    if not _truthy(attrs.get("items_truncated")):
+        return None
+    total = _as_int(attrs.get("items_total"))
+    visible = _as_int(attrs.get("items_visible"))
+    if total is None or visible is None:
+        return None
+    if total <= 0 or visible >= total:
+        return None
+    return total, visible, attrs.get("scroll_pct")
+
+
+def _viewport_display(
+    node: SemanticNode, total: int, visible: int, scroll: object
+) -> SemanticNode:
+    """A render-only copy carrying `rows=`, `visible=`, `scroll=` and nothing else.
+
+    The collector's raw field names (`items_total`, …) are stripped so they
+    never leak into the observation, and the legacy `count`/`count_min`
+    annotation is removed: `rows=` is the authoritative total now, and printing
+    both `count=12` and `rows=240` would contradict itself.
+
+    A shallow copy is used on purpose: the compiled node keeps its attrs
+    untouched, so delta/signature/verifier never see the display tokens.
+    """
+    attrs = {
+        key: value
+        for key, value in node.attrs.items()
+        if key not in _VIEWPORT_KEYS and key not in ("count", "count_min")
+    }
+    attrs["rows"] = total
+    percent = _scroll_text(scroll)
+    attrs["visible"] = (
+        _RenderedInt(visible, f"{visible} scroll={percent}")
+        if percent is not None
+        else visible
+    )
+    return dataclasses.replace(node, attrs=attrs)

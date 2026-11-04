@@ -50,6 +50,10 @@ class MockTree:
         # give every node a native ref via the real builder path
         self.root = root
 
+    def walk(self):
+        """RawTree's walk, which settle's frame bookkeeping uses."""
+        return self.root.walk()
+
 
 def _session(with_flyout: bool) -> tuple[Session, MockProvider]:
     from tests.fixtures.builders import restaurant_demo_tree

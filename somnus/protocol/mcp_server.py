@@ -17,10 +17,17 @@ import json
 import sys
 from typing import Any
 
-from somnus.config import load as load_settings
+from somnus.config import (
+    DEFAULT_POST_ACTION_ENUM,
+    DEFAULT_SETTLE_POLL_MS,
+    DEFAULT_SETTLE_QUIET_MS,
+    DEFAULT_SETTLE_TIMEOUT_S,
+    load as load_settings,
+)
 from somnus.protocol.tools import TOOL_SPECS, call_tool
 from somnus.runtime.policy import Policy
 from somnus.runtime.session import Session
+from somnus.runtime.settle import Settler
 
 
 def build_session(**kwargs: Any) -> Session:
@@ -28,13 +35,17 @@ def build_session(**kwargs: Any) -> Session:
 
     A ``policy`` may be passed explicitly (tests, embedding); otherwise one is
     built from the settings file, so the opt-in switches work without a flag.
+    The same file now also sets the settle timing and the post-action window
+    enumeration, which are applied to the session object here.
     """
     from somnus.providers.base import get_provider
 
     policy = kwargs.pop("policy", None)
     config_path = kwargs.pop("config", None)
-    if policy is None:
+    settings = kwargs.pop("settings", None)
+    if settings is None:
         settings = load_settings(config_path)
+    if policy is None:
         policy = Policy(
             allow_processes=settings.allow_processes,
             allow_clipboard=settings.allow_clipboard,
@@ -43,7 +54,18 @@ def build_session(**kwargs: Any) -> Session:
 
     provider_name = (kwargs.pop("provider", "auto") or "auto").lower()
     provider = get_provider(provider_name, **kwargs)
-    session = Session(provider, policy=policy)
+    session = Session(
+        provider,
+        policy=policy,
+        settler=Settler(
+            quiet_ms=settings.settle_quiet_ms,
+            poll_interval_ms=settings.settle_poll_ms,
+            timeout_s=settings.settle_timeout_s,
+            skip_when_deterministic=bool(getattr(provider, "is_deterministic", False)),
+        ),
+    )
+    # Session-scope switch; ``apply_settings`` (session side) updates it later.
+    session.post_action_enum = settings.post_action_enum
     # Remember how to rebuild a local provider: ``SWITCH main`` from the child
     # session swaps the provider (only one may hold UIA state, so the old one
     # is released on the way out) and has to construct a fresh one rather than
@@ -86,6 +108,34 @@ def _make_call_tool(session: Session):
     return _call_tool
 
 
+def settings_brief(session: Session) -> str:
+    """The one-time ``initialize`` note: the timing in force and its trade-offs.
+
+    MCP sends ``instructions`` when the client initializes, so this costs
+    nothing per turn. It is generated from the live session, not from the
+    defaults, because a settings file may already have changed them.
+    """
+    settler = getattr(session, "settler", None)
+    quiet = getattr(settler, "quiet_ms", DEFAULT_SETTLE_QUIET_MS)
+    poll = getattr(settler, "poll_interval_ms", DEFAULT_SETTLE_POLL_MS)
+    timeout = getattr(settler, "timeout_s", DEFAULT_SETTLE_TIMEOUT_S)
+    enum = bool(getattr(session, "post_action_enum", DEFAULT_POST_ACTION_ENUM))
+    return (
+        f"Settings in this process: settle_quiet_ms={quiet} "
+        f"settle_poll_ms={poll} settle_timeout_s={timeout} "
+        f"post_action_enum={'on' if enum else 'off'}. "
+        "settle_quiet_ms = how long the UI must stay unchanged before an action "
+        "counts as done: smaller = faster calls, too small can read an animation "
+        "mid-flight and mistake a still-disabled button for the settled state; "
+        "larger = safer but every call waits longer. settle_poll_ms = probe "
+        "spacing. settle_timeout_s = hard cap for one settle (the reply then "
+        "says settled=false and still reports the delta). "
+        "post_action_enum=on reports a window the action opened; off saves ~100ms "
+        "per call and can hide it. Change with configure({...}) - session scope; "
+        "persist=true also writes the global config."
+    )
+
+
 def make_mcp_server(session: Session):
     """Create an MCP ``Server`` bound to ``session`` (requires ``mcp>=2``).
 
@@ -100,6 +150,7 @@ def make_mcp_server(session: Session):
 
     return Server(
         "somnusui",
+        instructions=settings_brief(session),
         on_list_tools=_make_list_tools(session),
         on_call_tool=_make_call_tool(session),
     )

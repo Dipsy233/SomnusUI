@@ -50,6 +50,7 @@ def _load_fixture(path: str):
 
 def build_session(args: argparse.Namespace) -> Session:
     from somnus.config import load as load_settings
+    from somnus.runtime.settle import Settler
 
     # Read once per session so the flag/config/env precedence is applied in one
     # place (see somnus/config.py).
@@ -120,8 +121,16 @@ def build_session(args: argparse.Namespace) -> Session:
         provider,
         pack_id=args.pack,
         policy=policy,
+        settler=Settler(
+            quiet_ms=settings.settle_quiet_ms,
+            poll_interval_ms=settings.settle_poll_ms,
+            timeout_s=settings.settle_timeout_s,
+            skip_when_deterministic=bool(getattr(provider, "is_deterministic", False)),
+        ),
         allow_packs=not getattr(args, "no_pack", False),
     )
+    # Session-scope switch, also updated later by ``configure``.
+    session.post_action_enum = settings.post_action_enum
 
     # Remember how to rebuild a local provider. ``Session.switch_session`` swaps
     # providers (only one may hold UIA state, so the old one is released), and

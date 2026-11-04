@@ -16,27 +16,6 @@ from somnus.ir.capability import (
 )
 from somnus.ir.node import RawNode
 
-#: role -> implicit capabilities granted purely by semantics (even without a
-#: matching native pattern). These are what the SUI-Text default table hides.
-ROLE_DEFAULT_CAPS: dict[str, tuple[str, ...]] = {
-    "button": ("activate",),
-    "link": ("activate",),
-    "menuitem": ("activate",),
-    "listitem": ("select",),
-    "tab": ("select",),
-    "treeitem": ("select", "expand"),
-    "checkbox": ("toggle",),
-    "switch": ("toggle",),
-    "radio": ("select",),
-    "input": ("set_text",),
-    "slider": ("increment", "decrement"),
-    "select": ("select", "expand"),
-    "list": ("scroll",),
-    "tree": ("scroll",),
-    "table": ("scroll",),
-    "pane": ("scroll",),
-}
-
 
 def _cap(name: str, params: dict[str, ParamSpec] | None = None) -> Capability:
     risk = "safe" if name in SAFE_CAPABILITIES else "normal"
@@ -50,7 +29,31 @@ def _cap(name: str, params: dict[str, ParamSpec] | None = None) -> Capability:
 
 
 #: Roles that are inherently text-entry surfaces.
-_TEXT_ENTRY_ROLES: frozenset[str] = frozenset({"input", "select", "slider"})
+#:
+#: ``select`` is deliberately **absent**: a combo box is a *selection* control,
+#: not a free-text field. It used to be listed here, which advertised ``set_text``
+#: on every combo box - a write the control cannot perform (the value is chosen
+#: from a list, never typed), so the capability promised a gesture whose only
+#: possible outcome was a refusal. What actually moves a combo box is
+#: ``select`` on one of its items, plus ``expand``/``collapse`` on the box.
+_TEXT_ENTRY_ROLES: frozenset[str] = frozenset({"input", "slider"})
+
+#: Roles that are selectable by definition. They are granted ``select`` even when
+#: the provider did not report the pattern, exactly as before: for a list item /
+#: tab / radio the platform semantic *is* "this can be picked", and the executor
+#: tries the SelectionItem interface and reports honestly when the element
+#: declines it.
+#:
+#: ``select`` (the portable role of a combo box) is here because its drop-down
+#: rows are what actually get picked; the box itself carries the Selection
+#: pattern, which proves its children are selectable but has no ``Select`` verb
+#: of its own (UIA's ``SelectionPattern`` only reads). Granting ``select`` to a
+#: *list container* was considered and rejected for that reason: it advertised
+#: an action with no native primitive behind it, which is exactly the false
+#: promise this change removes.
+_SELECTABLE_ROLES: frozenset[str] = frozenset(
+    {"listitem", "tab", "radio", "row", "treeitem", "select"}
+)
 
 
 #: Patterns that mean "this element is something the user interacts with".
@@ -120,10 +123,26 @@ def _has_default_action(node: RawNode) -> bool:
     already expressed by ``set_text``; offering ``activate`` alongside it would
     advertise a gesture the application does not perform.
     """
-    if node.role in _TEXT_ENTRY_ROLES or _is_text_entry(node):
+    if (
+        node.role in _TEXT_ENTRY_ROLES
+        or node.role == "select"
+        # A container carrying a Value pattern is still judged here by the old
+        # text-surface rule even though `_is_text_entry` now refuses it as an
+        # input (`P2-5`): the LegacyIAccessible bridge on such a node does not
+        # mean "this has a default action", it means "this aggregates text".
+        or ("value" in node.patterns and node.role in ("pane", "document", "group", "unknown"))
+        or _is_text_entry(node)
+    ):
         # `invoke` on a text-entry node is taken seriously (some editors do
         # publish it as "open"), but the blanket `legacyiaccessible` bridge is
         # not - every Win32 edit control carries it.
+        #
+        # ``select`` is included here for the same reason even though it is no
+        # longer a *text-entry* role: a combo box commonly publishes
+        # LegacyIAccessible, and its default action is "open the drop-down",
+        # not "activate". Advertising `activate` on it would send the agent into
+        # a call the element does not honour. Its real gestures are `expand`
+        # and picking an item's `select`.
         return "invoke" in node.patterns
     return bool(node.patterns & _ACTIVATION_PATTERNS)
 
@@ -209,8 +228,16 @@ def _is_text_entry(node: RawNode) -> bool:
     # editable custom control) still means "this takes text". A plain `text`
     # node is a *label* whose Value pattern is its displayed string, so it must
     # never be treated as an input.
+    #
+    # A pane/group **that has children** is a container, not an input surface.
+    # Its Value pattern is the accessibility bridge reporting the aggregate text
+    # of what it contains (a window root carrying its title, a panel carrying
+    # its labels), and advertising `set_text` there offered a write that could
+    # only land on the container's own name - the "phantom `pn1 +set_text`" on
+    # every window root. A leaf with a writable Value pattern is still an
+    # editable surface, so the check is on structure, not on the role alone.
     if "value" in node.patterns:
-        return node.role in ("pane", "document", "group", "unknown")
+        return node.role in ("pane", "document", "group", "unknown") and not node.children
     return False
 
 
@@ -302,15 +329,45 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     if "toggle" in patterns or role in ("checkbox", "switch"):
         caps.setdefault("toggle", _cap("toggle"))
 
-    # GridItem cells are selectable, like list items (Excel, WPF DataGrid).
-    if "selectionitem" in patterns or "griditem" in patterns or role in (
-        "listitem",
-        "tab",
-        "radio",
-        "row",
-        "treeitem",
+    # `select` is "pick this one". It is offered when the platform proves the
+    # element is a selection surface - SelectionItem / GridItem - or when the
+    # role itself is selectable by definition (a list item, a tab, a radio,
+    # a combo box).
+    #
+    # The combo-box case is why this is not just a pattern check: WPF's expanded
+    # drop-down publishes each item's name on a copy of the item as well as on
+    # the real row, and the copy may refuse `invoke` while the real row answers
+    # `SelectionItemPattern.Select`. The old rule granted `activate` (from
+    # `invoke`) and no `select` at all, so the one gesture that works was never
+    # offered. The route chain is now explicit and ordered:
+    #
+    #   1. `scroll_into_view` - a virtualised row may not be realised/onscreen;
+    #      this is a real UIA verb, not a scroll guess.
+    #   2. `select`           - SelectionItemPattern.Select, with the executor
+    #      reading `CurrentIsSelected` back and reporting it unsupported when the
+    #      element silently ignored it (that is how a ghost copy behaves).
+    #   3. `activate`         - Invoke, the next UIA-reachable gesture when
+    #      SelectionItem is absent or did not take effect.
+    #
+    # No coordinate click is ever added: everything here is a UIA pattern.
+    if (
+        "selectionitem" in patterns
+        or "griditem" in patterns
+        or role in _SELECTABLE_ROLES
     ):
-        caps.setdefault("select", _cap("select"))
+        steps = []
+        if "scrollitem" in patterns and ("selectionitem" in patterns or "invoke" in patterns):
+            # Prepare only when a real selection route follows; a lone
+            # ScrollIntoView would report success without selecting anything.
+            steps.append(PrimitiveStep(primitive="scroll_into_view", target="$self"))
+        steps.append(PrimitiveStep(primitive="select", target="$self"))
+        if "invoke" in patterns:
+            # Escalation after select: the element may implement its
+            # "pick" as Invoke (a combo box item that selects on click).
+            steps.append(PrimitiveStep(primitive="activate", target="$self"))
+        cap = _cap("select")
+        cap.via = steps
+        caps.setdefault("select", cap)
 
     if "expandcollapse" in patterns or role in ("treeitem", "select", "group", "pane"):
         if "collapsed" in node.states or "expandcollapse" in patterns:

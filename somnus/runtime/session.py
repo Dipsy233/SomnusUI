@@ -17,7 +17,9 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from typing import Any, Callable
 
 from somnus.compiler.compile import CompileResult, Compiler
 from somnus.compiler.pack_schema import Pack, select_pack
@@ -32,7 +34,7 @@ from somnus.runtime.delta import Delta, diff_trees, index_by_fingerprint
 from somnus.runtime.policy import Policy
 from somnus.runtime.registry import SessionRegistry
 from somnus.runtime.resolver import Resolver
-from somnus.runtime.settle import Settler
+from somnus.runtime.settle import Settler, signature_of
 from somnus.runtime.verifier import Verifier
 from somnus.sui.serialize import INDENT, RenderOptions, render_document, render_node_line
 from somnus.sui.parse import parse_action
@@ -44,12 +46,55 @@ log = logging.getLogger("somnus.session")
 #: looked before and after the settle.
 _TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
 
+#: Set SOMNUS_PROFILE=1 to collect per-call segment timings in
+#: :attr:`Session.timing` (``enum``/``snapshot``/``probe``/``inject``/
+#: ``settle``/``compile``, in milliseconds). The runner reads these through
+#: ``bench/run.py``; they are off by default so the hot path pays nothing.
+_PROFILE = os.environ.get("SOMNUS_PROFILE", "") not in ("", "0", "false")
+
+#: Set SOMNUS_VIEWPORT=0 to turn the viewport capture off (A/B measurement and
+#: an escape hatch). On by default: on a window whose list holds hundreds of
+#: rows it turns a whole-tree observe into a structural read plus the rows that
+#: are actually on screen (measured: 3.07s -> ~0.36s on the store screen).
+_VIEWPORT_ENABLED = os.environ.get("SOMNUS_VIEWPORT", "") not in ("0", "false", "no")
+
+
+@contextmanager
+def _timed(sink: dict[str, float] | None, name: str):
+    """Accumulate one segment into ``sink``; a no-op when profiling is off."""
+    if sink is None:
+        yield
+        return
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        sink[name] = sink.get(name, 0.0) + (time.perf_counter() - started) * 1000
+
+
+#: The keys ``apply_settings`` accepts, with their canonical names, ranges and
+#: type. Validation is all-or-nothing: one bad value means none is applied.
+_SETTINGS_SCHEMA: dict[str, tuple] = {
+    "settle_quiet_ms": (int, 10, 1000),
+    "settle_poll_ms": (int, 1, 100),
+    "settle_timeout_s": (float, 0.5, 30.0),
+    "post_action_enum": (bool,),
+}
+
 #: Primitives that prepare the element for the step after them. They are only
 #: preparatory when another step follows: `focus` then `type_text` means "focus
 #: it, then type", but a capability whose *last* step is `focus` (or
 #: `scroll_into_view`) really is doing that thing. Treating a successful
 #: preparation as completion reported success for an action that never ran.
 _PREPARATORY_PRIMITIVES = frozenset({"focus", "scroll_into_view"})
+
+#: Primitives that change what is on screen (scroll position or expansion).
+#: After one of these the watched set no longer describes the viewport, so the
+#: next probe falls back to full reads and the response says to re-observe
+#: rather than handing back rows that are no longer where it claims.
+_VIEWPORT_MOVING_PRIMITIVES = frozenset(
+    {"scroll", "scroll_into_view", "expand", "collapse"}
+)
 
 #: Primitives that write text into a control. After one of these succeeds the
 #: response echoes the exact value written, so the agent can confirm what
@@ -145,6 +190,23 @@ class Session:
         self.settler = settler or Settler(
             skip_when_deterministic=self._settle_deterministic
         )
+        #: Whether a call re-enumerates windows after its action. On by default:
+        #: an action that opens a window (a menu, a modal, a second app window)
+        #: must be reportable in the same response. Turning it off saves one
+        #: enumeration per call (~85-121ms measured) and hides exactly that -
+        #: the new window still shows up on the next ``observe``.
+        self.post_action_enum: bool = True
+        #: The settings this session started with, so ``reset`` restores them
+        #: (file + environment as resolved by the config layer, not the
+        #: built-in defaults). Captured lazily on the first ``apply_settings``:
+        #: a host builds the session and *then* assigns ``post_action_enum``
+        #: from the config file (see ``cli.build_session``), so a snapshot taken
+        #: in ``__init__`` would restore the built-in default instead of the
+        #: configured value.
+        self._startup_settings: dict | None = None
+        #: Per-call segment timings (see module attribute ``_PROFILE``). ``None``
+        #: unless SOMNUS_PROFILE is on.
+        self.timing: dict[str, float] | None = {} if _PROFILE else None
         self.registry = SessionRegistry()
         self.compiler = compiler or Compiler(allocator=self.registry.allocator)
 
@@ -179,6 +241,33 @@ class Session:
         self._windows_before_action: list = []
         #: semantic projection digest; `rev` only moves when this changes.
         self._last_signature: tuple | None = None
+        #: The raw tree the current compilation was built from, and the window
+        #: it belongs to. Settle hands it back untouched when a signature probe
+        #: says nothing changed, which is what removes the second full
+        #: snapshot from a call (see ``Settler.wait``). The window id is kept
+        #: beside it: after a switch the tree describes the old desktop and
+        #: must not be reused.
+        self._last_raw: RawTree | None = None
+        self._last_raw_window: str | None = None
+        #: The signature of that tree *as the provider returned it*, i.e. before
+        #: compilation normalised its nodes in place (``edit`` -> ``input``).
+        #: Settle compares the probe against this, not against the tree, or every
+        #: probe would look different from the stored frame.
+        self._last_raw_sig: str | None = None
+        #: As-read shallow signature per native, for the watched-set comparison
+        #: (compilation rewrites roles in place, so the tree itself is no longer
+        #: in the form a fresh probe returns).
+        self._last_raw_map: dict = {}
+        #: True when `self.result` came from the viewport capture (structure +
+        #: on-screen rows only). `find`/`inspect` take one full read before
+        #: giving up, instead of reporting "not found" for a ref that merely
+        #: was not captured.
+        self._viewport_limited: bool = False
+        #: Identity keys (runtime id, else ids+path) of the nodes the last
+        #: viewport capture actually read. Settle compares only these plus the
+        #: call's own target and its ancestors; an empty list means "no captured
+        #: layers", which disables layered probing (full snapshots instead).
+        self._watch_natives: list = []
         #: session ref -> native window_id, and reverse, for CALL w?.focus().
         self._window_refs: dict[str, str] = {}
         self._window_refs_by_id: dict[str, str] = {}
@@ -186,10 +275,425 @@ class Session:
     # ------------------------------------------------------------------ windows
 
     def refresh_windows(self) -> list[WindowInfo]:
-        self.windows = self.provider.list_windows()
+        with _timed(self.timing, "enum"):
+            self.windows = self.provider.list_windows()
         if self.target_window is None and self.windows:
             self.target_window = self._default_window()
         return self.windows
+
+    # ----------------------------------------------------------------- settings
+
+    def _current_settings(self) -> dict:
+        """The values in force right now, under their canonical keys."""
+        return {
+            "settle_quiet_ms": int(self.settler.quiet_ms),
+            "settle_poll_ms": int(self.settler.poll_interval_ms),
+            "settle_timeout_s": float(self.settler.timeout_s),
+            "post_action_enum": bool(self.post_action_enum),
+        }
+
+    def apply_settings(
+        self,
+        *,
+        quiet_ms: int | None = None,
+        poll_ms: int | None = None,
+        timeout_s: float | None = None,
+        post_action_enum: bool | None = None,
+        persist: bool = False,
+        reset: bool = False,
+    ) -> dict:
+        """Change this session's pacing settings, atomically.
+
+        Only the keys passed are changed; ``reset=True`` puts everything back to
+        the values this session started with (the config layer's file + env
+        result), and explicit keys then override that baseline in the same call.
+
+        Validation is **all or nothing**: one bad value means nothing is applied
+        and the error names the key, its expected range and the value received.
+        Strings are rejected rather than parsed - ``"40"`` silently widening or
+        narrowing the quiet window is exactly the class of surprise this
+        prevents.
+
+        The change applies to the *next* ``call``/``observe``/``find``/
+        ``call_batch``; ``Settler.wait`` reads the fields when it starts, so an
+        in-flight call keeps the values it began with.
+
+        ``persist=True`` writes the effective values through the config layer's
+        save entry (``somnus.config.persist_session_settings``); that entry is
+        owned by the config work, and until it exists this raises
+        ``NotImplementedError`` **without changing anything**.
+        """
+        errors: list[str] = []
+        updates: dict = {}
+
+        provided = {
+            "settle_quiet_ms": quiet_ms,
+            "settle_poll_ms": poll_ms,
+            "settle_timeout_s": timeout_s,
+            "post_action_enum": post_action_enum,
+        }
+        for key, value in provided.items():
+            if value is None:
+                continue
+            kind, *bounds = _SETTINGS_SCHEMA[key]
+            if kind is bool:
+                if isinstance(value, bool):
+                    updates[key] = value
+                else:
+                    errors.append(f"key={key} expected bool got={value!r}")
+                continue
+            # ``bool`` is an ``int`` in Python; True must not become quiet_ms=1.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                if kind is int:
+                    errors.append(
+                        f"key={key} expected int in {bounds[0]}..{bounds[1]} got={value!r}"
+                    )
+                else:
+                    errors.append(
+                        f"key={key} expected number in {bounds[0]}..{bounds[1]} got={value!r}"
+                    )
+                continue
+            if kind is int and not isinstance(value, int):
+                errors.append(
+                    f"key={key} expected int in {bounds[0]}..{bounds[1]} got={value!r}"
+                )
+                continue
+            if not bounds[0] <= float(value) <= bounds[1]:
+                label = "int" if kind is int else "number"
+                errors.append(
+                    f"key={key} expected {label} in {bounds[0]}..{bounds[1]} got={value!r}"
+                )
+                continue
+            updates[key] = int(value) if kind is int else float(value)
+
+        if not isinstance(persist, bool):
+            errors.append(f"key=persist expected bool got={persist!r}")
+        if not isinstance(reset, bool):
+            errors.append(f"key=reset expected bool got={reset!r}")
+
+        if errors:
+            raise SomnusError(
+                ErrorCode.INVALID_ARGUMENT,
+                message="; ".join(errors) + "; nothing changed",
+            )
+
+        if self._startup_settings is None:
+            # First settings call: this is the baseline ``reset`` returns to.
+            self._startup_settings = self._current_settings()
+        effective = (
+            dict(self._startup_settings)
+            if reset
+            else self._current_settings()
+        )
+        effective.update(updates)
+
+        persisted = None
+        if persist:
+            # Write first: a failed save must leave the session as it was,
+            # otherwise the process would run values the file does not contain.
+            persisted = self._persist_settings(effective)
+
+        self.settler.quiet_ms = effective["settle_quiet_ms"]
+        self.settler.poll_interval_ms = effective["settle_poll_ms"]
+        self.settler.timeout_s = effective["settle_timeout_s"]
+        self.post_action_enum = effective["post_action_enum"]
+
+        out = dict(effective)
+        out["scope"] = "session"
+        if persisted is not None:
+            out["persisted"] = persisted
+        return out
+
+    def _persist_settings(self, values: dict) -> str:
+        """Hand the effective values to the config layer's save entry."""
+        from somnus import config as config_module
+
+        hook = getattr(config_module, "persist_session_settings", None)
+        if hook is None:
+            raise NotImplementedError(
+                "persist=true needs the config layer's save entry: "
+                "somnus.config.persist_session_settings(**values) -> path; "
+                "nothing changed"
+            )
+        return str(hook(**values))
+
+    def _compile_tree(
+        self, tree: RawTree, pack: Pack | None, *, window_ref: str | None = None
+    ) -> CompileResult:
+        with _timed(self.timing, "compile"):
+            return self.compiler.compile(tree, pack=pack, window_ref=window_ref)
+
+    def _remember_raw(self, tree: RawTree) -> None:
+        """Store the frame settle may reuse, *before* it is compiled.
+
+        The signature must be taken here: :mod:`somnus.compiler.normalize`
+        rewrites raw nodes in place, so after compilation the tree no longer
+        answers with the signature a fresh read would produce. When ``tree`` is
+        the frame we already hold (settle found nothing changed), the signature
+        stays as it was.
+        """
+        if tree is self._last_raw and self._last_raw_sig is not None:
+            self._last_raw_window = self.target_window
+            return
+        self._last_raw = tree
+        self._last_raw_window = self.target_window
+        self._last_raw_sig = signature_of(tree)
+        #: Per-native shallow signatures of the frame *as read*, captured
+        #: before compilation normalises roles in place (``edit`` -> ``input``).
+        #: The watched-set comparison needs the as-read form or every probe
+        #: would look different from the stored frame.
+        self._last_raw_map = {
+            _native_key(node.native): _shallow_signature(node) for node in tree.walk()
+        }
+
+    def _signature_probe(self) -> Callable[[], RawTree] | None:
+        """The cheap probe for settle, when the provider offers one.
+
+        Prefers the provider's *layered* probe (structure + visible rows in the
+        signature profile); the older whole-subtree signature read remains for a
+        provider that only implements that. Either way, what is compared is the
+        watched set, not the raw tree (see ``_watch_signature``).
+        """
+        window = self.target_window
+        if window is None:
+            return None
+        layered = getattr(self.provider, "snapshot_probe", None)
+        if layered is not None:
+            def probe_layered() -> RawTree:
+                with _timed(self.timing, "probe"):
+                    return layered(window)  # type: ignore[arg-type]
+            return probe_layered
+        snapshot_signature = getattr(self.provider, "snapshot_signature", None)
+        if snapshot_signature is None:
+            return None
+
+        def probe() -> RawTree:
+            with _timed(self.timing, "probe"):
+                return snapshot_signature(window)  # type: ignore[arg-type]
+
+        return probe
+
+    def _watch_for_call(self, refs: list[str]) -> list:
+        """The nodes settle may compare: captured layers + touched refs/ancestors.
+
+        Returns ``[]`` when there is no captured layer (no viewport observe has
+        run), which the caller turns into "no probe, full snapshots" - probing
+        without a known visible set would be a guess, not evidence.
+
+        The same ``[]`` is returned when a touched ref cannot be placed in the
+        set at all (it maps no native element, or is not in the current
+        compilation). That is the hard rule: a probe that cannot see the
+        element this call acted on is not evidence of "unchanged", so the wait
+        must pay for a full snapshot instead.
+        """
+        if not self._watch_natives or self.result is None:
+            return []
+        watch = list(self._watch_natives)
+        seen = set(watch)
+        for ref in refs:
+            if not ref:
+                continue
+            keys = self._ancestor_keys(ref)
+            if not keys:
+                if _TRACE_STATES:
+                    log.info(
+                        "settle probe disabled: touched ref %s has no native "
+                        "identity; using full snapshots",
+                        ref,
+                    )
+                return []
+            for key in keys:
+                if key not in seen:
+                    seen.add(key)
+                    watch.append(key)
+        return watch
+
+    def _ancestor_keys(self, ref: str) -> list:
+        """The ref's own identity key plus every ancestor's, from the current result."""
+        if self.result is None:
+            return []
+        chain = _ref_path(self.result.root, ref)
+        if not chain:
+            return []
+        out = []
+        for node in chain:
+            source = self.result.sources.get(node.ref)
+            if source is not None:
+                out.append(_native_key(source.native))
+        return out
+
+    def _previous_watch_signature(self, watch: list) -> str | None:
+        """The watched-set signature of the pre-action frame, as it was read."""
+        if (
+            not watch
+            or self._last_raw_window != self.target_window
+            or not self._last_raw_map
+        ):
+            return None
+        parts = []
+        for native in watch:
+            signature = self._last_raw_map.get(native)
+            if signature is None:
+                return None
+            parts.append(signature)
+        return "\x1f".join(parts)
+
+    def _watch_signature(self, tree: RawTree, watch: list) -> str | None:
+        return _watch_signature(tree, watch)
+
+    def _settle(
+        self, *, fetch: Callable[[], RawTree], refs: list[str]
+    ) -> tuple[RawTree, Any]:
+        """Run settle over the watched set, falling back to full reads.
+
+        The hard rule lives here: if the pre-action frame cannot evaluate the
+        watched set (a watched node is absent, or no viewport capture ever
+        established the layers), the probe is dropped and the settler uses full
+        snapshots. It never treats "not captured" as "did not change".
+        """
+        probe = self._signature_probe()
+        layered = getattr(self.provider, "snapshot_probe", None) is not None
+        if probe is None and _TRACE_STATES:
+            log.info("settle probe disabled: provider offers no probe; full snapshots")
+        if not layered:
+            # Legacy path: a provider whose probe reads the *whole* tree's
+            # signature can be compared directly (no watched-set projection).
+            previous = self._settle_previous() if probe else None
+            return self.settler.wait(
+                fetch,
+                event_source=lambda: self._event_count,
+                deterministic=self._settle_deterministic,
+                previous=previous[0] if previous else None,
+                previous_signature=previous[1] if previous else None,
+                probe=probe,
+            )
+        watch = self._watch_for_call(refs) if probe else []
+        previous = self._settle_previous() if (probe and watch) else None
+        previous_signature = (
+            self._previous_watch_signature(watch) if previous else None
+        )
+        signature = None
+        if previous_signature is None:
+            if probe is not None and _TRACE_STATES:
+                reason = "no captured layer" if not watch else "watched set not covered"
+                log.info("settle probe disabled: %s; using full snapshots", reason)
+            probe = None
+            previous = None
+        else:
+            signature = lambda tree: self._watch_signature(tree, watch)  # noqa: E731
+        return self.settler.wait(
+            fetch,
+            event_source=lambda: self._event_count,
+            deterministic=self._settle_deterministic,
+            previous=previous[0] if previous else None,
+            previous_signature=previous_signature,
+            probe=probe,
+            signature=signature,
+        )
+
+    def _settle_previous(self) -> tuple[RawTree, str] | None:
+        """The pre-action frame and its as-read signature, for the current window."""
+        if (
+            self._last_raw is None
+            or self._last_raw_sig is None
+            or self._last_raw_window != self.target_window
+        ):
+            return None
+        return self._last_raw, self._last_raw_sig
+
+    def _fetch_snapshot(self) -> RawTree:
+        with _timed(self.timing, "snapshot"):
+            return self.provider.snapshot(self.target_window)  # type: ignore[arg-type]
+
+    def _snapshot_viewport(
+        self, expanded_paths: set[tuple[int, ...]] | None = None
+    ) -> tuple[RawTree, bool]:
+        """The ``observe`` snapshot, and whether it is viewport-scoped.
+
+        Falls back to the full read for a provider without viewport capture,
+        when it is switched off, or when the capture fails - never to an empty
+        tree. A fallback tree is complete, so the caller may keep it as settle's
+        reuse frame; a viewport-scoped one may not.
+
+        ``expanded_paths`` are native paths (from the previous result) of
+        containers the caller asked to open; the provider reads a page for them
+        instead of only the on-screen rows.
+        """
+        if not _VIEWPORT_ENABLED or self.target_window is None:
+            return self._snapshot(), False
+        capture = getattr(self.provider, "snapshot_viewport", None)
+        if capture is None:
+            return self._snapshot(), False
+        try:
+            with _timed(self.timing, "snapshot"):
+                try:
+                    tree = capture(
+                        self.target_window,  # type: ignore[arg-type]
+                        expanded_paths=expanded_paths or set(),
+                    )
+                except TypeError:
+                    # A provider that implements the basic form only.
+                    tree = capture(self.target_window)  # type: ignore[arg-type]
+        except KeyError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the full read is the fallback
+            log.debug("viewport capture failed (%s); using the full snapshot", exc)
+            return self._snapshot(), False
+        # A provider that fell back internally must say so; the default is the
+        # honest one for anyone implementing the method: it is viewport-scoped.
+        partial = bool(getattr(self.provider, "last_viewport_partial", True))
+        return tree, partial
+
+    def _expand_paths(self, expanded: set[int] | set[str] | None) -> set[tuple[int, ...]]:
+        """Native paths of refs the caller wants expanded, from the *current* result.
+
+        Refs are session handles; the provider speaks native paths. This is the
+        only place the two meet, and it runs before the new capture because
+        after it the refs may have been re-allocated.
+        """
+        if not expanded or self.result is None:
+            return set()
+        previous_window = getattr(self.result, "window_id", None)
+        if previous_window and str(previous_window) != self.target_window:
+            # The previous result describes another window; its paths would
+            # name different elements here.
+            return set()
+        paths: set[tuple[int, ...]] = set()
+        for item in expanded:
+            if not isinstance(item, str):
+                continue
+            source = self.result.sources.get(item)
+            if source is not None:
+                paths.add(tuple(source.native.path))
+        return paths
+
+    def _apply_viewport_meta(self, result: CompileResult) -> None:
+        """Copy the provider's viewport metadata onto the compiled containers.
+
+        The field names are the contract shared with the projection work:
+        ``items_total`` / ``items_visible`` / ``items_truncated`` / optional
+        ``scroll_pct``. They live in ``attrs`` so the renderer and any verifier
+        can read them without the raw layer growing provider-only fields.
+        """
+        provider_meta = getattr(self.provider, "viewport_meta", None)
+        if not provider_meta or self.target_window is None:
+            return
+        info_by_path = provider_meta.get(self.target_window) or {}
+        if not info_by_path:
+            return
+        for node in result.root.walk():
+            source = result.sources.get(node.ref)
+            if source is None:
+                continue
+            info = info_by_path.get(tuple(source.native.path))
+            if not info:
+                continue
+            node.attrs["items_total"] = int(info.get("items_total", 0))
+            node.attrs["items_visible"] = int(info.get("items_visible", 0))
+            node.attrs["items_truncated"] = bool(info.get("items_truncated", False))
+            scroll = info.get("scroll_pct")
+            if scroll is not None:
+                node.attrs["scroll_pct"] = int(scroll)
 
     def _default_window(self) -> str:
         """Pick the window to start from.
@@ -289,18 +793,35 @@ class Session:
             self.refresh_windows()
         if self.target_window is None:
             raise SomnusError(ErrorCode.TARGET_NOT_FOUND, message="no window")
-        return self.provider.snapshot(self.target_window)
+        return self._fetch_snapshot()
 
     def _recompile(self) -> CompileResult:
-        tree = self._snapshot()
+        return self._recompile_with(self._snapshot(), remember=True)
+
+    def _recompile_with(self, tree: RawTree, *, remember: bool) -> CompileResult:
+        """Compile ``tree`` and adopt it as the session's current result.
+
+        ``remember=False`` is the viewport capture's path: the tree only holds
+        the structure plus the rows that are on screen, so it must **not** become
+        settle's reuse frame (a probe answers with a whole tree and would
+        compare two different universes). The result is still adopted, because
+        the refs it printed must resolve; whenever a later tool names a ref that
+        is not in it, that tool recompiles in full (see ``find``/``inspect``/
+        ``call``).
+        """
+        if remember:
+            # Record the frame *before* compiling: compilation normalises raw
+            # nodes in place, and settle compares against the as-read signature.
+            self._remember_raw(tree)
         pack = self._current_pack()
         # Pin the window's ref: the session owns the wN namespace (the window
         # list and CALL wN.focus() hand it to the agent), so recompiling the
         # same window must not mint a fresh name for it.
         pinned = self._window_refs_by_id.get(self.target_window or "")
-        result = self.compiler.compile(tree, pack=pack, window_ref=pinned)
+        result = self._compile_tree(tree, pack, window_ref=pinned)
         report = self.registry.reconcile(result)
         self.result = result
+        self._viewport_limited = not remember
         # A fingerprint shared by several nodes cannot be resolved to one ref;
         # remember them so `call` can return TARGET_AMBIGUOUS.
         self._ambiguous_refs = {
@@ -409,7 +930,7 @@ class Session:
 
         # Compile the popup with the same pipeline as any window, so its nodes
         # get ordinary refs the agent can call.
-        compiled = self.compiler.compile(tree, pack=None)
+        compiled = self._compile_tree(tree, None)
         # Register it with the session registry and mount it under the owning
         # node in *this* compilation. Without this the menu's refs would live
         # only inside the temporary compilation and the very next call would
@@ -544,7 +1065,7 @@ class Session:
         windows_only: bool = False,
         include_other_windows: bool = False,
         full: bool = False,
-        expanded: set[int] | None = None,
+        expanded: set[int] | set[str] | None = None,
     ) -> Observation:
         """Observe one window's content, or just the window list.
 
@@ -615,7 +1136,19 @@ class Session:
             # numbering are allocated from it), so the target keeps its slot.
             self.windows = [win if w.window_id == win.window_id else w for w in self.windows]
 
-        result = self._recompile()
+        # Viewport capture: the structure plus only the rows that are on screen.
+        # A partial frame is kept out of settle's reuse slot (a probe answers
+        # with a whole tree and would compare two different universes); the full
+        # fallback is remembered exactly like before. Either way the compiled
+        # result is adopted, so every printed ref resolves.
+        expand_paths = self._expand_paths(expanded)
+        tree, partial = self._snapshot_viewport(expand_paths)
+        result = self._recompile_with(tree, remember=not partial)
+        self._apply_viewport_meta(result)
+        # The watched set for settle: exactly the nodes this capture read.
+        # A full fallback leaves no captured layers, so probing is disabled
+        # until a viewport observe establishes them again.
+        self._watch_natives = _unique_natives(result) if partial else []
         # Surface windows that appeared/vanished/renamed since the last look so
         # a cross-window workflow notices without a separate observation. The
         # first observation only establishes the baseline.
@@ -647,11 +1180,26 @@ class Session:
         )
         engine = ProjectionEngine(body_budget, l0=(level == 0))
         projection = apply_projection(result.root, self._pack_projection())
+        # `expanded` may be node ids (a caller that already holds this result)
+        # or refs (the text path, which is the only stable handle before this
+        # compilation exists). Refs are resolved *against the new result*: the
+        # old id-based lookup always missed, which made `OBSERVE ... expand`
+        # silently a no-op even though the marker promises it.
+        expanded_ids: set[int] | None = None
+        if expanded:
+            expanded_ids = set()
+            for item in expanded:
+                if isinstance(item, int):
+                    expanded_ids.add(item)
+                    continue
+                node = result.find(item)
+                if node is not None:
+                    expanded_ids.add(id(node))
         plan = engine.plan(
             result.root,
             projection,
             full=full,
-            expanded=expanded,
+            expanded=expanded_ids,
         )
 
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
@@ -674,6 +1222,20 @@ class Session:
             suffix = (" " + " ".join(flags)) if flags else ""
             lines.append(f"  WINDOW {ref} {_q(w.title)}{suffix}")
         return "\n".join(lines)
+
+    def _post_action_window_delta(self) -> str:
+        """Window delta for a call response, only when the list was refreshed.
+
+        With ``post_action_enum`` off the window list is the one from before the
+        action. Reporting a delta against it would say "nothing changed" while
+        a window may well have opened; worse, :meth:`_window_delta` advances
+        ``_prev_windows`` to that stale set, so the *next* observation would no
+        longer report the new window either. Skipping here keeps the baseline
+        intact: the next real enumeration reports ``+ WINDOW`` as usual.
+        """
+        if not self.post_action_enum:
+            return ""
+        return self._window_delta()
 
     def _window_delta(self) -> str:
         """Delta lines for windows that appeared or disappeared.
@@ -842,6 +1404,14 @@ class Session:
         matches = [m for m in matches if m.fingerprint not in parent_fps]
 
         if not matches:
+            if self._viewport_limited:
+                # The current result came from the viewport capture: the rows
+                # that are not on screen simply were not read. A miss here may
+                # be "not captured", not "not present", so take one full read
+                # (which clears the flag) and search again rather than
+                # dead-ending the agent.
+                self._recompile()
+                return self.find(action, limit=limit)
             # A bare `FOUND 0` dead-ends the agent. Name the top-level
             # containers of the current window so the next query can be
             # scoped (e.g. `FIND "..." in l2`) or an observe can re-orient.
@@ -880,6 +1450,11 @@ class Session:
             self._recompile()
         assert self.result is not None
         node = self.result.find(action.ref or "")
+        if node is None and self._viewport_limited:
+            # The ref may name a row that is not on screen; the viewport capture
+            # never read it. One full read before reporting "no such target".
+            self._recompile()
+            node = self.result.find(action.ref or "")
         if node is None:
             raise target_not_found(action.ref or "")
 
@@ -933,13 +1508,11 @@ class Session:
                     )
                 raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
 
-        # Ambiguity check: the ref's fingerprint matched more than one element.
-        if action.ref in self._ambiguous_refs:
-            raise SomnusError(
-                ErrorCode.TARGET_AMBIGUOUS,
-                ref=action.ref,
-                message="fingerprint matched multiple elements",
-            )
+        # Ambiguity is *deferred*, not fatal: a ref that shares a fingerprint
+        # with another node still names exactly one node in this compilation,
+        # so it can be acted on first. If the element refuses the interface (or
+        # died), `_execute_with_twin` retries its twin once. The set is kept for
+        # diagnostics and for the batch's per-step report.
 
         resolver = Resolver(self.result)
         before_index = index_by_fingerprint(self.result.root)
@@ -976,6 +1549,10 @@ class Session:
             entity_node = verifier.by_entity.get(name)
             if entity_node is not None:
                 verifier.capture(entity_node.ref)
+        # A twin may be the element the action actually lands on, so its
+        # pre-action state is part of the baseline too.
+        for candidate in self._twin_candidates(action.ref or ""):
+            verifier.capture(candidate)
 
         if _TRACE_STATES:
             log.info(
@@ -989,29 +1566,38 @@ class Session:
             )
 
         # Walk the declared routes in order; the first one that works wins.
-        chain = self._execute_chain(action, resolution)
+        # If the element refuses every route (or is gone), the same capability
+        # is retried once on a twin ref that shares its fingerprint.
+        chain, resolution, healed = self._execute_with_twin(
+            action, resolution, resolver, confirmed=confirmed
+        )
+        effective_ref = healed or (action.ref or "")
         written = chain.written
 
         # Settle, recompile, compute delta, verify. Refresh the window list
-        # first: an action may have opened a dialog or replaced the target
-        # window entirely (closing a document raises a save dialog), and the
-        # delta must reflect the desktop as it is now.
-        self.refresh_windows()
+        # first (unless the session turned post-action enumeration off): an
+        # action may have opened a dialog or replaced the target window
+        # entirely (closing a document raises a save dialog), and the delta
+        # must reflect the desktop as it is now.
+        if self.post_action_enum:
+            self.refresh_windows()
         # Re-raise before the settle snapshot: the action (or the user) may have
         # moved the foreground away, and the settled tree is only complete for a
         # window that is rendered.
         if self.target_window:
             self._peek(self.target_window)
+        # Layered probe: compare only the watched set (captured layers + the
+        # touched ref and its ancestors). No captured layer, or a previous frame
+        # whose watched set is not fully evaluable -> no probe at all (full reads).
         try:
-            tree, settle_result = self.settler.wait(
-                lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
-                event_source=lambda: self._event_count,
-                deterministic=self._settle_deterministic,
-            )
+            with _timed(self.timing, "settle"):
+                tree, settle_result = self._settle(fetch=self._fetch_snapshot, refs=[effective_ref])
         except KeyError:
             # The target window vanished mid-action (e.g. the save dialog
             # replaced it). The action itself succeeded; report unverified
-            # with a window delta instead of failing the whole call.
+            # with a window delta instead of failing the whole call. This path
+            # re-enumerates unconditionally: the window is gone, so the list is
+            # the only thing that can say what replaced it.
             self.refresh_windows()
             text = f"OK_UNVERIFIED rev={self.rev}\n{self._window_delta()}".strip()
             text += f"\n~ target replaced (window {self.target_window} closed)" if self._window_by_ref(self.target_window) is None else ""
@@ -1022,7 +1608,9 @@ class Session:
                 text=text,
                 settled=False,
             )
-        result = self.compiler.compile(tree, pack=self._current_pack())
+        # Signature before compile (normalisation rewrites the raw nodes).
+        self._remember_raw(tree)
+        result = self._compile_tree(tree, self._current_pack())
         self.registry.reconcile(result)
         self.result = result
         self._bump_rev()
@@ -1054,7 +1642,7 @@ class Session:
         popup_text = ""
         if any(s.primitive == "context_menu" for s in resolution.steps):
             self._record_menu_owner(
-                action.ref,
+                effective_ref,
                 result,
                 before_fingerprints=set(before_index),
             )
@@ -1065,16 +1653,16 @@ class Session:
                 # tree. The classic Win32 Shell menu is a separate top-level
                 # popup window (#32768), which would otherwise leave the agent
                 # with "context_menu succeeded" and nothing to act on.
-                popup_text = self._mount_popup_content(action.ref)
+                popup_text = self._mount_popup_content(effective_ref)
 
         after_index = index_by_fingerprint(result.root)
         delta = diff_trees(before_index, after_index)
 
-        verify = verifier.verify(resolution.effects, action.ref or "", delta)
+        verify = verifier.verify(resolution.effects, effective_ref, delta)
         if verify.status == "EFFECT_NOT_CONFIRMED":
             raise SomnusError(
                 ErrorCode.EFFECT_NOT_CONFIRMED,
-                ref=action.ref,
+                ref=effective_ref,
                 message="; ".join(verify.failed),
             )
 
@@ -1099,7 +1687,7 @@ class Session:
         status = verify.status
         no_effect = settle_result.settled and delta.empty
         is_context_menu = any(s.primitive == "context_menu" for s in resolution.steps)
-        body = self._window_delta()
+        body = self._post_action_window_delta()
         tree_body = self.delta_text(delta)
         if popup_text:
             # A popup menu is rendered as a subtree of the node that opened it,
@@ -1116,8 +1704,14 @@ class Session:
         # became the literal text. This is data, so it is quoted, like every
         # other string the runtime reports.
         if written is not None:
-            echo = f"~ {action.ref} text={_q(str(written))}"
+            echo = f"~ {effective_ref} text={_q(str(written))}"
             body = f"{body}\n{echo}" if body else echo
+        if healed:
+            # The ref the caller named had no usable twin answer; the same
+            # element (same fingerprint) did. Say which one acted, so the agent's
+            # next CALL uses a ref that works.
+            note = f"~ healed {action.ref}→{healed}"
+            body = f"{body}\n{note}" if body else note
         # A context_menu on a tray icon may open its menu as a *separate
         # top-level window* (QQ's CEF tray menu), invisible to the in-window
         # delta. Compare the window list captured after the action against
@@ -1170,17 +1764,33 @@ class Session:
             elif is_context_menu and menu_produced:
                 status = "OK"
 
+        # P2-4, the `settled` half. The verifier flattens "no declared effects
+        # but the tree visibly moved" to OK on the delta alone; this is the only
+        # layer that knows whether the settle actually finished. A visible change
+        # on a tree that timed out is evidence, not confirmation - the same
+        # change may still be mid-flight - so it is reported as OK_UNVERIFIED
+        # (with `settled=false`) instead of claiming OK. A *verified* declared
+        # effect (checked > 0) is a concrete observation and keeps OK, and a
+        # menu that really appeared is structural evidence, not a delta guess.
+        if (
+            status == "OK"
+            and not settle_result.settled
+            and verify.checked == 0
+            and not (is_context_menu and menu_produced)
+        ):
+            status = "OK_UNVERIFIED"
+
         if is_context_menu and not menu_produced:
             # The menu gesture ran but produced nothing anywhere: not in this
             # window's tree, not as a shell popup, not as a new window.
             direct = sorted(
                 c
-                for c in _node_caps(self.result, action.ref)
+                for c in _node_caps(self.result, effective_ref)
                 if c in ("activate", "select", "toggle", "expand", "open")
             )
             hint = (
-                f"; {action.ref} does expose {'/'.join(direct)} - "
-                f"try CALL {action.ref}.{direct[0]}()"
+                f"; {effective_ref} does expose {'/'.join(direct)} - "
+                f"try CALL {effective_ref}.{direct[0]}()"
                 if direct
                 else ""
             )
@@ -1200,20 +1810,27 @@ class Session:
             # activate ran, settled, and the window tree did not change. The
             # gesture may have opened a shell panel (tray overflow) that lives
             # outside the window - probe the popup hook once before giving up.
-            popup_text = self._mount_popup_content(action.ref)
+            popup_text = self._mount_popup_content(effective_ref)
             if popup_text:
                 tree_body = popup_text
                 body = f"{body}\n{tree_body}" if body else tree_body
-            elif "context_menu" in _node_caps(self.result, action.ref):
+            elif "context_menu" in _node_caps(self.result, effective_ref):
                 # activate ran, settled, and changed nothing - on a row that
                 # also exposes context_menu. This is the QQ conversation-row
                 # shape: the Invoke only highlights and the real command lives
                 # in the menu. Say it once, here, so the agent does not
                 # conclude the row is inert and give up.
                 body = (body + "\n" if body else "") + (
-                    f"~ no effect; {action.ref} exposes context_menu - "
-                    f'the command may be in the menu: CALL {action.ref}.context_menu()'
+                    f"~ no effect; {effective_ref} exposes context_menu - "
+                    f'the command may be in the menu: CALL {effective_ref}.context_menu()'
                 )
+        # A scroll/expand moved the viewport: the watched set no longer names
+        # what is on screen. Drop it (the next probe is a full read) and say so,
+        # instead of leaving the agent to act on rows from the old viewport.
+        if any(s.primitive in _VIEWPORT_MOVING_PRIMITIVES for s in resolution.steps):
+            self._watch_natives = []
+            note = "~ viewport changed; OBSERVE again"
+            body = f"{body}\n{note}" if body else note
         return CallOutcome(
             status=status,
             rev=self.rev,
@@ -1223,6 +1840,88 @@ class Session:
             + ("\n" + body if body else ""),
             settled=settle_result.settled,
         )
+
+    def _execute_step(self, step) -> Any:
+        with _timed(self.timing, "inject"):
+            return self.provider.execute(step.native, step.primitive, step.value)
+
+    # -------------------------------------------------------------- twin retry
+
+    def _fingerprint_of_ref(self, ref: str) -> str | None:
+        if self.result is not None:
+            fingerprint = self.result.fingerprints.get(ref)
+            if fingerprint:
+                return fingerprint
+        return self.registry.fingerprint_of(ref)
+
+    def _twin_candidates(self, ref: str) -> list[str]:
+        """Live refs of *this* window that share ``ref``'s fingerprint.
+
+        A fingerprint identifies one element shape; two nodes may carry it (a
+        WPF combo exposing each row twice, a tray flyout holding a hidden
+        copy), and the runtime used to refuse both refs outright. The ref the
+        agent holds still names exactly one node, so it is usable; the twin is
+        the fallback for when that node turns out not to answer.
+
+        Scoped to the current window on purpose: the same fingerprint in another
+        window names a different native element. Stale refs (not resolvable in
+        the current compilation) are dropped - rebinding an action onto a
+        ref that no longer names anything would be a silent retarget.
+        """
+        if not ref or self.result is None:
+            return []
+        fingerprint = self._fingerprint_of_ref(ref)
+        if not fingerprint:
+            return []
+        out: list[str] = []
+        for candidate in self.registry.candidates_for(
+            fingerprint, window_id=self.target_window
+        ):
+            if candidate == ref or candidate in out:
+                continue
+            if self.result.find(candidate) is None:
+                continue
+            out.append(candidate)
+        return out
+
+    def _retryable_twin(self, action: Action, err: SomnusError) -> str | None:
+        """The twin to retry after ``err``, or None when the error is not that kind.
+
+        Only "this element does not answer" earns a retry: a missing interface
+        (``ACTION_NOT_SUPPORTED``) or a vanished element (``STALE_TARGET``). A
+        disabled control, a UIPI denial or a failed effect is a real answer about
+        the element and must not be routed around onto a sibling.
+        """
+        if err.code not in (ErrorCode.ACTION_NOT_SUPPORTED, ErrorCode.STALE_TARGET):
+            return None
+        candidates = self._twin_candidates(action.ref or "")
+        return candidates[0] if candidates else None
+
+    def _execute_with_twin(
+        self,
+        action: Action,
+        resolution,
+        resolver: "Resolver",
+        *,
+        confirmed: bool | None = None,
+    ) -> tuple[_ChainResult, Any, str | None]:
+        """Execute the action; on "does not answer", retry the same capability once.
+
+        Returns ``(chain, resolution_actually_used, healed_ref_or_None)``. The
+        twin carries the same fingerprint, so its capability set and risk are
+        the same; it is re-resolved only because its native reference differs.
+        """
+        try:
+            return self._execute_chain(action, resolution), resolution, None
+        except SomnusError as err:
+            twin = self._retryable_twin(action, err)
+            if twin is None:
+                raise
+            twin_action = replace(action, ref=twin)
+            twin_resolution = self._resolve_with_hint(resolver, twin_action)
+            self.policy.check_action(twin_resolution, confirmed=confirmed)
+            chain = self._execute_chain(twin_action, twin_resolution)
+            return chain, twin_resolution, twin
 
     def _execute_chain(self, action: Action, resolution) -> _ChainResult:
         """Walk a resolution's route chain at execution time.
@@ -1267,7 +1966,7 @@ class Session:
             except SomnusError as err:
                 denied.append((step.primitive, err))
                 continue
-            exec_result = self.provider.execute(step.native, step.primitive, step.value)
+            exec_result = self._execute_step(step)
             self._audit_action(action, step, exec_result)
             is_last = index == len(ordered_steps) - 1
             if _TRACE_STATES:
@@ -1317,10 +2016,20 @@ class Session:
             # diagnosable.
             if exec_result is not None and exec_result.unsupported:
                 tried = "/".join(s.primitive for s in ordered_steps)
+                # Carry the last route's own answer, not just "unsupported": the
+                # select read-back ("Select returned but the element did not
+                # become selected") is the one detail that tells a caller the
+                # gesture ran and was ignored, rather than being unavailable.
+                # It is only surfaced here, on total failure - on a chain that
+                # escalates and succeeds it would describe an attempt that no
+                # longer matters.
+                detail = (
+                    f"; {exec_result.message}" if exec_result.message else ""
+                )
                 raise SomnusError(
                     ErrorCode.ACTION_NOT_SUPPORTED,
                     ref=action.ref,
-                    message=f"no usable interface on this element (tried {tried})",
+                    message=f"no usable interface on this element (tried {tried}){detail}",
                 )
             if exec_result is None:
                 # Nothing was even attempted: every route in the chain was
@@ -1444,12 +2153,9 @@ class Session:
                         "name it; make it a separate CALL"
                     ),
                 )
-            if action.ref in self._ambiguous_refs:
-                raise SomnusError(
-                    ErrorCode.TARGET_AMBIGUOUS,
-                    ref=action.ref,
-                    message=f"step {index}: fingerprint matched multiple elements",
-                )
+            # Ambiguity is deferred for batch steps too: each ref names one node
+            # here, and a step that finds no usable interface retries its twin
+            # in the execute loop below.
             resolution = self._resolve_with_hint(resolver, action)
             self.policy.check_action(resolution, confirmed=confirmed)
             # A refused *route* is skipped at execution, as in a single call;
@@ -1489,6 +2195,9 @@ class Session:
                 entity_node = verifier.by_entity.get(name)
                 if entity_node is not None:
                     verifier.capture(entity_node.ref)
+            # A twin that a step may fall back to needs its pre-action state too.
+            for candidate in self._twin_candidates(resolution.ref):
+                verifier.capture(candidate)
 
         # -------------------------------------------------------- execute
         #: Per-step state, in order: ``ok``, ``dispatched`` (sent, outcome
@@ -1496,6 +2205,8 @@ class Session:
         #: before reaching it).
         step_states: list[str] = []
         writes: list[tuple[str, Any]] = []
+        #: ``a→b`` per healed step, reported as a note line under the batch.
+        healed_notes: list[str] = []
         error_line: str | None = None
         stopped_at = 0
         undetermined_at = 0
@@ -1503,13 +2214,20 @@ class Session:
             zip(actions, resolutions), start=1
         ):
             try:
-                chain = self._execute_chain(action, resolution)
+                chain, used_resolution, healed = self._execute_with_twin(
+                    action, resolution, resolver, confirmed=confirmed
+                )
             except SomnusError as err:
                 step_states.append(f"ERR {err.code}")
                 writes.append(("", None))
                 error_line = err.render()
                 stopped_at = index
                 break
+            if healed:
+                # The verification baseline and `$self` effects must name the
+                # element that actually acted.
+                resolutions[index - 1] = used_resolution
+                healed_notes.append(f"step {index} healed {action.ref}→{healed}")
             if chain.undetermined:
                 step_states.append("dispatched")
                 writes.append(("", None))
@@ -1517,25 +2235,28 @@ class Session:
                 break
             step_states.append("ok")
             writes.append(
-                (action.ref or "", chain.written)
+                (used_resolution.ref or "", chain.written)
                 if chain.written is not None
                 else ("", None)
             )
         ran = len(step_states)
 
         # ---------------------------------------------------- settle once
-        self.refresh_windows()
+        if self.post_action_enum:
+            self.refresh_windows()
         if self.target_window:
             self._peek(self.target_window)
         try:
-            tree, settle_result = self.settler.wait(
-                lambda: self.provider.snapshot(self.target_window),  # type: ignore[arg-type]
-                event_source=lambda: self._event_count,
-                deterministic=self._settle_deterministic,
-            )
+            with _timed(self.timing, "settle"):
+                tree, settle_result = self._settle(
+                    fetch=self._fetch_snapshot,
+                    refs=[resolution.ref for resolution in resolutions],
+                )
         except KeyError:
             # The target window vanished mid-batch. Whatever ran really ran;
             # report unverified with a window delta instead of failing all of it.
+            # Unconditional re-enumeration: the target is gone, and only the
+            # window list can say what replaced it.
             self.refresh_windows()
             text = (
                 f"BATCH OK_UNVERIFIED steps={ran}/{len(actions)} rev={self.rev}\n"
@@ -1549,7 +2270,9 @@ class Session:
                 text=text,
                 settled=False,
             )
-        result = self.compiler.compile(tree, pack=self._current_pack())
+        # Signature before compile (normalisation rewrites the raw nodes).
+        self._remember_raw(tree)
+        result = self._compile_tree(tree, self._current_pack())
         self.registry.reconcile(result)
         self.result = result
         self._bump_rev()
@@ -1575,7 +2298,7 @@ class Session:
         #: dispatched step was sent (its outcome is being settled), a failed
         #: step did not complete and is named by failed-at/stopped-at.
         performed = sum(1 for s in step_states if s in ("ok", "dispatched"))
-        body = self._window_delta()
+        body = self._post_action_window_delta()
         tree_body = self.delta_text(delta)
         if tree_body:
             body = f"{body}\n{tree_body}" if body else tree_body
@@ -1586,6 +2309,14 @@ class Session:
             body = f"{body}\n{echo}" if body else echo
 
         settled_tag = "" if settle_result.settled else " settled=false"
+        if any(
+            step.primitive in _VIEWPORT_MOVING_PRIMITIVES
+            for resolution in resolutions
+            for step in resolution.steps
+        ):
+            self._watch_natives = []
+            note = "~ viewport changed; OBSERVE again"
+            body = f"{body}\n{note}" if body else note
         if error_line:
             head = (
                 f"BATCH PARTIAL steps={performed}/{len(actions)} "
@@ -1606,8 +2337,15 @@ class Session:
                 # call is: agents retry UNVERIFIED work that already succeeded.
                 status = "OK"
                 head = f"BATCH OK steps={performed}/{len(actions)} rev={self.rev}{settled_tag}"
+            # P2-4's settled half, same as a single call: a visible change on a
+            # tree that never finished settling is evidence, not confirmation.
+            if status == "OK" and not settle_result.settled and verify.checked == 0:
+                status = "OK_UNVERIFIED"
+                head = f"BATCH OK_UNVERIFIED steps={performed}/{len(actions)} rev={self.rev}{settled_tag}"
 
         text = head + "\n" + self._step_lines(actions, step_states)
+        for note in healed_notes:
+            text += f"\n~ {note}"
         if error_line:
             text += f"\n{error_line}"
         elif undetermined_at:
@@ -2087,6 +2825,14 @@ class Session:
         self._route_memory = {}
         self._ambiguous_refs = set()
         self._last_signature = None
+        # The raw tree describes the desktop we just left; a probe against it
+        # on the new desktop would compare two unrelated windows.
+        self._last_raw = None
+        self._last_raw_window = None
+        self._last_raw_sig = None
+        self._last_raw_map = {}
+        self._viewport_limited = False
+        self._watch_natives = []
         self._prev_structured = None
         self.rev = 0
 
@@ -2143,14 +2889,16 @@ class Session:
                 # ``OBSERVE w5 expand g3`` - unfold one collapsed node this
                 # round, everything else stays folded (tokens stay bounded
                 # while still revealing exactly what the agent asked for).
-                expanded: set[int] | None = None
+                #
+                # The ref is handed over *unresolved*. Observe recompiles into
+                # brand-new SemanticNode objects, so an id() resolved against
+                # the old result can never match the new tree - the expansion
+                # silently did nothing (a stated promise in the projection's
+                # "+more ... OBSERVE w1 expand l1" marker).
+                expanded: set[int] | set[str] | None = None
                 full = action.scope == "full"
-                if action.depth is not None and action.depth:
-                    expanded = set()
-                    result = self._recompile() if self.result is None else self.result
-                    node = result.find(action.query or "")
-                    if node is not None:
-                        expanded.add(id(node))
+                if action.depth is not None and action.depth and action.query:
+                    expanded = {action.query}
                 return self.observe(
                     action.window,
                     windows_only=(action.query == "windows"),
@@ -2197,6 +2945,98 @@ def result_root(session: "Session") -> SemanticNode:
 def _node_caps(result: "CompileResult", ref: str) -> set[str]:
     node = result.find(ref) if result else None
     return node.cap_names() if node else set()
+
+
+def _native_key(native) -> tuple:
+    """A stable identity key for a native element, independent of profile.
+
+    ``NativeRef`` equality includes fields a narrower cache profile does not
+    request (the element handle), so comparing full refs would make every probe
+    node look different from the snapshot node it is the same element as.
+    Runtime id is the element's own identity; the id triple is the fallback for
+    providers/trees without one.
+    """
+    if native.runtime_id:
+        return ("rid", tuple(native.runtime_id))
+    return (
+        "ids",
+        native.automation_id,
+        native.class_name,
+        native.control_type,
+        tuple(native.path),
+    )
+
+
+def _watch_signature(tree: RawTree, watch: list) -> str | None:
+    """A signature over ``watch`` only; None when any watched node is absent.
+
+    Per-node *shallow* signatures (role/name/value/child-count/states) are enough
+    because every node inside a visible row is itself watched: a deep
+    disabled->enabled flip is an entry in this list, not a descendant that could
+    be overlooked. ``None`` is the hard boundary - "cannot see it" is never
+    reported as "unchanged".
+    """
+    if not watch:
+        return None
+    index = {_native_key(node.native): node for node in tree.walk()}
+    parts = []
+    for key in watch:
+        node = index.get(key)
+        if node is None:
+            return None
+        parts.append(_shallow_signature(node))
+    return "\x1f".join(parts)
+
+
+def _unique_natives(result: CompileResult) -> list:
+    """Identity keys of every node a compilation covers, in a stable order."""
+    out = []
+    seen = set()
+    for source in result.sources.values():
+        key = _native_key(source.native)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _shallow_signature(node) -> str:
+    """One node's own signature fields (no recursion into children).
+
+    The child count is the node's *total* when it reports one: a collection
+    whose children are deliberately truncated (12 visible of 240) must compare
+    equal to the same container in a full tree. A row's own child list is
+    complete in both frames, so real child changes still show up.
+    """
+    total = node.virtual_count if (node.virtual_count or 0) > 0 else len(node.children)
+    return "|".join(
+        (
+            node.role,
+            node.name or "",
+            node.value or "",
+            str(total),
+            ",".join(sorted(node.states)),
+        )
+    )
+
+
+def _ref_path(root: SemanticNode, ref: str) -> list[SemanticNode]:
+    """The node named ``ref`` plus its ancestors, root first; [] when absent."""
+    if root is None:
+        return []
+
+    def walk(node: SemanticNode, trail: list[SemanticNode]) -> list[SemanticNode] | None:
+        trail = trail + [node]
+        if node.ref == ref:
+            return trail
+        for child in node.children:
+            found = walk(child, trail)
+            if found is not None:
+                return found
+        return None
+
+    return walk(root, []) or []
 
 
 def _find_parent(root: SemanticNode, target: SemanticNode) -> SemanticNode | None:

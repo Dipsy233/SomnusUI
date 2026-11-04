@@ -13,6 +13,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from somnus.config import (
+    DEFAULT_POST_ACTION_ENUM,
+    DEFAULT_SETTLE_POLL_MS,
+    DEFAULT_SETTLE_QUIET_MS,
+    DEFAULT_SETTLE_TIMEOUT_S,
+)
 from somnus.errors import ErrorCode, SomnusError
 from somnus.ir.action import Action
 from somnus.runtime.session import Session
@@ -22,9 +28,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "observe",
         "description": (
-            "Semantic overview (L0) of one window: screens, entities and "
-            "their capabilities. Never pixels or native ids. Call it first - "
-            "it assigns the refs every other tool uses."
+            "Semantic overview (L0) of one window: screens, entities, "
+            "capabilities. No pixels or native ids. Call it first - it assigns "
+            "the refs every other tool uses."
         ),
         "inputSchema": {
             "type": "object",
@@ -65,7 +71,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "inspect",
         "description": (
             "One node in full (L1/L2): attributes, capability params, relations. "
-            "Use it when a call's capability set looks wrong."
+            "Use it when a call's caps look wrong."
         ),
         "inputSchema": {
             "type": "object",
@@ -82,12 +88,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "call",
         "description": (
             "Invoke a capability printed on a node: CALL p1.add(). It belongs to "
-            "that node, not its container. Returns OK/ERR plus a delta, which "
-            "beats the status word. Critical caps need confirmation. Several "
-            "CALL statements (one per line) run in order in this one call - "
-            "every step validated before the first runs, one settle and one "
-            "delta for the whole batch. Steps may only name elements that "
-            "exist when the batch starts."
+            "that node, not its container. Returns OK/ERR plus a delta (trust it "
+            "over the status word). Critical caps need confirmation. Several "
+            "CALL lines run in order in one call: every step is validated "
+            "before the first runs, with one settle and one delta for the batch. "
+            "Steps must name elements that exist when the batch starts."
         ),
         "inputSchema": {
             "type": "object",
@@ -109,8 +114,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "switch",
         "description": (
             "Move between the user's desktop (main) and a separate session "
-            "(child). One desktop at a time: a switch discards every ref. Use "
-            "`open` when the work must not disturb the user."
+            "(child). One at a time: a switch discards every ref. Use `open` "
+            "when work must not disturb the user."
         ),
         "inputSchema": {
             "type": "object",
@@ -126,6 +131,27 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 }
             },
             "required": ["target"],
+        },
+    },
+    {
+        "name": "configure",
+        "description": (
+            "Tune later calls: settle_quiet_ms (40; smaller is faster but can "
+            "read mid-animation), settle_poll_ms (10), settle_timeout_s (3.0), "
+            "post_action_enum (on; off saves ~100ms/call and can hide a window "
+            "the action opened). persist=true writes the global config; "
+            "reset=true restores startup values."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "settle_quiet_ms": {"type": "integer", "minimum": 10, "maximum": 1000},
+                "settle_poll_ms": {"type": "integer", "minimum": 1, "maximum": 100},
+                "settle_timeout_s": {"type": "number", "minimum": 0.5, "maximum": 30},
+                "post_action_enum": {"type": "boolean"},
+                "persist": {"type": "boolean"},
+                "reset": {"type": "boolean"},
+            },
         },
     },
 ]
@@ -179,6 +205,139 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             if target == "detach":
                 return session.detach_child_session()
             return session.switch_session(target)
+        if name == "configure":
+            return _configure(session, args)
         return SomnusError(ErrorCode.PARSE_ERROR, message=f"unknown tool {name}").render()
     except SomnusError as err:
         return err.render()
+
+
+#: The timing knobs ``configure`` accepts. ``persist``/``reset`` are verbs, not
+#: settings, so they are handled separately.
+_SETTING_ARGS = (
+    "settle_quiet_ms",
+    "settle_poll_ms",
+    "settle_timeout_s",
+    "post_action_enum",
+)
+
+
+def _configure(session: Session, args: dict[str, Any]) -> str:
+    """Tune this session's settle/action timing (the ``configure`` tool).
+
+    Validation happens **before** anything is applied: one bad value refuses the
+    whole patch, so the reply never describes a state the process is not in.
+    Timing is a session-scope change; ``persist=true`` also writes the same file
+    :func:`somnus.config.load` reads, and ``reset=true`` returns to what that
+    load produced at startup.
+    """
+    from somnus import config as config_module
+
+    reset = bool(args.get("reset", False))
+    persist = bool(args.get("persist", False))
+    # ``reset`` is the whole instruction, so a patch sent beside it is ignored
+    # rather than partially applied and then undone.
+    patch = (
+        {}
+        if reset
+        else {
+            key: args[key]
+            for key in _SETTING_ARGS
+            if args.get(key) is not None
+        }
+    )
+
+    problems = config_module.validate_settle_overrides(**patch)
+    if problems:
+        return SomnusError(
+            ErrorCode.INVALID_ARGUMENT,
+            message="; ".join(problems) + "; nothing changed",
+        ).render()
+
+    apply_settings = getattr(session, "apply_settings", None)
+    if apply_settings is None:
+        # The session side is a separate change; refuse loudly instead of
+        # pretending a setting took effect nowhere.
+        return SomnusError(
+            ErrorCode.ACTION_NOT_SUPPORTED,
+            message="configure: this session has no settings interface",
+        ).render()
+
+    try:
+        applied = apply_settings(
+            quiet_ms=patch.get("settle_quiet_ms"),
+            poll_ms=patch.get("settle_poll_ms"),
+            timeout_s=patch.get("settle_timeout_s"),
+            post_action_enum=patch.get("post_action_enum"),
+            persist=persist,
+            reset=reset,
+        )
+    except NotImplementedError:
+        # The session exists but its persistence hook is not wired yet; nothing
+        # was applied, so say so instead of half-answering.
+        return SomnusError(
+            ErrorCode.ACTION_NOT_SUPPORTED,
+            message="configure: this session cannot persist settings yet",
+        ).render()
+    except OSError as exc:
+        return SomnusError(
+            ErrorCode.NATIVE_EXECUTION_FAILED,
+            message=(
+                "settings were not changed; the config file could not be "
+                f"written: {exc}"
+            ),
+        ).render()
+
+    effective = _effective_settings(session, applied)
+    persisted = (
+        applied.get("persisted") if isinstance(applied, dict) else None
+    )
+
+    line = (
+        f"SETTINGS quiet_ms={int(effective['quiet_ms'])} "
+        f"poll_ms={int(effective['poll_ms'])} "
+        f"timeout_s={float(effective['timeout_s'])} "
+        f"post_action_enum={'on' if effective['post_action_enum'] else 'off'} "
+        "scope=session"
+    )
+    if persisted is not None:
+        line += f" persisted={persisted}"
+    return line
+
+
+def _effective_settings(session: Session, applied: Any) -> dict[str, Any]:
+    """The values now in force, preferring what the session returned.
+
+    The session returns its canonical ``settle_*`` keys plus ``scope``; the
+    shorter names are accepted too, and the live attributes are the last
+    fallback so a partially wired host still answers with the truth rather than
+    a copy of the request.
+    """
+    settler = getattr(session, "settler", None)
+
+    def pick(short: str, canonical: str, attr: str, default: Any) -> Any:
+        if isinstance(applied, dict):
+            for key in (canonical, short):
+                if key in applied:
+                    return applied[key]
+        if short == "post_action_enum":
+            return getattr(session, "post_action_enum", default)
+        return getattr(settler, attr, default)
+
+    return {
+        "quiet_ms": pick(
+            "quiet_ms", "settle_quiet_ms", "quiet_ms", DEFAULT_SETTLE_QUIET_MS
+        ),
+        "poll_ms": pick(
+            "poll_ms", "settle_poll_ms", "poll_interval_ms", DEFAULT_SETTLE_POLL_MS
+        ),
+        "timeout_s": pick(
+            "timeout_s", "settle_timeout_s", "timeout_s", DEFAULT_SETTLE_TIMEOUT_S
+        ),
+        "post_action_enum": pick(
+            "post_action_enum",
+            "post_action_enum",
+            "",
+            DEFAULT_POST_ACTION_ENUM,
+        ),
+    }

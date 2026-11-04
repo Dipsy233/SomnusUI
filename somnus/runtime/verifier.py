@@ -3,9 +3,20 @@
 Outcomes:
 
 * effects declared and all satisfied      -> OK
-* no effects declared                     -> OK_UNVERIFIED
+* no effects declared, and nothing changed -> OK_UNVERIFIED
+* no effects declared, but the tree moved -> OK
 * effects declared but not satisfied      -> EFFECT_NOT_CONFIRMED
 * native call failed                      -> NATIVE_EXECUTION_FAILED
+
+The "no effects, but the tree moved" case is the status-honesty fix from the
+optimisation plan (P2-4). A capability that declares no effects still has
+evidence it worked when the settled tree shows a change: reporting
+``OK_UNVERIFIED`` there made an agent *retry an action that already succeeded*
+(the "semantic inflation" behind repeated set_text/toggle turns). What is
+deliberately **not** flattened is the other direction - a settled UI with no
+change stays ``OK_UNVERIFIED``, because "ran and nothing moved" is genuinely
+unconfirmed. ``Session`` applies the last step of that rule (it is the only
+layer that knows whether the settle completed); see the note in :meth:`verify`.
 """
 
 from __future__ import annotations
@@ -28,6 +39,19 @@ class VerifyResult:
             self.failed = []
 
 
+def _status_without_effects(delta: Any) -> str:
+    """``OK`` when an undeclared effect is visible, else ``OK_UNVERIFIED``.
+
+    The delta is the only evidence available at this layer. A change in it
+    proves the UI reacted to the action, which is strictly stronger than "it
+    ran"; an empty delta leaves the outcome undetermined. The ``settled`` half
+    of the plan's rule stays in ``Session`` because it is the owner of the
+    settle result.
+    """
+    empty = getattr(delta, "empty", True)
+    return "OK_UNVERIFIED" if empty else "OK"
+
+
 class Verifier:
     def __init__(self, by_ref: dict[str, SemanticNode], by_entity: dict[str, SemanticNode]):
         self.by_ref = by_ref
@@ -44,7 +68,10 @@ class Verifier:
 
     def verify(self, effects: list[Effect], action_ref: str, delta) -> VerifyResult:
         if not effects:
-            return VerifyResult(status="OK_UNVERIFIED")
+            # `delta` is the settled transition; a non-empty one is evidence the
+            # action took effect even without a declared effect. See the module
+            # docstring (P2-4).
+            return VerifyResult(status=_status_without_effects(delta))
         failed: list[str] = []
         checked = 0
         for effect in effects:
@@ -59,7 +86,9 @@ class Verifier:
                 status="EFFECT_NOT_CONFIRMED", checked=len(effects), failed=failed
             )
         if checked == 0:
-            return VerifyResult(status="OK_UNVERIFIED")
+            # Declared effects that none of them could be evaluated: fall back
+            # to what the tree itself says, exactly like the no-effect case.
+            return VerifyResult(status=_status_without_effects(delta))
         return VerifyResult(status="OK", checked=checked)
 
     def verify_grouped(
@@ -115,7 +144,7 @@ class Verifier:
                 failed=failed,
             )
         if checked == 0:
-            return VerifyResult(status="OK_UNVERIFIED")
+            return VerifyResult(status=_status_without_effects(delta))
         return VerifyResult(status="OK", checked=checked)
 
     def _check_group(

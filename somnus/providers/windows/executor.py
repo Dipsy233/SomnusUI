@@ -64,11 +64,34 @@ def run_primitive(
         elif primitive == "toggle":
             _pattern(element, UIA.UIA_TogglePatternId, UIA.IUIAutomationTogglePattern).Toggle()
         elif primitive == "select":
-            _pattern(
+            pat = _pattern(
                 element,
                 UIA.UIA_SelectionItemPatternId,
                 UIA.IUIAutomationSelectionItemPattern,
-            ).Select()
+            )
+            pat.Select()
+            # Read the state back. UIA reports the interface as available and
+            # then the element may ignore the call - the shape WPF's duplicated
+            # drop-down rows produce (the "ghost" copy answers nothing while the
+            # real row selects). Without this read-back the call reported success
+            # for a gesture the UI never performed, and the agent's next
+            # observation looked like the selection silently failed.
+            #
+            # A False answer is reported as *unsupported* rather than as a hard
+            # failure, so the declared route chain can escalate to the next
+            # UIA-reachable gesture (`activate`/Invoke) instead of dead-ending.
+            # When the property cannot be read at all the result stays `ok`: an
+            # unobservable element must not be turned into a failure.
+            if _selection_did_not_take(pat) is True:
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message=(
+                        "SelectionItemPattern.Select returned but the element "
+                        "did not become selected"
+                    ),
+                    unsupported=True,
+                )
         elif primitive == "expand":
             _pattern(
                 element,
@@ -437,6 +460,39 @@ def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
 #: UIA_ValuePatternId / the Value.Value property, used to read back what a
 #: control holds while typing into it (see `_text_landed_verifier`).
 _UIA_VALUE_VALUE_PROPERTY = 30045
+
+
+#: How many times a `Select` is re-read before "it did not take" is reported,
+#: and how long to wait between reads. WPF applies a selection on the UI thread
+#: and the pattern can return before that thread has committed it, so one
+#: immediate read is too eager. The budget is deliberately tiny (two extra
+#: 25 ms reads): this runs inside the per-primitive timeout and the honest
+#: answer "not selected" must not turn into a stall.
+_SELECT_READBACK_ATTEMPTS = 3
+_SELECT_READBACK_DELAY_S = 0.025
+
+
+def _selection_did_not_take(pattern: Any) -> bool | None:
+    """Whether the element is still unselected after ``Select``.
+
+    Returns ``True`` (did not take), ``False`` (it is selected) or ``None``
+    (the property could not be read - "unobservable", never a failure).
+
+    ``CurrentIsSelected`` is the live SelectionItem state. Reading it *after*
+    the call is the only way to tell "Select ran" from "Select was accepted and
+    ignored", which is exactly the ghost-row shape that made combo-box selection
+    look successful while the value never changed.
+    """
+    for attempt in range(_SELECT_READBACK_ATTEMPTS):
+        try:
+            selected = bool(pattern.CurrentIsSelected)
+        except Exception:  # noqa: BLE001 - unreadable is not a failure
+            return None
+        if selected:
+            return False
+        if attempt < _SELECT_READBACK_ATTEMPTS - 1:
+            time.sleep(_SELECT_READBACK_DELAY_S)
+    return True
 
 
 class _PatternMissing(Exception):

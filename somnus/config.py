@@ -49,6 +49,12 @@ hand-edited file do not fight::
     child_session = false
     child_session_debug_window = true   # keep the RDP loopback window visible
 
+    # Call timing. See docs/optimization-plan.md P1-2 for the trade-offs.
+    settle_quiet_ms   = 40     # 10..1000: smaller = faster, can read mid-animation
+    settle_poll_ms    = 10     # 1..100
+    settle_timeout_s  = 3.0    # 0.5..30
+    post_action_enum  = true   # report a window the action opened (~100ms/call)
+
 Reading is best-effort by design: a malformed file must not stop the runtime, it
 must only mean "the settings could not be read" - reported through
 :attr:`Settings.problems` so the caller can say so out loud instead of silently
@@ -58,6 +64,7 @@ falling back to defaults the user did not choose.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -73,6 +80,30 @@ ENV_ALLOW_KEYBOARD = "SOMNUS_ALLOW_KEYBOARD"
 #: Environment overrides for the child-session switches.
 ENV_CHILD_SESSION = "SOMNUS_CHILD_SESSION"
 ENV_CHILD_SESSION_DEBUG = "SOMNUS_CHILD_SESSION_DEBUG_WINDOW"
+#: Environment overrides for the settle/action timing knobs.
+ENV_SETTLE_QUIET_MS = "SOMNUS_SETTLE_QUIET_MS"
+ENV_SETTLE_POLL_MS = "SOMNUS_SETTLE_POLL_MS"
+ENV_SETTLE_TIMEOUT_S = "SOMNUS_SETTLE_TIMEOUT_S"
+ENV_POST_ACTION_ENUM = "SOMNUS_POST_ACTION_ENUM"
+
+#: Built-in defaults for the timing knobs (see docs/optimization-plan.md P1-2).
+DEFAULT_SETTLE_QUIET_MS = 40
+DEFAULT_SETTLE_POLL_MS = 10
+DEFAULT_SETTLE_TIMEOUT_S = 3.0
+DEFAULT_POST_ACTION_ENUM = True
+
+#: Accepted ranges. Values outside are refused, never clamped: clamping would
+#: silently accept a request the caller did not make.
+SETTLE_QUIET_MS_RANGE = (10, 1000)
+SETTLE_POLL_MS_RANGE = (1, 100)
+SETTLE_TIMEOUT_S_RANGE = (0.5, 30.0)
+
+#: The timing knobs, split by the type they accept.
+_INT_KEYS = {
+    "settle_quiet_ms": SETTLE_QUIET_MS_RANGE,
+    "settle_poll_ms": SETTLE_POLL_MS_RANGE,
+}
+_FLOAT_KEYS = {"settle_timeout_s": SETTLE_TIMEOUT_S_RANGE}
 
 #: Keys understood in the file. Anything else is ignored (see module docstring).
 _KNOWN_KEYS = frozenset(
@@ -82,6 +113,10 @@ _KNOWN_KEYS = frozenset(
         "allow_processes",
         "child_session",
         "child_session_debug_window",
+        "settle_quiet_ms",
+        "settle_poll_ms",
+        "settle_timeout_s",
+        "post_action_enum",
     }
 )
 
@@ -127,6 +162,18 @@ class Settings:
     #: Keep the RDP loopback window visible, for testing. Only meaningful when
     #: :attr:`child_session` is on.
     child_session_debug_window: bool = True
+    #: How long the UI must stay unchanged before an action counts as done.
+    #: Smaller is faster but can read an animation mid-flight; larger is safer
+    #: but makes every call wait longer.
+    settle_quiet_ms: int = DEFAULT_SETTLE_QUIET_MS
+    #: Probe spacing while waiting for that quiet window.
+    settle_poll_ms: int = DEFAULT_SETTLE_POLL_MS
+    #: Hard cap for one settle; at the cap the reply says ``settled=false`` and
+    #: still reports the delta.
+    settle_timeout_s: float = DEFAULT_SETTLE_TIMEOUT_S
+    #: Re-enumerate windows after an action so a window the action opened can be
+    #: reported. Off saves ~100 ms per call and can hide that window.
+    post_action_enum: bool = DEFAULT_POST_ACTION_ENUM
     #: The file these came from (even when it does not exist yet), so a host can
     #: tell the user exactly which path to edit.
     path: Path | None = None
@@ -144,6 +191,10 @@ class Settings:
             f"allow_processes  : {', '.join(self.allow_processes) or '(any)'}",
             f"child_session    : {self.child_session}",
             f"child_session_win: {self.child_session_debug_window}",
+            f"settle_quiet_ms  : {self.settle_quiet_ms}",
+            f"settle_poll_ms   : {self.settle_poll_ms}",
+            f"settle_timeout_s : {self.settle_timeout_s}",
+            f"post_action_enum : {self.post_action_enum}",
         ]
         for problem in self.problems:
             lines.append(f"warning          : {problem}")
@@ -178,7 +229,13 @@ def _apply_file(settings: Settings, data: dict) -> Settings:
     """Fold the file's values in, reporting the ones that made no sense."""
     problems = list(settings.problems)
 
-    for key in ("allow_clipboard", "allow_keyboard", "child_session", "child_session_debug_window"):
+    for key in (
+        "allow_clipboard",
+        "allow_keyboard",
+        "child_session",
+        "child_session_debug_window",
+        "post_action_enum",
+    ):
         if key not in data:
             continue
         value = data[key]
@@ -186,6 +243,34 @@ def _apply_file(settings: Settings, data: dict) -> Settings:
             setattr(settings, key, value)
         else:
             problems.append(f"{key} must be true/false, got {type(value).__name__}")
+
+    for key, (lo, hi) in _INT_KEYS.items():
+        if key not in data:
+            continue
+        value = data[key]
+        # ``bool`` is an ``int`` in Python; a ``true`` in an integer slot is a
+        # typo, not the number 1.
+        if isinstance(value, bool) or not isinstance(value, int):
+            problems.append(
+                f"{key} must be an integer in {lo}..{hi}, got {type(value).__name__}"
+            )
+        elif not lo <= value <= hi:
+            problems.append(f"{key} must be in {lo}..{hi}, got {value}")
+        else:
+            setattr(settings, key, value)
+
+    for key, (lo, hi) in _FLOAT_KEYS.items():
+        if key not in data:
+            continue
+        value = data[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            problems.append(
+                f"{key} must be a number in {lo}..{hi}, got {type(value).__name__}"
+            )
+        elif not lo <= float(value) <= hi:
+            problems.append(f"{key} must be in {lo}..{hi}, got {value}")
+        else:
+            setattr(settings, key, float(value))
 
     if "allow_processes" in data:
         value = data["allow_processes"]
@@ -209,17 +294,120 @@ def _apply_env(settings: Settings) -> Settings:
 
     Checked *after* the file, so an override works in both directions: a shell
     can turn on what the file leaves off, and turn off what the file enables.
+    An unparseable override is reported and ignored - a typo in a shell must not
+    silently become some other timing.
     """
+    problems = list(settings.problems)
+
     for env_name, key in (
         (ENV_ALLOW_CLIPBOARD, "allow_clipboard"),
         (ENV_ALLOW_KEYBOARD, "allow_keyboard"),
         (ENV_CHILD_SESSION, "child_session"),
         (ENV_CHILD_SESSION_DEBUG, "child_session_debug_window"),
+        (ENV_POST_ACTION_ENUM, "post_action_enum"),
     ):
         override = _truthy_env(env_name)
         if override is not None:
             setattr(settings, key, override)
+
+    for env_name, key, lo, hi in (
+        (ENV_SETTLE_QUIET_MS, "settle_quiet_ms", *SETTLE_QUIET_MS_RANGE),
+        (ENV_SETTLE_POLL_MS, "settle_poll_ms", *SETTLE_POLL_MS_RANGE),
+    ):
+        value, problem = _env_int(env_name, lo, hi)
+        if problem:
+            problems.append(problem)
+        elif value is not None:
+            setattr(settings, key, value)
+
+    value, problem = _env_float(ENV_SETTLE_TIMEOUT_S, *SETTLE_TIMEOUT_S_RANGE)
+    if problem:
+        problems.append(problem)
+    elif value is not None:
+        settings.settle_timeout_s = value
+
+    settings.problems = tuple(problems)
     return settings
+
+
+def _env_int(name: str, lo: int, hi: int) -> tuple[int | None, str | None]:
+    """A strict integer override: ``"40"`` yes, ``"40ms"``/``"4_0"`` no."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None, None
+    text = raw.strip()
+    if not re.fullmatch(r"[+-]?\d+", text):
+        return None, f"{name} must be an integer in {lo}..{hi}, got {raw!r}"
+    value = int(text)
+    if not lo <= value <= hi:
+        return None, f"{name} must be in {lo}..{hi}, got {value}"
+    return value, None
+
+
+def _env_float(name: str, lo: float, hi: float) -> tuple[float | None, str | None]:
+    """A strict float override; no unit suffixes, no locale commas."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None, None
+    text = raw.strip()
+    if not re.fullmatch(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?", text):
+        return None, f"{name} must be a number in {lo}..{hi}, got {raw!r}"
+    value = float(text)
+    if not lo <= value <= hi:
+        return None, f"{name} must be in {lo}..{hi}, got {value}"
+    return value, None
+
+
+#: The keys ``configure`` may change, and the type each one takes.
+_RUNTIME_KEYS = (
+    "settle_quiet_ms",
+    "settle_poll_ms",
+    "settle_timeout_s",
+    "post_action_enum",
+)
+
+
+def validate_settle_overrides(**values: object) -> list[str]:
+    """Check a runtime patch *before* anything is applied.
+
+    The caller applies nothing when this returns a problem: a half-applied
+    timing change is worse than a refused one, because the reply would then
+    describe values the process does not actually use. Messages are shaped for
+    the one-line ``ERR INVALID_ARGUMENT`` reply, e.g. ``settle_quiet_ms expected
+    int in 10..1000 got=-5``.
+    """
+    problems: list[str] = []
+
+    for key, (lo, hi) in _INT_KEYS.items():
+        if key not in values or values[key] is None:
+            continue
+        value = values[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            problems.append(f"{key} expected int in {lo}..{hi} got={value!r}")
+        elif not lo <= value <= hi:
+            problems.append(f"{key} expected int in {lo}..{hi} got={value}")
+
+    for key, (lo, hi) in _FLOAT_KEYS.items():
+        if key not in values or values[key] is None:
+            continue
+        value = values[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            problems.append(f"{key} expected number in {lo}..{hi} got={value!r}")
+        elif not lo <= float(value) <= hi:
+            problems.append(f"{key} expected number in {lo}..{hi} got={value}")
+
+    if values.get("post_action_enum") is not None and not isinstance(
+        values["post_action_enum"], bool
+    ):
+        problems.append(
+            f"post_action_enum expected true/false got={values['post_action_enum']!r}"
+        )
+
+    unknown = [key for key in values if key not in _RUNTIME_KEYS and values[key] is not None]
+    if unknown:
+        problems.append(f"unknown setting {unknown[0]!r}")
+
+    return problems
 
 
 def save(settings: Settings, path: Path | None = None) -> Path:
@@ -235,6 +423,27 @@ def save(settings: Settings, path: Path | None = None) -> Path:
     target.write_text(render_toml(settings), encoding="utf-8")
     settings.path = target
     return target
+
+
+def persist_session_settings(
+    settle_quiet_ms: int,
+    settle_poll_ms: int,
+    settle_timeout_s: float,
+    post_action_enum: bool,
+) -> Path:
+    """Write the four timing values into the same file :func:`load` reads.
+
+    This is the entry the session's ``apply_settings(persist=True)`` calls: it
+    receives the *effective* values (defaults already resolved, including any
+    env override), so the file becomes the next process's baseline. Unrelated
+    keys are preserved by loading the file first.
+    """
+    settings = load()
+    settings.settle_quiet_ms = int(settle_quiet_ms)
+    settings.settle_poll_ms = int(settle_poll_ms)
+    settings.settle_timeout_s = float(settle_timeout_s)
+    settings.post_action_enum = bool(post_action_enum)
+    return save(settings)
 
 
 def render_toml(settings: Settings) -> str:
@@ -270,6 +479,23 @@ def render_toml(settings: Settings) -> str:
         "# Keep the RDP loopback window visible (testing). It does not affect\n"
         "# isolation - the session is the same either way - only what you see.\n"
         f"child_session_debug_window = {_toml_bool(settings.child_session_debug_window)}\n"
+        "\n"
+        "# How long the UI must stay unchanged before an action counts as done.\n"
+        "# Smaller = faster calls, but an animation that has not finished can be\n"
+        "# read mid-flight (a button may still look disabled); larger = safer,\n"
+        "# but every call waits that much longer.\n"
+        f"settle_quiet_ms = {settings.settle_quiet_ms}\n"
+        "\n"
+        "# Probe spacing while waiting for that quiet window.\n"
+        f"settle_poll_ms = {settings.settle_poll_ms}\n"
+        "\n"
+        "# Hard cap for one settle (seconds); at the cap the reply says\n"
+        "# settled=false and still reports the delta.\n"
+        f"settle_timeout_s = {settings.settle_timeout_s}\n"
+        "\n"
+        "# Re-enumerate windows after an action, so a window the action opened\n"
+        "# can be reported. Off saves ~100 ms per call and can hide that window.\n"
+        f"post_action_enum = {_toml_bool(settings.post_action_enum)}\n"
     )
 
 
