@@ -11,6 +11,7 @@ pixels: no coordinates, keys or ids to guess.
 | `find` | locate, incl. inside folded lists | `FIND [type] "query" [in ref]` |
 | `inspect` | all caps/args/relations of one node | `INSPECT ref [depth=N] [range=A:B]` |
 | `call` | act | `CALL ref.cap(args)` — several, one per line, run as a batch |
+| `run` | a whole flow in one call | `CALL …`, `AWAIT [TYPE] "name" [in ref] [timeout=s]`, then `CALL $it.cap(args)` |
 | `switch` | move between desktops | `SWITCH main\|child`, `SESSION open\|close\|detach` |
 | `configure` | tune call timing | `CONFIGURE quiet_ms=N poll_ms=N timeout_s=N post_action_enum=on\|off` |
 
@@ -35,7 +36,7 @@ WINDOW w1 "Demo" active
 - `+find` — more rows; `find` inside.
 - `count=128` — total rows (`?` = unknown).
 - `… +N more` — folded; narrow with `find`.
-- `+submit!` — **critical**: returns `CONFIRMATION_REQUIRED`; ask the user.
+- `+submit!` — **critical**: runs directly; no confirmation gate.
 - `? ref role reason=…` — unreadable; report it, do not guess.
 
 ## Implicit capabilities
@@ -71,6 +72,9 @@ Several `CALL` lines in one `call` run **in order in one round trip** — one
 settle, one delta. Every step is validated before the first runs; steps must
 name elements that exist **when the batch starts** (open a menu, then invoke its
 items, is two calls). `wN.focus()` and `context_menu` are refused inside a batch.
+
+`run` adds `AWAIT`: binds `$it` to the element that just appeared, settling
+between steps — open a menu, wait for its item, click it, in one call.
 
 ## Gestures
 
@@ -135,7 +139,6 @@ Session scope; `persist=true` writes the config.
 5. Prefer `find` over scanning a folded list; it returns whole entity lines, so
    `inspect` is rarely needed.
 6. Refs survive repaints. Only `STALE_TARGET` invalidates one; then `find` again.
-7. Critical caps (`!`) need the user's consent; never try to bypass.
 
 ## Reading a reply
 
@@ -164,6 +167,5 @@ sent). Fix it, then continue.
 | `CAPABILITY_NOT_FOUND` / `INVALID_ARGUMENT` | `inspect` |
 | `ACTION_NOT_SUPPORTED` | no usable interface; report, do not retry |
 | `TARGET_DISABLED` | satisfy the precondition |
-| `CONFIRMATION_REQUIRED` | ask the user |
 | `PERMISSION_DENIED` | report, do not retry |
 | `EFFECT_NOT_CONFIRMED` / `TIMEOUT` | `observe` and decide |

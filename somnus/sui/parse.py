@@ -7,6 +7,14 @@ The *only* action syntax is::
     INSPECT REF [depth=N] [range=A:B]
     UNKNOWN "reason"
 
+A *script* (the ``run`` tool) is those CALL steps plus one waiting statement::
+
+    AWAIT [TYPE] "STRING" [in REF] [timeout=<s>]
+
+``AWAIT`` binds ``$it`` to the element that appeared, so the next step can be
+``CALL $it.<cap>(<args>)`` without the agent spending a round trip discovering
+its ref.
+
 Primitive verbs (``click``, ``uia_invoke``) and native identifiers
 (``AutomationId``) are rejected here, before they can reach the resolver.
 """
@@ -57,6 +65,28 @@ _INSPECT_RE = re.compile(
 
 _UNKNOWN_RE = re.compile(r'^UNKNOWN\s+(?P<reason>".*"|\S+)\s*$', re.IGNORECASE)
 
+#: A script's waiting step. Same shape as FIND plus an optional timeout, so the
+#: model does not have to learn a second query language for "wait for it".
+_AWAIT_RE = re.compile(
+    r"""^AWAIT\s+
+        (?:(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+)?        # then optional type
+        (?P<query>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')  # quoted name
+        (?:\s+in\s+(?P<scope>[a-z]{1,3}[0-9]+))?
+        (?:\s+timeout\s*=\s*(?P<timeout>\d+(?:\.\d+)?))?
+        \s*$""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+#: ``CALL $it.cap(args)`` / ``$it.cap(args)`` - the ref an ``AWAIT`` binds.
+#: Accepted only inside a script: a single action has no binding to name, so
+#: :func:`parse_action` keeps refusing ``$it``.
+_IT_CALL_RE = re.compile(
+    r"""^(?:CALL\s+)?(?P<ref>\$it)\s*\.\s*
+        (?P<cap>[A-Za-z_][A-Za-z0-9_]*)
+        \s*\(\s*(?P<args>.*?)\s*\)\s*$""",
+    re.VERBOSE | re.IGNORECASE | re.DOTALL,
+)
+
 _OBSERVE_RE = re.compile(
     r"^OBSERVE(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?"
     r"(?:\s+(?P<rest>windows|desktop|full|all))?"
@@ -97,6 +127,11 @@ FORBIDDEN_VERBS = frozenset(
 #: long enough that the agent should look at the result halfway through.
 MAX_BATCH_STATEMENTS = 20
 
+#: Upper bound on one ``run`` script. A script is one round trip by design, so
+#: the cap is about blast radius, not convenience: a flow longer than this is
+#: long enough that the agent should look at the result halfway through.
+MAX_SCRIPT_STEPS = 40
+
 _ARG_RE = re.compile(
     r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?(.+?)\s*$', re.DOTALL
 )
@@ -115,6 +150,11 @@ def parse_action(text: str, rev: int | None = None) -> Action:
     m = _CALL_RE.match(raw)
     if m:
         return _parse_call(m, rev, raw)
+
+    # A waiting step only makes sense inside a script, where something binds
+    # `$it`. Refusing it here with a pointer is better than "unrecognized".
+    if raw.upper().startswith("AWAIT"):
+        raise parse_error("AWAIT is only valid inside a run script")
 
     # Tolerance at the tool boundary: models frequently drop the leading CALL.
     # ``b1.activate()`` is unambiguous, so accept it while the *specified*
@@ -220,6 +260,92 @@ def parse_call_block(text: str, rev: int | None = None) -> list[Action]:
             )
         actions.append(action)
     return actions
+
+
+def parse_script(text: str, rev: int | None = None) -> list[Action]:
+    """Parse a ``run`` script into its steps, in order.
+
+    A script is the same statement grammar as a batch, plus ``AWAIT`` and the
+    ``$it`` ref it binds::
+
+        CALL mb1.expand()
+        AWAIT MENUITEM "新建" timeout=2
+        CALL $it.activate()
+
+    Parsing is deliberately *syntactic only*: a step's refs are resolved when
+    that step executes, because the element a later step names does not exist
+    until an earlier one ran. A ``call``/``await`` kind mismatch, a bad
+    argument and an over-long script are refused here with the line number.
+
+    ``$it`` is accepted as a CALL ref only in this function - it is a script
+    binding, not a node name, so a single action keeps rejecting it.
+    """
+    raw = text.strip()
+    if not raw:
+        raise parse_error("empty script")
+    statements = [
+        (line_no, stmt)
+        for line_no, stmt in _split_statements(raw)
+        if not stmt.startswith("#")
+    ]
+    if not statements:
+        raise parse_error("empty script")
+    if len(statements) > MAX_SCRIPT_STEPS:
+        raise parse_error(
+            f"a script takes at most {MAX_SCRIPT_STEPS} steps "
+            f"(got {len(statements)})"
+        )
+    steps: list[Action] = []
+    for line_no, stmt in statements:
+        try:
+            step = _parse_step(stmt, rev)
+        except SomnusError as err:
+            # The inner message already carries the usage hint when
+            # parse_error built it; wrapping adds only the line number.
+            raise SomnusError(
+                ErrorCode.PARSE_ERROR, message=f"line {line_no}: {err.message}"
+            ) from err
+        steps.append(step)
+    return steps
+
+
+def _parse_step(stmt: str, rev: int | None) -> Action:
+    """One script line: an AWAIT, a ``$it`` CALL, or an ordinary CALL."""
+    m = _AWAIT_RE.match(stmt)
+    if m:
+        query = m.group("query").strip()
+        if query[:1] in ("\"", "'"):
+            query = query[1:-1]
+        timeout = m.group("timeout")
+        return Action(
+            kind="await",
+            query_type=(m.group("type") or "").lower() or None,
+            # Same string handling as FIND (outer quotes only, no second escape
+            # pass): a name must match identically in either statement.
+            query=query,
+            scope=m.group("scope"),
+            timeout=float(timeout) if timeout is not None else None,
+            raw=stmt,
+        )
+    if stmt.upper().startswith("AWAIT"):
+        # A malformed AWAIT must say what an AWAIT looks like; the generic
+        # parse_action pointer ("only inside a script") would be false here.
+        raise parse_error(
+            f"invalid AWAIT: {stmt[:60]} "
+            '(want: AWAIT [TYPE] "name" [in REF] [timeout=<s>])'
+        )
+    m = _IT_CALL_RE.match(stmt)
+    if m:
+        action = _parse_call(m, rev, stmt)
+        # Normalise the casing RE allows (`$IT`) onto the one binding name.
+        action.ref = "$it"
+        return action
+    action = parse_action(stmt, rev)
+    if action.kind != "call":
+        raise parse_error(
+            f"a script step is CALL or AWAIT (got {action.kind.upper()})"
+        )
+    return action
 
 
 def _split_statements(text: str) -> list[tuple[int, str]]:

@@ -18,7 +18,6 @@ Global options::
     --demo                       use the built-in restaurant demo fixtures
     --pack ID                    force an app pack
     --allow PROCESS              allow-list a process (repeatable)
-    --confirmed                  pre-confirm critical actions
     --allow-clipboard            permit the Ctrl+V channel for this run
     --allow-keyboard             permit synthetic typing for this run
     --config PATH                read settings from PATH
@@ -99,7 +98,6 @@ def build_session(args: argparse.Namespace) -> Session:
 
     policy = Policy(
         allow_processes=tuple(args.allow or ()) or settings.allow_processes,
-        confirmed=bool(args.confirmed),
         # Synthetic input is on by default in this build (see
         # somnus/config.py): the flag is a one-run override in either
         # direction, `settings` is the persistent answer, and None means "let
@@ -503,7 +501,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
 def cmd_call(args: argparse.Namespace) -> int:
     session = build_session(args)
     session.observe()
-    text = session.dispatch(args.action, confirmed=args.confirmed)
+    text = session.dispatch(args.action)
     print(text)
     return 0 if not text.startswith("ERR") else 1
 
@@ -582,7 +580,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--allow", action="append", default=None)
-    parser.add_argument("--confirmed", action="store_true")
     parser.add_argument(
         "--config",
         default=None,

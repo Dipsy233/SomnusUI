@@ -26,13 +26,14 @@ def test_agent_importable_without_model():
 
     tools = openai_tools()
     # ``switch`` moves the agent between the two Windows sessions (and opens or
-    # closes the child one); ``configure`` tunes call timing. Both are part of
-    # the tool surface, not extras.
+    # closes the child one); ``configure`` tunes call timing; ``run`` executes a
+    # CALL/AWAIT script in one round trip. All are part of the tool surface.
     assert {t["function"]["name"] for t in tools} == {
         "observe",
         "find",
         "inspect",
         "call",
+        "run",
         "switch",
         "configure",
     }

@@ -230,6 +230,12 @@ class UiaProvider:
         #: it once instead of on every call. Cleared whenever another window
         #: (or the user) is found in front of it.
         self._foreground_window_id: str | None = None
+        #: Why the last raise failed, or None when it succeeded. A raise that
+        #: the Win32 foreground lock refused is not fatal for UIA reads, but it
+        #: is the difference between "this window has no controls" and "this
+        #: window could not render" - the session turns it into a warning line
+        #: instead of letting a covered self-drawn app look empty.
+        self.last_foreground_error: str | None = None
 
     # -- COM lifecycle ------------------------------------------------------
 
@@ -1120,7 +1126,7 @@ class UiaProvider:
         return None
 
     def _enter_foreground_sync(self, window_id: str, el: Any) -> ExecResult:
-        """Raise the window behind ``window_id`` and confirm it is in front.
+        """Raise the window behind ``window_id`` and record whether it landed.
 
         Called before every snapshot and every primitive (see
         :meth:`snapshot` and :meth:`execute`): the tree a self-drawing
@@ -1134,8 +1140,18 @@ class UiaProvider:
         foreground (Win32's foreground lock). That is not fatal for semantic
         UIA primitives - they reach a covered window too - so the result is
         advisory and only the synthetic-input routes (typing, paste) turn a
-        refusal into an error (see ``executor._bring_to_foreground``).
+        refusal into an error (see ``executor._bring_to_foreground``). It is
+        *not* silently dropped either: :attr:`last_foreground_error` carries
+        the code to the caller, which warns that a covered self-drawn window
+        may be publishing an empty shell.
         """
+        result = self._raise_foreground_sync(window_id, el)
+        self.last_foreground_error = (
+            None if result.ok else (result.error or "FOREGROUND_DENIED")
+        )
+        return result
+
+    def _raise_foreground_sync(self, window_id: str, el: Any) -> ExecResult:
         try:
             hwnd = _top_level_hwnd_of(el)
             if not hwnd:

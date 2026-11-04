@@ -36,11 +36,12 @@ def session():
 # ---------------------------------------------------------------------------
 
 
-def test_the_five_tools_are_advertised():
+def test_the_six_tools_are_advertised():
     # The four perception/action tools, plus ``switch`` (moves the agent between
-    # the two Windows sessions) and ``configure`` (tunes call timing).
+    # the two Windows sessions), ``configure`` (tunes call timing) and ``run``
+    # (a CALL/AWAIT script in one round trip).
     names = {spec["name"] for spec in TOOL_SPECS}
-    assert names == {"observe", "find", "inspect", "call", "switch", "configure"}
+    assert names == {"observe", "find", "inspect", "call", "run", "switch", "configure"}
 
 
 @pytest.mark.parametrize("spec", TOOL_SPECS, ids=lambda s: s["name"])
@@ -63,6 +64,17 @@ def test_only_find_and_call_require_an_argument():
     assert required["find"] == ["query"]
     assert required["inspect"] == ["ref"]
     assert required["call"] == ["action"]
+    assert required["run"] == ["script"]
+
+
+def test_no_tool_advertises_a_confirmation_switch():
+    """This build has no confirmation gate, so no tool asks for consent.
+
+    ``!`` on a capability is metadata, not a permission request: every tool
+    executes what it is given.
+    """
+    for spec in TOOL_SPECS:
+        assert "confirmed" not in spec["inputSchema"].get("properties", {}), spec["name"]
 
 
 # ---------------------------------------------------------------------------

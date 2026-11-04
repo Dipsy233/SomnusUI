@@ -1,9 +1,48 @@
 # 视口采集方案（viewport capture）— 测量结论与设计
 
-> 状态：**设计 + 测量提案，未改任何生产代码**。
+> 状态：**已实现（收尾提交后）+ 剩余项**。§1 的测量与 §2 的设计保留为原始依据；实现结果、实测数字与未实现项见下面的"实现状态"。收尾提交另落地了空壳/前台失败告警、效果重试与确认门控移除，本文件只描述视口采集与分层探测。
 > 测量环境：本机 Windows，场景为项目自带 `apps/scenario-suite`（store：240 行 `ItemsControl`，**非虚拟化**，原始树 1467 节点）+ 一个临时 1000 行 WPF `ListBox`（默认虚拟化，验证用，位于 `e:\0down\somnus_work\perf\wpf1000`，未进仓库）。
 > 所有耗时为同机中位数；测量期间机器有其它负载，绝对值偏慢，**只看相对比例**。
 > 复现脚本：`e:\0down\somnus_work\perf\viewport_measure.py`、`layered_probe.py`、`wpf1000_measure.py`，原始数据在同目录 `*.json`。
+
+---
+
+## 实现状态（2026-11-05，branch `test`）
+
+### 已实现部分
+
+| 设计 | 落点 | 状态 |
+|---|---|---|
+| 可见性 = `rect ∩ 窗口`，`IsOffscreen` 不作判据 | `cache.CACHED_PROPERTIES` 加 `30001`；`uia` 的视口采集 | ✅ 实测 `IsOffscreen` 在 240 行里 0 行报 offscreen，矩形判定 12 行可见 |
+| 骨架层 → 容器窄窥视 → 可见行完整读 | `UiaProvider.snapshot_viewport`（`uia.py`）+ `cache.PEEK_PROPERTIES` / `RECT_PROPERTIES` | ✅ |
+| 容器元数据 `items_total/items_visible/items_truncated/scroll_pct` | `Session._apply_viewport_meta` + `compile._carry_viewport_fields` | ✅ |
+| 折叠渲染 `rows/visible/+more`、样本默认 3 行、样本行结构完整 | `ProjectionEngine._plan_viewport` / `_viewport_more_text` | ✅ |
+| 分层探测覆盖集（可见 ∪ 交互 ∪ 最近触碰及祖先），覆盖不足硬退回全量 | `Session._snapshot_viewport` / 探测集 + `Settler.wait(probe=, signature=)` | ✅ 实测无变化 0 次全量 |
+| `OBSERVE ... expand` 传给采集层 | `Session._expand_paths` → `_snapshot_viewport(expanded_paths)` | ✅（扩大到多少样本未测，见"未实现 6"） |
+| 六档 cache request | `cache.build_cache_request(tier)`，`SOMNUS_CACHE_TIER` | ✅（`lean`/`sig` 收益与噪声同量级） |
+| 滚动/展开后的视口失效处理 | `_VIEWPORT_MOVING_PRIMITIVES` → 下一次探测回退全量 + 响应行 `~ viewport changed; OBSERVE again` | ✅（代价：这类动作之后的 CALL 会退到全量） |
+
+### 实测数字（本轮）
+
+| 指标 | 旧 | 新 |
+|---|---|---|
+| observe store（1467/1470 节点） | 3385ms | **594ms（−82.5%）**，tokens **292 不变** |
+| 无变化 CALL（大树） | ~6s | **686–706ms** |
+| 大树签名探测 | 1622–1938ms | **384–404ms** |
+| 小窗 CALL | — | **215–231ms** |
+| 无变化时的全量快照次数 | 2–4 | **0** |
+| `BoundingRectangle` 代价 | — | full **+6.2%**、sig **+11.6%**（与 §1.1 一致） |
+
+### 未实现 / 未达（含原因）
+
+1. **observe 594ms vs 本文件 §2.1 的 ~360ms**：−82.5% 达成，但 360ms 未达。差距在"骨架 + 窄窥视 + 可见行"之后仍未消掉的固定成本；**本轮没有做分段拆分**（骨架/窥视/可见行/编译各占多少未知），因此无法归因，[推] 与容器行数/层数相关。
+2. **探测 384–404ms vs §2.4 的 150–300ms**：provider 侧固有开销（请求物化/跨进程）。`lean`/`sig` 档与噪声同量级 → "缩 cache request"不是杠杆。
+3. **虚拟化列表未 realized 行的 FIND 回退（R3）未做**：这些行没有节点/ref，`FIND` 仍只能 0 命中或 `STALE_TARGET`；没有"容器窥视 / 滚动 / provider 按名查询"的回退。→ 剩余项第一梯队。
+4. **大量 realized 行的 provider 侧"只取视口行"（R9）未做**：窄窥视仍按容器子项数线性（240 行 194ms）；§1.2 的"1 万行 ≈8s"外推**未复核**。
+5. **`ops=` 不属于本方案，也未实现**：`projection/engine.py` 保留 `ops=` 的渲染分支，但**当前没有数据源**（桌面摘要需要每窗口浅读，5 窗口 111ms > 80ms 红线）；细节见 `optimization-plan.md`。
+6. **`expand` 的"下一页"语义未验证**：实现只是把该 ref 的路径传给采集层，扩到多少行、是否等价于"一页"没有实测。
+7. **§1.2 的"1000 行非虚拟化 ≈0.95s（−92%）"仍是外推**，没有真机数据。
+8. **§2.4 的"分层探测 ≈150–300ms"已实测否定**（384–404ms）；该数字应视为旧预期。
 
 ---
 
@@ -76,7 +115,8 @@ store（240 行、非虚拟化、窗口内可见 **12 行**）：
 3. **可见行完整读**：只对可见行（12 行 / 120 ms）取完整属性 + 模式 + 子树；它们的深层子节点（含发送按钮这类状态控件）一并读到，**状态新鲜度不受深度截断影响**。
 4. **不可见但"交互性未读"的行**：不读；只保留窄信息（名字、类型、可操作性由 type 推断）。模型显式展开时才读。
 
-预算：observe 首屏 ≈ 44 + 194 + 120 ≈ **0.36 s**（现状 3.07 s，**−88%**）；若骨架取 3 层（不做窄窥视）≈ 0.65 s（−79%）。
+预算：observe 首屏 ≈ 44 + 194 + 120 ≈ **0.36 s**（旧状 3.07 s，**−88%**）；若骨架取 3 层（不做窄窥视）≈ 0.65 s（−79%）。
+**实测（本轮）：594ms（−82.5%），360ms 未达**——差距是未拆分的固定成本，见顶部"未实现 1"。
 
 ### 2.2 observe 投影形态
 
@@ -124,17 +164,19 @@ probe_set = visible_nodes                 # rect ∩ 窗口 ∩ 非 offscreen
 - `touched_refs` 覆盖"动作目标在折叠区/屏幕外"的情形：动作刚碰过它，就必须复读它和它的祖先，直到下一次 observe 重新划视口。
 - 实现落点（阶段 1 版本，低成本）：`viewport` 集合在每次 `observe`/`call` 的采集里算出并存进 `Session`（`dict[ref→rect]` + `visible:set` + `touched:set`）；`Settler.wait` 的探测走"同一套分层采集"，只对 `probe_set` 比较签名；签名不覆盖的区域**不参与 settled 判定**，一旦发现探测覆盖不到 touched 目标就退回一次全量快照。
 
-预估：分层探测（骨架 2 层 + 窄窥视 + 可见行 sig 子树）≈ 150–300 ms，现状 sig 全量 1622 ms（**−80% 左右**）。
+预估：分层探测（骨架 2 层 + 窄窥视 + 可见行 sig 子树）≈ 150–300 ms，旧状 sig 全量 1622 ms（**−80% 左右**）。
+**实测（本轮）：384–404ms（−76~79%），未进 150–300ms**——provider 侧固有开销，见顶部"未实现 2"。
 
-### 2.5 需要改哪些接口（若立项）
+### 2.5 接口落点（实现对照）
+> 1–6 已实现（`UiaProvider.snapshot_viewport` / `viewport_meta` / `cache` 六档 / `Settler` 探测 / `Session` 视口集合）；**7（FIND 在部分树上 0 命中时的回退）未做**。
 
-1. `cache.py`：新增 `VIEWPORT_PROPERTIES`（含 30001）与 `peek` 档；`SIGNATURE` 档加 30001（探测要判可见）。
-2. `uia.py`：新增 `snapshot_viewport(window_id, *, max_depth=2)`：骨架层 + 容器窄窥视 + 可见行完整读，返回带 `visible/rows/scroll` 的 `RawTree` 与"未读容器"清单；保留现有 `snapshot` 作全量回退。
-3. `ir/node.py`：`RawNode` 增加 `rect`/`visible`（或放进 attrs），`RawTree` 增加 `unread: list[...]` 标记；`truncated` 语义从"超深"扩展为"超出视口"。
-4. `compiler`/`projection`：集合折叠改为读 `rows/visible`；`expand` 参数对列表容器生效。
-5. `runtime/session.py`：`Session` 保存视口集合与 `touched`，settle 探测按 §2.4 组装比较集；`observe`/`call` 后更新。
-6. `runtime/settle.py`：探测支持"部分覆盖"——只比较覆盖集合；覆盖不足 → 退回全量。
-7. `find`：部分树 0 命中时的回退（容器窥视 / provider 侧按名查询）。
+1. `cache.py`：`CACHED_PROPERTIES` 加 30001；新增 `peek`/`rect`/`sig`/`probe` 档（`SOMNUS_CACHE_TIER`）。
+2. `uia.py`：`snapshot_viewport(window_id, *, ...)`；保留全量 `snapshot` 作回退。
+3. `ir/node.py`：`RawNode` 带 rect/可见性；`RawTree`/容器带 `items_*` 元数据；`truncated` 扩展到"超出视口"。
+4. `compiler`/`projection`：集合折叠读 `rows/visible`；`expand` 对列表容器生效。
+5. `runtime/session.py`：`Session` 保存视口集合与 touched；`observe`/`call` 后更新。
+6. `runtime/settle.py`：探测支持部分覆盖；覆盖不足 → 硬退回全量。
+7. **未实现**：`find` 的部分树 0 命中回退（容器窥视 / provider 按名查询 / 滚动分页）。
 
 ---
 
@@ -152,20 +194,22 @@ probe_set = visible_nodes                 # rect ∩ 窗口 ∩ 非 offscreen
 |---|---|---|---|
 | R1 | 不可见、且从未被触碰的控件发生状态翻转（如折叠区里的按钮从禁用变可用） | 直到它进入视口或被 `FIND`/展开/触碰才更新；当前帧可能显示旧状态 | **可接受**。它本来就不可见，用户看不到；模型要操作它时会 `FIND`/展开，届时重读。代价是一次额外回合（可被 `FIND` 的"命中即读子树"抵消） |
 | R2 | 可见区域内部、但位于**未完整读**的容器里（容器子项多到只窥视） | 不存在的现象：可见行是完整读的；只有"可见容器但有大量子项且判定为不可见"才不读，那些子项也不可见 | 可接受 |
-| R3 | 虚拟化列表：未 realized 的行没有节点/ref | `FIND "Item 600"` 在部分树 0 命中；`CALL` 旧 ref 直接 STALE | **需要补回退**（FIND 0 命中 → 容器窥视/滚动/按名查询）。不可接受"静默 0 命中"，必须带 `~ not in current viewport; try FIND or scroll` 提示 |
-| R4 | 滚动后新进入视口的行 | 下一次采集可见；如果这次是 `CALL scroll(...)`，响应里的 delta 不会包含新行 | **可接受但要在响应里声明**：滚动/展开类动作强制附带一次视口刷新（成本 ≈194 ms），否则加一行 `~ viewport changed; OBSERVE again` |
+| R3 | 虚拟化列表：未 realized 的行没有节点/ref | `FIND "Item 600"` 在部分树 0 命中；`CALL` 旧 ref 直接 STALE | **未实现回退**（本轮仍未做）。不可接受"静默 0 命中"，必须带提示。→ 剩余项第一梯队 |
+| R4 | 滚动后新进入视口的行 | 下一次采集可见；如果这次是 `CALL scroll(...)`，响应里的 delta 不会包含新行 | **已按"降级 + 声明"处理**：`_VIEWPORT_MOVING_PRIMITIVES`（scroll/scroll_into_view/expand/collapse）之后，watched set 失效 → 下一次探测退回全量，并在响应里加 `~ viewport changed; OBSERVE again`。代价是这类动作之后的 CALL 变慢。 |
 | R5 | 被其它窗口/模态对话框遮挡 | rect 判断仍算"可见"，会读到并展示被遮住的内容 | 可接受（多给信息、不漏信息）；若要精确需要 `WindowFromPoint` 逐点检测，成本高，不建议 |
 | R6 | 同一 rect 上的重叠控件（透明覆盖层、拖拽层） | 两个都会被判可见，多读一点 | 可接受 |
 | R7 | 高 DPI / 多显示器 / 窗口部分在屏外 | rect 与窗口 rect 都是物理像素、同一坐标系，裁剪正确；窗口自身部分在屏外时以窗口 rect 为准 | 可接受 |
-| R8 | 探测覆盖不足却误判 settled | 见 §2.4：探测集不含 touched 目标时必须退回全量，否则会把"没看到变化"当"没变化" | **必须守住**，实现时用"覆盖不足 → 全量"的硬规则，不做概率判断 |
-| R9 | 列表子项数量巨大且全部 realized（自绘无虚拟化，如 1 万行） | 窄窥视成本按行数线性（240 行 194 ms → 1 万行 ≈ 8 s） | 需要在窥视请求上加"只取当前视口行"的 provider 侧支持；拿不到时**降级为摘要 + 首 3 行**并声明 `rows=N unread` |
+| R8 | 探测覆盖不足却误判 settled | 见 §2.4：探测集不含 touched 目标时必须退回全量，否则会把"没看到变化"当"没变化" | **已守住**：`Settler.wait` 在探测签名无法求值（watched 节点缺失）时硬退回全量，不做概率判断 |
+| R9 | 列表子项数量巨大且全部 realized（自绘无虚拟化，如 1 万行） | 窄窥视成本按行数线性（240 行 194 ms → 1 万行 ≈ 8 s） | **未做 provider 侧"只取视口行"**；本轮未复核 1 万行外推。→ 剩余项 |
+
+**本轮总评**：R3/R9 未做（大列表的剩余缺口），R4 用"回退全量 + 提示"处理，R1/R2/R5–R8 维持原判断。
 
 ---
 
-## 5. 建议的落地顺序（若批准）
+## 5. 落地顺序（实际）
 
-1. **只做 observe**：`snapshot_viewport` + 集合摘要（`rows/visible/+more`）+ `expand` 语义；不做探测改造。风险最低，收益 ≈ −80~88%。
-2. **再做探测**：视口集合 + touched 集合 + "覆盖不足退回全量"；这一步才需要动 `settle`/`session`。
-3. **最后做 FIND 回退**：部分树 0 命中 → 容器窥视/按名查询/滚动，配套 R3 的提示语。
+1. **只做 observe**：✅ 已完成（收尾提交后口径；实测 3385→594ms，tokens 292 不变）。
+2. **再做探测**：✅ 已完成（同提交，实测无变化 CALL ~6s→686–706ms；探测 1622–1938→384–404ms）。
+3. **最后做 FIND 回退**：❌ 未做（R3，剩余项第一梯队）。
 
-在阶段 3 的批量/脚本化之前插这一步是值得的：它同时降低 observe 的固定税和 call 的探测税，且不引入新的"语义压缩"。
+原判断"在阶段 3 的批量/脚本化之前插这一步"是值得的：observe 与探测与阶段 1 同轮落地，`run`（阶段 3）在其后实现；运行时收益主要来自这两项，而不是脚本化。

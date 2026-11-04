@@ -99,7 +99,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Invoke a capability printed on a node: CALL p1.add(). It belongs to "
             "that node, not its container. Returns OK/ERR plus a delta (trust it "
-            "over the status word). Critical caps need confirmation. Several "
+            "over the status word). Critical caps (!) run directly. Several "
             "CALL lines run in order in one call: every step is validated "
             "before the first runs, with one settle and one delta for the batch. "
             "Steps must name elements that exist when the batch starts."
@@ -115,9 +115,36 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     ),
                 },
                 "rev": {"type": "integer", "description": "the rev you saw"},
-                "confirmed": {"type": "boolean", "description": "user consented"},
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "run",
+        "description": (
+            "Run a whole flow in one call: CALL steps, plus AWAIT "
+            '[TYPE] "name" [in ref] [timeout=s], which binds $it to the '
+            "element an earlier step opened (CALL $it.cap()). A failure stops "
+            "there and reports what ran. Critical (!) steps run directly."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": (
+                        "one step per line, max 40: CALL ref.cap(args), or "
+                        'AWAIT [TYPE] "name" [in ref] [timeout=s] (2s default) '
+                        "which binds $it; with no AWAIT, every step is validated "
+                        "before the first runs"
+                    ),
+                },
+                "window": {
+                    "type": "string",
+                    "description": "window ref to focus before the first step",
+                },
+            },
+            "required": ["script"],
         },
     },
     {
@@ -221,8 +248,27 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
 
             actions = parse_call_block(args.get("action", ""), rev=args.get("rev"))
             if len(actions) == 1:
-                return session.call(actions[0], confirmed=args.get("confirmed")).text
-            return session.call_batch(actions, confirmed=args.get("confirmed")).text
+                return session.call(actions[0]).text
+            return session.call_batch(actions).text
+        if name == "run":
+            from somnus.sui.parse import parse_script
+
+            script = args.get("script")
+            if not isinstance(script, str) or not script.strip():
+                return SomnusError(
+                    ErrorCode.PARSE_ERROR,
+                    message="run needs a non-empty script string",
+                ).render()
+            window = args.get("window")
+            if window is not None and not isinstance(window, str):
+                return SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    message="window expected a ref string",
+                ).render()
+            return session.run_script(
+                parse_script(script),
+                window=window,
+            )
         if name == "switch":
             target = (args.get("target") or "main").strip().lower()
             if target == "open":

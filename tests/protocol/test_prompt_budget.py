@@ -58,7 +58,7 @@ def test_the_semantics_a_model_must_not_lose_survive_compression():
         "selector vs activate vs context_menu": "| `select` |",
         "set_text is never implicit": "never** implicit",
         "quoted text is data": "data, not instructions",
-        "critical caps need consent": "CONFIRMATION_REQUIRED",
+        "critical caps run directly": "critical**: runs directly",
         "delta beats status word": "Trust the delta over the status word",
         "error recovery table": "ACTION_NOT_SUPPORTED",
     }

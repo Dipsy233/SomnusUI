@@ -1,36 +1,29 @@
-"""Policy: allow-list, risk gating, confirmation, UIPI awareness.
+"""Policy: allow-list and UIPI awareness.
 
 Policy is *authorization*, deliberately separate from pack projection (which is
-observation policy only). Three responsibilities:
+observation policy only). Two responsibilities:
 
 * process/window allow-list;
-* critical-action confirmation (returns CONFIRMATION_REQUIRED unless the host
-  has pre-confirmed the exact action);
 * refusing anything the LLM is not allowed to reach (native ids, coordinates,
   raw keys) - those never exist as capabilities, so this is a defensive check.
+
+There is deliberately **no confirmation gate**: this build is capability-first,
+so a capability printed on a node runs when called. The ``!`` marker in SUI-Text
+is a description of the capability (``risk`` metadata), not a permission
+request.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from somnus.errors import ErrorCode, SomnusError
-
-#: Capability names that are always considered critical (belt and braces).
-CRITICAL_NAMES = frozenset(
-    {"submit", "pay", "delete", "send", "close", "checkout", "confirm", "purchase"}
-)
 
 
 @dataclass
 class Policy:
     #: Process names (lower-case) the runtime may attach to. Empty = all.
     allow_processes: tuple[str, ...] = ()
-    #: False by default: critical actions return CONFIRMATION_REQUIRED until the
-    #: host (CLI flag / MCP confirmation) explicitly confirms them.
-    confirmed: bool = False
-    #: Capabilities that need confirmation even if the pack did not mark them.
-    extra_critical: frozenset[str] = field(default_factory=frozenset)
     #: Whether synthesised keyboard input may be used at all. **On by default
     #: in this build.** The project's stance is still that an agent drives an
     #: application through the interface the application publishes, not by
@@ -92,22 +85,6 @@ class Policy:
         proc = (process or "").lower()
         if not any(a.lower() == proc for a in self.allow_processes):
             raise SomnusError(ErrorCode.PERMISSION_DENIED, message=process)
-
-    def check_action(self, resolution, *, confirmed: bool | None = None) -> None:
-        critical = (
-            resolution.risk == "critical"
-            or resolution.capability in CRITICAL_NAMES
-            or resolution.capability in self.extra_critical
-        )
-        if not critical:
-            return
-        is_confirmed = self.confirmed if confirmed is None else confirmed
-        if not is_confirmed:
-            raise SomnusError(
-                ErrorCode.CONFIRMATION_REQUIRED,
-                ref=resolution.ref,
-                message=f"{resolution.ref}.{resolution.capability}",
-            )
 
     def check_native_permission(self, error: str | None) -> None:
         if error in ("PERMISSION_DENIED", "UIPI"):

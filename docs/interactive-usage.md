@@ -35,11 +35,11 @@ somnus --demo repl
 
 启动后进入 `sui>` 提示符，输入 `quit` / `exit` / `:q` 退出。
 
-危险操作（`critical` 风险，如发送、删除）默认返回 `CONFIRMATION_REQUIRED`。
-在确认过意图后，用 `--confirmed` 启动以预先授权：
+本构建没有任何确认门控：`critical` 风险的能力（如发送、删除）被调用时**直接执行**，
+`+submit!` 只是能力描述，不是权限请求。宿主若需要人工确认，应在自己的调用层实现。
 
 ```bash
-somnus --no-pack --confirmed repl
+somnus --no-pack repl
 ```
 
 ## 一次典型会话

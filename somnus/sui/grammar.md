@@ -126,6 +126,7 @@ query   := "FIND" [REF] [TYPE] STRING ["in" REF]
 inspect := "INSPECT" REF ["depth=" INT] ["range=" INT ":" INT]
 abort   := "UNKNOWN" STRING
 observe := "OBSERVE" [REF] ["windows" | "desktop" | "full"] ["expand" REF]
+await   := "AWAIT" [TYPE] STRING ["in" REF] ["timeout=" NUMBER]
 ```
 
 ```
@@ -211,6 +212,68 @@ verification. Cumulative effects are verified as a sum per field: two steps
 each declaring `count += 1` expect the final value to be the pre-batch
 baseline + 2.
 
+## Scripts
+
+`run` takes a script of the same `CALL` statements plus `AWAIT`, one per line,
+at most 40. `AWAIT` waits for an element an earlier step created and binds it to
+`$it`; the next step names it as `CALL $it.cap(args)`. `$it` is invalid before
+the `AWAIT` that binds it (`INVALID_ARGUMENT`), and there is no other binding.
+
+```
+script  := step (NEWLINE step)*              # max 40
+step    := action | await | "$it" "." CAP "(" [args] ")"
+```
+
+```
+CALL mb1.expand()
+AWAIT MENUITEM "新建" timeout=2
+CALL $it.activate()
+```
+
+`AWAIT` is a `FIND` plus waiting: same TYPE/name/scope matching rules, but the
+name **must** be quoted. `timeout=` defaults to 2s; `timeout=0` is one search
+with no wait. The first hit is the binding - name the TYPE, or scope with
+`in REF`, when several elements share the name.
+
+Execution has two modes, and the script's own text selects it:
+
+- **No `AWAIT`** - nothing depends on an earlier step's effect, so the batch
+  path applies unchanged: every step is resolved and authorised before the
+  first runs, then one settle, one delta, one rev. A step that could never
+  work refuses the whole script while refusing is still free.
+- **With `AWAIT`** - each step is resolved when it runs, because the element a
+  later step names does not exist until an earlier one settled. Every step
+  settles before the next, so the foreground and the settle happen inside this
+  one call. The first failure stops the script: the reply says how many steps
+  ran, reports their net delta, and prints the failing step's error and hint.
+
+`window=REF` focuses that window before the first step. `CALL wN.focus()` is
+refused as a step (it re-allocates refs and discards `$it`).
+
+```
+RUN OK steps=3/3 rev=9
+  1. CALL mb1.expand() -> ok
+  2. AWAIT MENUITEM "新建" timeout=2 -> ok ($it=mi5)
+  3. CALL $it.activate() -> ok
+~ t1 len 0→4
+```
+
+```
+RUN PARTIAL steps=1/3 failed-at=2 rev=8
+  1. CALL mb1.expand() -> ok
+  2. AWAIT MENUITEM "保存" timeout=2 -> ERR TARGET_NOT_FOUND
+  3. CALL $it.activate() -> not-run
+ERR TARGET_NOT_FOUND after=2.0s hint=observe msg="AWAIT MENUITEM \"保存\" found nothing; the element did not appear"
+~ steps 1-1 really ran; fix the failing step and continue with a fresh RUN
+```
+
+`context_menu` is allowed in a script with an `AWAIT` (that is exactly the
+flow it exists for): the menu is a real step that a later `AWAIT` can find.
+
+A critical (`!`) capability executes **directly** - in `CALL`, in a batch and
+in a script alike. This build has no confirmation gate, so the `!` marker is a
+description of the capability, never a permission request.
+
 ## Results and deltas
 
 ```
@@ -223,7 +286,6 @@ OK rev=8
 ```
 OK_UNVERIFIED rev=8          # executed, no declared effects to verify
 ERR STALE_TARGET p1 hint=find
-ERR CONFIRMATION_REQUIRED b9.submit hint=ask-user
 ```
 
 Delta line kinds:
@@ -246,7 +308,6 @@ Delta line kinds:
 | `INVALID_ARGUMENT` | bad/missing argument | `inspect` |
 | `ACTION_NOT_SUPPORTED` | no native pattern | `report-user` |
 | `TARGET_DISABLED` | target disabled | `inspect` |
-| `CONFIRMATION_REQUIRED` | critical action needs consent | `ask-user` |
 | `PERMISSION_DENIED` | allow-list / UIPI | `report-user` |
 | `NATIVE_EXECUTION_FAILED` | pattern raised | `retry-once` |
 | `TIMEOUT` | exec/settle timed out | `observe` |

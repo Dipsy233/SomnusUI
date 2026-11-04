@@ -13,17 +13,17 @@ identifiers.
 ```
 User intent
    ↓
-LLM planner (five tools)
+LLM planner (seven tools)
    ↓
-Somnus runtime ─ observe / find / inspect / call / switch
+Somnus runtime ─ observe / find / inspect / call / run / switch / configure
    ├─ Session registry   ref ↔ fingerprint ↔ native element
    ├─ Resolver           semantic capability → native primitives
    ├─ Verifier           settle + effects + delta
-   └─ Policy             risk, confirmation, allow-list
+   └─ Policy             allow-list + input-channel gates
    ↓
 Semantic graph
    ↑
-Semantic compiler (deterministic: normalize → infer → match → project → compress)
+Semantic compiler (deterministic: normalize → infer → match → dedupe → project → compress)
    ↑
 AccessibilityProvider (Windows UI Automation; AX / AT-SPI planned)
    └─ peer provider: a session on the far side of the session boundary
@@ -31,7 +31,10 @@ AccessibilityProvider (Windows UI Automation; AX / AT-SPI planned)
 
 ## Principles
 
-- **No vision.** The accessibility tree is the only perception channel.
+- **No vision.** The accessibility tree is the only perception channel. The
+  tree is read from the **visible viewport**: off-screen rows are summarised as
+  `rows= / visible=`, never silently dropped, and `IsOffscreen` is not trusted
+  (it reports 0 hidden rows on a list where only 12 are on screen).
 - **Every action takes the foreground.** A window is raised before it is read
   or written, and text goes in through a channel the application can verify:
   `ValuePattern` first, then the clipboard channel, then the keyboard channel.
@@ -41,16 +44,26 @@ AccessibilityProvider (Windows UI Automation; AX / AT-SPI planned)
   work without disturbing the user, run the agent in a child session
   (see [docs/child-session.md](docs/child-session.md)). An element that
   publishes no usable interface is reported as such.
-- **Low token cost.** Observation is projected and budgeted: homogeneous lists
-  preview a few items, anonymous leaves fold into one summary line. An L0
+- **Capability-first, no confirmation gate.** There is no consent step, no
+  risk scoring and no dangerous-action interception: a capability printed on a
+  node runs when called. The `!` suffix (`+submit!`) is declared metadata about
+  the capability, not a permission request. The host decides whether to ask a
+  human; the runtime does not.
+- **Low token cost.** Observation is projected and budgeted and read only from
+  the visible viewport: homogeneous lists preview a few complete rows and fold
+  the rest into `… +N more`, anonymous leaves fold into one summary line. An L0
   overview typically costs tens to a few hundred tokens.
 - **Semantics first.** The model calls `CALL p1.add()`, never `click(312, 528)`.
 - **Deterministic compiler.** No language model runs inside the runtime or the
   compiler.
 - **Fail loud.** Anything the accessibility API cannot express is reported as
-  `UNKNOWN`, never guessed.
+  `UNKNOWN`, never guessed. A UIA capability is still reported honestly when
+  the control refuses it.
 
 ## Quick start
+
+Run these **from the repository root** (the `bench/` and `tests/` packages are
+imported by path, not installed).
 
 ```bash
 pip install -e ".[dev]"
@@ -58,7 +71,7 @@ pip install -e ".[dev]"
 # Replay the built-in restaurant demo (no Windows required):
 somnus --demo observe
 somnus --demo call 'CALL p1.add()'
-somnus --demo bench --runs 100
+python -m somnus.cli bench --runs 100   # the console-script form cannot import bench/
 
 # Against a real Windows application (requires the [windows] extra):
 pip install -e ".[windows]"
@@ -68,7 +81,7 @@ somnus observe w1                  # one window
 somnus call 'CALL b1.activate()'
 somnus --no-pack repl              # multi-step session with no App Pack
 somnus record w1 -o fixture.json
-somnus mcp                         # MCP server (stdio), five tools
+somnus mcp                         # MCP server (stdio), seven tools
 
 # A second desktop the agent can work in without disturbing the user (Windows Pro+):
 somnus child-session status        # is the feature available here?
@@ -76,6 +89,21 @@ somnus child-session setup         # once, elevated
 somnus child-session start         # open it
 somnus child-session close         # end it and clean up
 ```
+
+> **Refs live only as long as one session.** `somnus observe` / `somnus call`
+> are one-shot commands: the process exits after that single tool call, so every
+> ref (`p1`, `w1`, `q1`, …) dies with it. For anything involving more than one
+> call — which is most real tasks — use **`somnus repl`** (one live session,
+> multi-line input), the **MCP server** (one long-lived session per client), or
+> the **`run`** tool (a whole flow inside one call). The same is true of
+> `somnus --demo` / `somnus --scenario`, which are otherwise convenient for
+> exploring a single observation.
+>
+> Why `python -m somnus.cli bench` instead of `somnus ... bench`: the console
+> script's `sys.path` starts in `.venv/Scripts`, so the repo-local `bench`
+> package is not importable; `python -m` from the repo root puts the repository
+> on `sys.path`. Every other command above works through the `somnus` entry
+> point.
 
 ### As an MCP server
 
@@ -89,18 +117,25 @@ Any MCP client can connect — Claude Desktop, Cursor, pi and others:
 }
 ```
 
-The server exposes `observe` / `find` / `inspect` / `call` / `switch`. The
-provider is selected automatically: real windows through UI Automation when
-the `[windows]` extra is installed, recorded fixtures otherwise.
+The server exposes `observe` / `find` / `inspect` / `call` / `run` / `switch` /
+`configure`. The provider is selected automatically: real windows through UI
+Automation when the `[windows]` extra is installed, recorded fixtures otherwise.
+On startup the server's `instructions` state the effective settle timings
+(`settle_quiet_ms=40`, `settle_poll_ms=10`, `settle_timeout_s=3.0`) and the
+`post_action_enum=on` default, so a client knows both the values and their
+trade-offs before the first call; `configure` changes them at runtime.
 
 ## What the model sees
 
-One real window, four tool calls. Nothing else is shown to the model.
+One real window, four tool calls. The only desktop context is the one-line
+`WINDOWS` header (window ref, title, active flag) — no other window's contents
+are included.
 
-**① `observe`** — the current screen as capabilities:
+**① `observe`** — the desktop header, then the current screen as capabilities:
 
 ```
 @rev 1
+WINDOWS w1 "agent 属性" active
 WINDOW w1 "agent 属性" +scroll_into_view
   SCREEN s1 "网络文件和文件夹共享"
   TEXT tx3 "网络路径(N):"
@@ -111,6 +146,32 @@ WINDOW w1 "agent 属性" +scroll_into_view
   BUTTON b5 "应用(A)" disabled                ← currently unavailable
   TAB t3 "共享"
 ```
+
+The `WINDOWS` line names every top-level window and marks the active one; it
+carries no `ops` count (counting operable elements needs one shallow read per
+window, measured at ~111 ms for five windows — above the observation's ~80 ms
+budget). `OBSERVE windows` is still the cheapest way to get the list alone.
+
+A list larger than the viewport is read **only where it is visible**; off-screen
+rows are summarised, never silently missing:
+
+```
+@rev 4
+WINDOWS w1 "Store" active
+WINDOW w1 "Store" active
+  SCREEN s1 "catalog"
+    LIST l1 "Products" rows=240 visible=12 scroll=5% +find
+      ITEM li1 "Item 0" price=$1.00 +add          ← visible rows are complete
+      ITEM li2 "Item 1" price=$1.50 +add
+      ITEM li3 "Item 2" price=$2.00 +add
+      +more items=228 use FIND "<name>" or OBSERVE w1 expand l1
+```
+
+`rows=` is the real total, `visible=` how many rows are on screen. Use
+`FIND "<name>"` to reach an off-screen row, or `OBSERVE w1 expand l1` to render
+the rows of one more page. Scroll/expand invalidates the viewport, so the next
+response says `~ viewport changed; OBSERVE again` when the captured set no
+longer matches the screen.
 
 **② `find`** — locate by keyword; each hit is a complete entity line:
 
@@ -134,11 +195,14 @@ INSPECT mi2
 
 ```
 CALL tx1.set_text("Hello SomnusUI")
-→ OK_UNVERIFIED rev=2
+→ OK rev=2
   ~ tx1 value →Hello SomnusUI                  changed
   + TAB t4 "Hello SomnusUI. 已修改。" +close!   added
   - t2                                          removed
 ```
+
+`OK_UNVERIFIED` is reserved for a settled call whose delta is empty (it ran, but
+nothing visible changed); a call that produced a delta is `OK`.
 
 Failures are a single line with a recovery hint, never a stack trace:
 
@@ -174,23 +238,27 @@ patterns, so an application it has never seen is still usable:
   | # | Route | Requires | Synthetic input / clipboard |
   | --- | --- | --- | --- |
   | 1 | `ValuePattern.SetValue` | the control publishes a Value pattern | no / no |
-  | 2 | `WM_SETTEXT` / `EM_REPLACESEL` (not wired) | the element maps its own HWND | no / no |
-  | 3 | clipboard + `Ctrl+V` | `--allow-clipboard` | yes / **yes** |
-  | 4 | focus and type | `--allow-keyboard` | yes / no |
+  | 2 | clipboard + `Ctrl+V` | `allow_clipboard` (on by default) | no / **yes** |
+  | 3 | focus and type | `allow_keyboard` (on by default) | yes / no |
 
   Route 1 writes through an interface the application itself publishes, so the
   write happens on the application's own thread: atomic, no synthetic input, no
-  clipboard borrowed. Route 2 (`WM_SETTEXT` / `EM_REPLACESEL`) is described for
-  completeness and is not wired: a control that maps an HWND and holds editable
-  text also publishes a Value pattern, so it would never be reached. Every route
-  requires the target window in the foreground — the runtime raises it first
-  rather than writing without focus. Route selection is decided at execution
-  time, because static inspection cannot settle it: UIA reports interfaces an
-  element then refuses. The route that answered is remembered for the rest of
-  the session.
+  clipboard borrowed. Route 2 is constant-cost (~37 ms from 10 to 3000
+  characters) and reaches a control that publishes no writable interface, but it
+  borrows the user's clipboard and restores it format by format. Route 3 is the
+  last resort and can stall on the target's input queue. (A `WM_SETTEXT` /
+  `EM_REPLACESEL` route existed in an earlier design and was removed: any
+  control that maps an HWND and holds editable text also publishes a Value
+  pattern, so it was unreachable.) Every route requires the target window in the
+  foreground — the runtime raises it first rather than writing without focus.
+  Route selection is decided at execution time, because static inspection
+  cannot settle it: UIA reports interfaces an element then refuses. The route
+  that answered is remembered for the rest of the session.
 
-  A call that cannot be served by an enabled route is reported rather than
-  silently redirected:
+  Both synthetic channels are **on by default in this build**; turn one off for
+  one run with `--no-allow-clipboard` / `--no-allow-keyboard`, or persistently
+  with `somnus config --no-allow-clipboard` / `--no-allow-keyboard`. A call that
+  cannot be served then is reported rather than silently redirected:
 
   ```
   CALL q1.set_text("x")
@@ -207,20 +275,51 @@ patterns, so an application it has never seen is still usable:
 
 ### Settings
 
-Because an MCP client launches the process itself, a command-line flag is not
-a practical opt-in. Both channels can be configured in a small TOML file:
+Persistent settings live in a small hand-editable TOML file. **Both synthetic
+channels are on by default in this build** (the 50-task benchmark showed that
+refusing them leaves whole classes of tasks unfinished); the file is how you
+turn them *off* and keep them off:
 
 ```bash
 somnus config --path              # where the file is
-somnus config                     # show state (writes defaults on first run)
-somnus config --allow-clipboard   # turn the clipboard channel on, persistently
-somnus config --allow-keyboard    # turn the keyboard channel on
+somnus config                     # show the effective state (writes defaults on first run)
+somnus config --no-allow-clipboard   # turn the clipboard channel off, persistently
+somnus config --no-allow-keyboard    # turn the keyboard channel off
+somnus config --allow-clipboard      # turn it back on
 ```
 
-Precedence: **flag > environment variable (`SOMNUS_ALLOW_CLIPBOARD` /
-`SOMNUS_ALLOW_KEYBOARD`) > file > built-in default**. A malformed file degrades
-to the defaults and reports the problem in `somnus config`; it never becomes
+Precedence for the two channels: **one-run flag (`--allow-clipboard` /
+`--no-allow-clipboard`) > environment variable (`SOMNUS_ALLOW_CLIPBOARD` /
+`SOMNUS_ALLOW_KEYBOARD`) > file > built-in (on)**. A malformed file degrades to
+the defaults and reports the problem in `somnus config`; it never becomes
 "allow everything".
+
+Timing knobs can be set in the same file **and changed at runtime** from the
+model side with the `configure` tool:
+
+| Key | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `settle_quiet_ms` | `40` | 10–1000 | how long the UI must stay unchanged before a call is reported done. Smaller = faster; too small can read an animation mid-flight. |
+| `settle_poll_ms` | `10` | 1–100 | probe spacing. |
+| `settle_timeout_s` | `3.0` | 0.5–30 | hard cap for one settle; on timeout the reply is `settled=false` but still carries the delta. |
+| `post_action_enum` | `true` | bool | re-enumerate windows after an action, so a window the action opened is reported. Off saves ~100 ms per call and can hide that new window. |
+
+Precedence for these: **built-in < file < environment
+(`SOMNUS_SETTLE_QUIET_MS`, `SOMNUS_SETTLE_POLL_MS`, `SOMNUS_SETTLE_TIMEOUT_S`,
+`SOMNUS_POST_ACTION_ENUM`) < `configure`**. `configure` is session-scoped and
+applies to the next call; `persist=true` writes the file, `reset=true` restores
+the startup values. One bad value refuses the whole patch.
+
+```json
+{"settle_quiet_ms": 80, "settle_poll_ms": 20, "post_action_enum": false}
+```
+
+```text
+SETTINGS quiet_ms=80 poll_ms=20 timeout_s=3.0 post_action_enum=off scope=session
+```
+
+The MCP server repeats the effective values in its `instructions` at startup,
+so the model knows the defaults and what changing them costs before it acts.
 
 - **`context_menu`** is offered where a menu is plausible (the element exposes
   something to operate on). It is the escape hatch for an application that
@@ -273,6 +372,15 @@ skipping the raise when the window is already in front. `OBSERVE windows` (the
 window list) is the exception and never seizes the foreground. The prior state
 of every touched window is recorded and restored when the provider closes.
 
+When the raise is refused, or the snapshot comes back with a titled window and
+**no children at all**, the observation says so instead of presenting an empty
+window as fact:
+
+```
+~ foreground denied (FOREGROUND_DENIED); tree may be empty for covered windows
+~ tree looks empty; window may be covered or app not rendering
+```
+
 ### When that is not enough: a child session
 
 Raising a window takes the user's focus, and the clipboard and keyboard channels
@@ -305,24 +413,28 @@ setup, one child session at a time. There is no security isolation — the two
 sessions are the same account. Design notes, measurements and the approaches
 that were tried and rejected are in [docs/child-session.md](docs/child-session.md).
 
-## The five tools
+## The seven tools
 
 | Tool | Purpose | Returns |
 | --- | --- | --- |
-| `observe` | L0 overview of the target window | SUI-Text |
-| `find` | `FIND [type] "query" [in ref]` | matching entity lines |
+| `observe` | L0 overview of the target window (viewport-scoped) + a `WINDOWS` header | SUI-Text |
+| `find` | `FIND [type] "query" [in ref]`; `timeout` waits for a match | matching entity lines |
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 detail |
-| `call` | `CALL ref.cap(args)` — several, one per line, run as a batch | `OK`/`ERR` + delta |
+| `call` | `CALL ref.cap(args)` — several lines run as a batch | `OK`/`ERR` + delta |
+| `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL` + per-step lines + merged delta |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` + window list |
+| `configure` | tune `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
+
+There is no confirmation gate on any of them: a printed capability runs when
+called. `configure` is a pacing knob, not a permission switch.
 
 ### Batch calls
 
 `call` accepts several `CALL` statements, one per line. They run **in order in
-one round trip**: every step is resolved and authorised against the current
-compilation before the first one executes (so a step that could never work
-refuses the whole batch while nothing has moved), the steps then run without
-settling between them, and the batch ends with one settle, one delta and one
-rev.
+one round trip**: every step is validated against the current compilation
+before the first one executes (so a step that could never work refuses the
+whole batch while nothing has moved), the steps then run without settling
+between them, and the batch ends with one settle, one delta and one rev.
 
 ```
 CALL q1.set_text("张三")
@@ -341,6 +453,32 @@ menu and then acts on its items is separate calls, because the items only come
 into being at the settle between them. Grammar and response shapes:
 [`somnus/sui/grammar.md`](somnus/sui/grammar.md).
 
+### Scripts (`run`)
+
+`run` takes a script, one step per line. A script made only of `CALL`s keeps the
+batch's all-or-nothing pre-check; as soon as an `AWAIT` appears, execution
+becomes **step by step** (execute → settle → re-read → resolve the next step),
+so a step may name an element an earlier step created:
+
+```
+CALL mb1.expand()
+AWAIT MENUITEM "新建" timeout=2
+CALL $it.activate()
+→ RUN OK steps=3/3 rev=9
+```
+
+- `AWAIT [TYPE] "name" [in ref] [timeout=s]` binds `$it` to the first match
+  (default 2 s; `timeout=0` is a single search). It re-reads the viewport until
+  the match appears instead of spending a model round-trip on `observe`.
+- A failing step stops the run: `RUN PARTIAL steps=2/3 failed-at=3`, followed by
+  the step lines and the merged delta for what really ran.
+- Limits: a cross-window flow must name the window explicitly (a switch
+  reallocates refs); the delta is the net difference between the start and the
+  end of the script; `$it` is the first hit, not a collection.
+- Measured on a real menu flow: one 3-step run took 453 ms against 428 ms for
+  two separate `call`s. The runtime cost is unchanged (every step still
+  settles); the saving is one model inference, which is the point.
+
 ## SUI-Text
 
 The single model-facing format. Capabilities live on the node line; default
@@ -349,6 +487,7 @@ table).
 
 ```
 @rev 1
+WINDOWS w1 "Restaurant Demo" active
 WINDOW w1 "Restaurant Demo" active
   SCREEN s1 "menu"
     LIST l1 "Products" count=3 entity=product +find
@@ -364,7 +503,7 @@ FIND product "Big Mac"   →  FOUND 1 / PRODUCT p1 "Big Mac" price=5.99 +add
 CALL p1.add()            →  OK rev=2
                             ~ c1 count 0→1
                             ~ c1 total 0→5.99
-CALL b5.submit()         →  ERR CONFIRMATION_REQUIRED b5 hint=ask-user
+CALL b5.submit()         →  OK rev=3   (critical caps run directly; no gate)
 ```
 
 Full grammar: [`somnus/sui/grammar.md`](somnus/sui/grammar.md).
@@ -376,15 +515,15 @@ somnus/
 ├── ir/            node / capability / action value objects (platform free)
 ├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard,workspace}.py
-├── compiler/      normalize → caps → relations → simplify → match → compile
-├── projection/    rules.py budget.py engine.py
-├── sui/           serialize.py parse.py grammar.md
+├── compiler/      normalize → caps → relations → simplify → twins → match → compile
+├── projection/    rules.py budget.py engine.py (viewport rows/visible/+more)
+├── sui/           serialize.py parse.py grammar.md (incl. RUN / AWAIT)
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── session/       child session: childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
 ├── packs/         generic.py restaurant_demo.py (built-in demo pack)
 ├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
-├── config.py      persistent settings (the opt-in switches live here)
+├── config.py      persistent settings (channels + settle timings)
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 apps/scenario-suite/    WPF (.NET 8) acceptance app: five screens covering the
@@ -392,11 +531,13 @@ apps/scenario-suite/    WPF (.NET 8) acceptance app: five screens covering the
 tools/rdp-host/         .NET (WinForms) OLE container for the RDP control, the
                         one piece Python cannot host. Built with `dotnet build`.
 docs/
-  what-the-llm-sees.md      one window, five tools, with real output
+  what-the-llm-sees.md      one window, the tools, with real output
   interactive-usage.md      REPL vs one-shot CLI vs script
   packs.md                  how to write an App Pack
   child-session.md          the second desktop: design, costs, rejected options
   text-input-channels.md    how text reaches a control, and at what cost
+  optimization-plan.md      what was measured, what changed, what is left
+  viewport-capture-proposal.md  the viewport collector: measurements and design
   scenario-suite.md         the acceptance screens and their pass criteria
   benchmark-50-tasks.md     50 real user tasks: what this project can and cannot do
 examples/               agent loop, contract check, task evaluation (host code)
@@ -419,9 +560,9 @@ app is a suite of screens, each aimed at one class of difficulty:
 
 | Screen | What it is | What it exercises |
 | --- | --- | --- |
-| `store` | search box + a 240-row scrollable catalog + cart | large data: folding, `FIND` into a folded list, a search field written natively |
+| `store` | search box + a 240-row scrollable catalog + cart | large data: viewport folding (`rows=` / `visible=`), `FIND` into rows that are off screen, a search field written natively |
 | `form` | labelled fields (one writable, one read-only), checkbox, combo, disabled button, gated submit | writable vs read-only on the line, validation as a real outcome, the submit record as the verification surface |
-| `chat` | a self-drawn rich-text composer, message history, send button, visible send log | `set_text` with a control that publishes nothing writable: refuse honestly, or use an opt-in channel, then record the send |
+| `chat` | a self-drawn rich-text composer, message history, send button, visible send log | `set_text` with a control that publishes nothing writable: refuse honestly, or use the clipboard/keyboard channel (both on by default, disable with `--no-allow-*`), then record the send |
 | `console` | a plain text box composer and a contact list | routing contrast: a control with its own write interface must never fall back to the synthetic channels |
 | `tree` | a nested, expandable tree (thousands of nodes) | compression by expansion level: a bounded overview, detail paid for only where it was unfolded |
 
@@ -481,20 +622,44 @@ all exercised without a desktop.
 
 ## Metrics
 
-| Metric | Target | Current (`somnus --demo bench --runs 100`) |
-| --- | --- | --- |
-| Zero vision | 0 vision/coordinate calls | ✓ (structural) |
-| Information isolation | 0 native ids in model context | ✓ (leak scan = 0) |
-| Compression ratio | ≥ 10× | ≥ 1500× (fully expanded tree) |
-| Action success | ≥ 99% | 100% |
-| Task success | ≥ 90% | 100% |
-| L0 observation | ≤ 300 tokens | 80 tokens (240-row catalog, expanded tree) |
+**Acceptance gates** (`python -m somnus.cli bench --runs 100`, mock/fixtures):
 
-Run them with `somnus --demo bench --runs 100`. The isolation check is
-evidence-based rather than a regex guess: it enumerates the actual automation
-ids, class names and runtime ids of the tree under test and asserts that none
-appears in the text the model would receive, so application data that merely
-looks like an id (a form's `REQ-0001`) is not mistaken for a leak.
+| Metric | Target | Measured (100 runs) |
+| --- | --- | --- |
+| Zero vision | 0 vision/coordinate calls | ✓ (structurally 0) |
+| Information isolation | 0 native ids in model context | ✓ (leak scan = 0) |
+| Compression ratio | ≥ 10× | **1373.6×** (min, fully expanded tree) |
+| Action success | ≥ 99% | **100%** |
+| Task success | ≥ 90% | **100%** (median 3 steps) |
+| L0 observation | ≤ 300 tokens | **91 tokens** (median and max) |
+
+`python -m somnus.cli bench --runs 100` (see the Quick start note: the
+`somnus ... bench` console-script form cannot import `bench/`). The isolation
+check is evidence-based rather than a regex guess: it enumerates the actual
+automation ids, class names and runtime ids of the tree under test and asserts
+that none appears in the text the model would receive, so application data that
+merely looks like an id (a form's `REQ-0001`) is not mistaken for a leak.
+
+### Performance on real windows (measured)
+
+Same machine, Windows 11, `apps/scenario-suite` **store** screen (240-row
+non-virtualised `ItemsControl`, 1467-node raw tree), real UIA provider (no
+mock), i5-13500HX / 2560×1440@96DPI. The `CALL` range is across repeats; the
+`observe` figure is a single run.
+
+| Scenario | Before | After | What changed |
+| --- | --- | --- | --- |
+| `observe` the store | 3385 ms | **594 ms** (−82.5%) | viewport-scoped capture: skeleton + row peek + only visible rows read in full |
+| `CALL` on the store, unchanged tree | ~6 s | **686–706 ms** | signature probe: **0 full snapshots** when nothing changed |
+| Signature probe itself | 1622–1938 ms | **384–404 ms** | probe reads only the signature fields on the visible set |
+| `CALL` on a small window | 423 ms | **215–231 ms** | fewer settle frames (`quiet=40 ms`, `poll=10 ms`) |
+| Token cost of the store `observe` | 292 | **292** | unchanged — the projection still folds to the same lines |
+
+These are the only performance numbers measured end-to-end. A *changing* call
+on the store still needs one full snapshot and has **not** been re-measured
+after this change; no number is claimed for it. `SOMNUS_PROFILE=1` prints the
+per-stage split (enum / snapshot / compile / settle) if you want to reproduce
+the measurement on your own machine.
 
 ## License
 

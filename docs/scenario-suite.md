@@ -33,7 +33,7 @@
 |---|------|--------|----|
 | C1 | 错误语法：`click(312,528)` / 原语动词 | `PARSE_ERROR` + hint，单行无堆栈 | S1 |
 | C2 | 不存在的能力/引用：`CALL p1.submit()`、`CALL ghost.add()` | `CAPABILITY_NOT_FOUND` / `NOT_FOUND` + hint=inspect | S1 |
-| C3 | 被确认门禁的操作：`b5.submit()` | `CONFIRMATION_REQUIRED` + hint=ask-user；状态未变 | S1 |
+| C3 | critical 能力：`b5.submit()` | 直接执行、动作真实下发（本构建无确认门控） | S1 |
 | C4 | UI 突变后调用：find 到 ref 后 UI 重建（fixture 注入变更）再 call | 指纹校验失败 → 明确错误 + 建议 observe，而非静默错点 | S1 |
 | C5 | 窗口关闭/崩溃后 call | 语义化错误（不是 traceback），session 可恢复或干净退出 | S2 |
 | C6 | 超时/元素永不 settle | settle 超时返回一行错误，可重试 | S1（可注入延迟）/S2 |

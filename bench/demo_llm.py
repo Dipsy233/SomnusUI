@@ -94,11 +94,11 @@ def main() -> int:
     result = call_tool(session, "call", {"action": "CALL c1.open()"})
     as_llm(result)
 
-    # ---- 第 7 步：展示 critical 动作的安全闸门 ------------------------------
-    banner('⑦ 任务完成后，用户没有要求结账——LLM 若误调 submit 会被拦截')
-    llm_says("call  CALL b5.submit()  # （假设 LLM 越权尝试）")
+    # ---- 第 7 步：critical 动作直接执行（本构建没有确认门控） -----------------
+    banner('⑦ 没有确认门控：critical 能力（submit）被调用时直接执行')
+    llm_says("call  CALL b5.submit()")
     as_llm(call_tool(session, "call", {"action": "CALL b5.submit()"}))
-    llm_says("→ CONFIRMATION_REQUIRED：critical 动作必须由宿主向用户确认")
+    llm_says("→ OK：+submit! 是能力的描述（risk=critical），不是权限请求")
 
     print(f"\n{RULE}\n  任务完成 ✅\n{RULE}")
     return 0

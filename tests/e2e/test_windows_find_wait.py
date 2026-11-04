@@ -12,6 +12,7 @@ observation must name both without walking either one's tree.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -130,6 +131,81 @@ def test_find_waits_about_as_long_as_its_deadline():
             proc.wait(timeout=5)
         except Exception:  # noqa: BLE001 - teardown
             proc.kill()
+
+
+def test_one_window_has_one_ref_in_the_summary_and_the_body():
+    """Real regression: the desktop line said w2 while the tree under it said w1.
+
+    Two live windows of the acceptance app: every ref printed anywhere in the
+    observation must name exactly one window, and the ref the summary gives
+    must be the one `OBSERVE`/`CALL wN.focus()` accepts.
+    """
+    _require_app()
+    procs = [
+        subprocess.Popen([str(APP), "store"]),
+        subprocess.Popen([str(APP), "form"]),
+    ]
+    session = None
+    try:
+        from somnus.providers.base import get_provider
+        from somnus.runtime.session import Session
+
+        provider = get_provider("uia", allow_list=["scenariosuite.exe"])
+        session = Session(provider, allow_packs=False)
+        wanted = ("Scenario Suite - store", "Scenario Suite - form")
+        deadline = time.monotonic() + _WINDOW_TIMEOUT
+        while time.monotonic() < deadline:
+            session.refresh_windows()
+            if all(any(t in (w.title or "") for w in session.windows) for t in wanted):
+                break
+            time.sleep(0.4)
+        else:
+            raise AssertionError(
+                f"both windows did not appear: {[w.title for w in session.windows]}"
+            )
+
+        obs = session.observe()
+        summary_line = next(
+            (ln for ln in obs.text.splitlines() if ln.startswith("WINDOWS ")), None
+        )
+        assert summary_line, obs.text
+        summary = {title: ref for ref, title in re.findall(rf'(w\d+) "([^"]*)"', summary_line)}
+        assert len(summary) == 2, summary_line
+        assert len(set(summary.values())) == 2, summary_line  # one ref per window
+
+        # One title never appears under two refs anywhere in the document.
+        by_title: dict[str, set[str]] = {}
+        for ref, title in re.findall(r'(w\d+) "([^"]*)"', obs.text):
+            by_title.setdefault(title, set()).add(ref)
+        for title, refs in by_title.items():
+            assert len(refs) == 1, f"{title!r} printed under {refs}"
+
+        # The target's ref in the summary is the one the body renders it under.
+        target = session._window_by_ref(session.target_window)
+        assert target is not None
+        assert summary[target.title] == session.result.root.ref
+        assert f'WINDOW {session.result.root.ref} "{target.title}"' in obs.text
+
+        # Every summary ref resolves and observes the window it names.
+        for title, ref in summary.items():
+            window = session._window_by_ref(ref)
+            assert window is not None and window.title == title
+            out = session.dispatch(f"OBSERVE {ref}")
+            assert not out.startswith("ERR"), out
+            assert f'WINDOW {ref} "{title}"' in out, out
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001 - teardown
+                pass
+        for proc in procs:
+            proc.terminate()
+        for proc in procs:
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - teardown
+                proc.kill()
 
 
 def test_the_desktop_summary_names_every_live_window():

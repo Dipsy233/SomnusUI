@@ -175,7 +175,7 @@ def build_session(args) -> "Any":
         provider = MockProvider(
             fixtures=[restaurant_demo_tree()], scripts=demo_scripts()
         )
-        return Session(provider, pack_id="restaurant-demo", policy=Policy(confirmed=False))
+        return Session(provider, pack_id="restaurant-demo", policy=Policy())
 
     from somnus.providers.base import get_provider
 
@@ -183,9 +183,7 @@ def build_session(args) -> "Any":
     return Session(
         provider,
         pack_id=args.pack,
-        policy=Policy(
-            allow_processes=tuple(args.allow or []), confirmed=bool(args.confirmed)
-        ),
+        policy=Policy(allow_processes=tuple(args.allow or [])),
     )
 
 
@@ -200,7 +198,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", default="auto")
     parser.add_argument("--pack", default=None)
     parser.add_argument("--allow", action="append", default=None)
-    parser.add_argument("--confirmed", action="store_true")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(

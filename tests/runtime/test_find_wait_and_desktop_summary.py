@@ -10,6 +10,7 @@ never assembles text.
 from __future__ import annotations
 
 import copy
+import re
 
 from somnus.ir.node import RawTree, WindowInfo
 from somnus.providers.mock import MockProvider
@@ -250,6 +251,76 @@ def test_the_summary_names_the_same_refs_the_header_uses(monkeypatch):
     for entry in summary:
         assert session._window_by_ref(entry["window_id"]) is not None
         assert session.dispatch(f"CALL {entry['window_id']}.focus()").startswith("OK")
+
+
+_SUMMARY_REF_RE = re.compile(r'(w\d+) "([^"]*)"')
+
+
+def _summary_refs(text: str) -> dict[str, str]:
+    """title -> ref from the observation's `WINDOWS ...` line."""
+    for line in text.splitlines():
+        if line.startswith("WINDOWS "):
+            return {title: ref for ref, title in _SUMMARY_REF_RE.findall(line)}
+    return {}
+
+
+def test_the_summary_and_the_body_name_a_window_the_same_way():
+    """Regression: the desktop line said w2 while the tree under it said w1.
+
+    One window (one native id) carried two refs because the summary read the
+    reverse map while the body used the compiled root's ref - and only the
+    forward map had been written for the target.
+    """
+    provider = MockProvider(
+        fixtures=[
+            _tree(title="商店", window_id="w1"),
+            _tree(title="设置", window_id="w2"),
+        ]
+    )
+    session = Session(provider)
+    obs = session.observe().text
+    refs = _summary_refs(obs)
+    assert set(refs) == {"商店", "设置"}, obs
+    target_title = session._window_by_ref(session.target_window).title
+    target_ref = refs[target_title]
+    # The body prints the target under the same ref the summary named.
+    assert target_ref == session.result.root.ref
+    assert f'WINDOW {target_ref} "{target_title}"' in obs, obs
+    # Different windows have different refs.
+    assert len(set(refs.values())) == len(refs)
+
+    # ...and the refs do not drift over repeated observations.
+    again = session.observe().text
+    assert _summary_refs(again) == refs
+
+
+def test_every_summary_ref_observes_the_window_it_names():
+    provider = MockProvider(
+        fixtures=[
+            _tree(title="商店", window_id="w1"),
+            _tree(title="设置", window_id="w2"),
+        ]
+    )
+    session = Session(provider)
+    refs = _summary_refs(session.observe().text)
+
+    for title, ref in refs.items():
+        window = session._window_by_ref(ref)
+        assert window is not None and window.title == title
+        out = session.dispatch(f"OBSERVE {ref}")
+        # The observation switched to that window and prints it under the ref
+        # the summary gave (not a freshly minted one).
+        assert f'WINDOW {ref} "{title}"' in out, out
+        assert session.target_window == window.window_id
+        # Switching back and forth must not renumber the windows.
+        assert _summary_refs(session.observe().text) == refs
+
+    # The long-form header uses the same refs as the summary.
+    header = session.observe(include_other_windows=True).text
+    target_title = session._window_by_ref(session.target_window).title
+    for title, ref in refs.items():
+        if title != target_title:
+            assert f'WINDOW {ref} "{title}"' in header, header
 
 
 def test_a_desktop_that_cannot_be_read_passes_none(monkeypatch):

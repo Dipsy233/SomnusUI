@@ -138,7 +138,17 @@ def settings_brief(session: Session) -> str:
         "printed capability count, active marks the focused one; pick a wN from "
         "it instead of a separate observe-windows call. find accepts "
         "timeout=<seconds> to wait for a match before answering; omit = answer "
-        "from the current tree immediately."
+        "from the current tree immediately. run takes script (one step per "
+        "line, max 40) plus an optional window to focus first: steps are "
+        "CALL ref.cap(args), or AWAIT [TYPE] \"name\" [in ref] [timeout=s] "
+        "(2s default) which waits for the element an earlier step opened and "
+        "binds it to $it (CALL $it.cap(args)). Without an AWAIT the whole "
+        "script is validated before the first step runs; with one, each step "
+        "settles before the next and the first failure reports the steps that "
+        "ran. A critical (!) capability runs directly in every tool - this "
+        "build has no confirmation gate. "
+        "Output is RUN OK|PARTIAL steps=N/M, one line per step, then the merged "
+        "delta."
     )
 
 

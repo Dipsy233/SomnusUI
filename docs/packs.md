@@ -122,8 +122,9 @@ caps:
   `ref.field += N`, `-=`, `=`, `!=`, `contains`, `startswith`. Effects on
   fields the runtime cannot observe are treated as *unverifiable*, and the
   action returns `OK_UNVERIFIED` rather than failing.
-* **`risk: critical`** (or a critical capability name) forces
-  `CONFIRMATION_REQUIRED` unless the host pre-confirms.
+* **`risk: critical`** (or a critical capability name) is printed as `!` in
+  SUI-Text. It is descriptive only: this build has no confirmation gate, so the
+  capability executes directly when called.
 
 The `key` field is the fingerprint primary key: prefer `$self.automation_id`
 or a pack member's automation id. When `key` resolves, volatile names are

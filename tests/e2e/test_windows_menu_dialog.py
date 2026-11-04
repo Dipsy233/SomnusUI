@@ -134,6 +134,32 @@ def test_choosing_a_menu_item_records_it(scenario):
     assert "保存" in (status.name or ""), status.name
 
 
+def test_one_run_call_drives_the_whole_menu_flow(scenario):
+    """expand -> AWAIT -> activate, without a second model turn.
+
+    The item does not exist when the script starts, so this is the flow
+    ``AWAIT`` exists for: the wait sees the realized item and binds ``$it``.
+    """
+    from somnus.sui.parse import parse_script
+
+    session = scenario("menu")
+    entry = _find(session, "menu_bar_file")
+    assert entry is not None, "menu_bar_file not found"
+    out = session.run_script(
+        parse_script(
+            f"CALL {entry.ref}.expand()\n"
+            'AWAIT MENUITEM "新建" timeout=2\n'
+            "CALL $it.activate()"
+        )
+    )
+    assert out.startswith("RUN OK steps=3/3"), out
+    assert 'AWAIT MENUITEM "新建" timeout=2 -> ok ($it=' in out, out
+
+    session.observe()
+    status = _find(session, "menu_status")
+    assert status is not None and "新建" in (status.name or ""), status.name
+
+
 # ---------------------------------------------------------------------------
 # dialog
 # ---------------------------------------------------------------------------

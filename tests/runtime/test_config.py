@@ -258,7 +258,6 @@ def _args(**overrides) -> argparse.Namespace:
         demo=True,
         pack=None,
         allow=None,
-        confirmed=False,
         allow_keyboard=None,
         allow_clipboard=None,
         config=None,

@@ -47,7 +47,7 @@ def run_once(client: LlmClient, task: str, max_steps: int) -> tuple[bool, int, s
     from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
 
     provider = MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
-    session = Session(provider, pack_id="restaurant-demo", policy=Policy(confirmed=False))
+    session = Session(provider, pack_id="restaurant-demo", policy=Policy())
     try:
         final = run_agent(session, task, client=client, max_steps=max_steps, verbose=False)
         count, total = cart_state(session)

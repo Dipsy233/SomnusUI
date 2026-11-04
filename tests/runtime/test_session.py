@@ -70,18 +70,15 @@ def test_call_twice_accumulates():
     assert "~ c1 total 5.99→8.48" in out
 
 
-def test_call_critical_requires_confirmation():
+def test_call_critical_executes_directly():
+    """No confirmation gate: a critical cap runs when it is called."""
     session = _new_session()
     session.observe()
     out = session.dispatch("CALL b5.submit()")
-    assert out.startswith("ERR CONFIRMATION_REQUIRED")
-
-
-def test_call_critical_with_confirmation():
-    session = _new_session()
-    session.observe()
-    out = session.dispatch("CALL b5.submit()", confirmed=True)
-    assert out.startswith("OK")
+    assert out.startswith("OK"), out
+    assert [primitive for _ref, primitive, _value in session.provider.executed] == [
+        "activate"
+    ]
 
 
 def test_call_missing_capability():

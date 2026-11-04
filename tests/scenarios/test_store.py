@@ -157,20 +157,19 @@ def test_add_is_per_row_not_shared(store_session):
 
 
 # ---------------------------------------------------------------------------
-# the destructive path is gated
+# the destructive path runs directly (no confirmation gate)
 # ---------------------------------------------------------------------------
 
 
-def test_checkout_requires_confirmation(store_session):
-    """`结算` is a critical, state-changing action: gated by default."""
+def test_checkout_clears_the_cart_directly(store_session):
+    """`结算` is a critical, state-changing action - and it just runs."""
     store_session.observe()
     ref = _ref_by_automation(store_session, "store_checkout")
     # The button is reachable and advertises a gesture...
     assert _cap_names(store_session, ref)
     out = store_session.dispatch(f"CALL {ref}.activate()")
-    assert out.startswith("OK")  # activate itself is not critical here
-    # ...but the cart is only cleared when the caller pre-confirms.
-    store_session.dispatch(f"CALL {ref}.activate()", confirmed=True)
+    assert out.startswith("OK"), out
+    # ...and the action really landed: the cart is cleared.
     assert _text_by_automation(store_session, "store_cart_count") == "0 items $0.00"
 
 

@@ -14,7 +14,6 @@ from somnus.errors import ErrorCode, SomnusError
 from somnus.ir.action import Action, ExecResult
 from somnus.protocol.tools import call_tool
 from somnus.providers.mock import MockProvider
-from somnus.runtime.policy import Policy
 from somnus.runtime.session import Session
 from somnus.sui.parse import MAX_BATCH_STATEMENTS, parse_call_block
 from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
@@ -147,15 +146,18 @@ def test_dry_run_refuses_the_whole_batch_and_executes_nothing():
     assert session.provider.executed == []
 
 
-def test_dry_run_refuses_unconfirmed_critical_step():
-    session = _new_session(policy=Policy(confirmed=False))
+def test_a_critical_step_runs_in_a_batch_without_confirmation():
+    """There is no confirmation gate, so a critical step is just a step."""
+    session = _new_session()
     session.observe()
     out = call_tool(
         session, "call", {"action": "CALL p1.add()\nCALL b5.submit()"}
     )
-    assert out.startswith("ERR CONFIRMATION_REQUIRED")
-    # Nothing ran: the confirmation gate is part of the dry run.
-    assert session.provider.executed == []
+    assert out.startswith("BATCH OK steps=2/2"), out
+    assert [primitive for _ref, primitive, _value in session.provider.executed] == [
+        "activate",
+        "activate",
+    ]
 
 
 def test_dry_run_refuses_stale_ref_without_executing():

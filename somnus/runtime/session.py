@@ -18,7 +18,7 @@ import os
 import re
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from somnus.compiler.compile import CompileResult, Compiler
@@ -102,6 +102,11 @@ _VIEWPORT_MOVING_PRIMITIVES = frozenset(
 #: is ~0ms - cannot spin a core for the whole timeout.
 _FIND_POLL_FLOOR_MS = 20
 
+#: Default wait for a script's ``AWAIT`` when the step gives no ``timeout=``.
+#: Menus and dialogs in the suite settle well inside this; the cap keeps a
+#: missing element from spending the whole call on one wait.
+DEFAULT_AWAIT_TIMEOUT_S = 2.0
+
 #: Primitives that write text into a control. After one of these succeeds the
 #: response echoes the exact value written, so the agent can confirm what
 #: landed without a follow-up `inspect`: the delta only shows a `value` change
@@ -139,6 +144,10 @@ class _ChainResult:
     route: str = ""
     written: Any = None
     undetermined: bool = False
+    #: Routes this chain never reached, in the order it would have walked them.
+    #: ``_retry_unconfirmed`` runs exactly these when the settled tree did not
+    #: show the declared effect (one retry, never a loop).
+    remaining: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -1149,6 +1158,10 @@ class Session:
         # result is adopted, so every printed ref resolves.
         expand_paths = self._expand_paths(expanded)
         tree, partial = self._snapshot_viewport(expand_paths)
+        # The tree may not describe the window: a refused raise (or an empty
+        # capture) is a fact about the *capture*, not about the application.
+        # Both would otherwise read as "this window has no controls".
+        warnings = self._observation_warnings(tree)
         result = self._recompile_with(tree, remember=not partial)
         self._apply_viewport_meta(result)
         # The watched set for settle: exactly the nodes this capture read.
@@ -1166,9 +1179,9 @@ class Session:
         # context carried is the window delta - a window appearing or vanishing
         # changes what the agent can act on, so it must still be reported even
         # in single-window mode.
-        header: list[str] = []
+        header: list[str] = list(warnings)
         if include_other_windows:
-            header = self._window_header(result)
+            header.extend(self._window_header(result))
         if window_delta:
             header.append(window_delta)
         # The header (other windows + deltas) consumes part of the observation
@@ -1299,29 +1312,57 @@ class Session:
         Window refs are assigned from the compiler's allocator so they never
         collide with node refs (window switching via
         ``CALL w2.focus()``). The target window uses the tree's root ref.
+        Both directions of the mapping are written by
+        :meth:`_sync_window_refs`, so this header and the desktop summary can
+        never name one window twice.
         """
+        refs = self._sync_window_refs(result)
+        return [
+            f"WINDOW {refs[w.window_id]} {_q(w.title)}"
+            for w in self.windows
+            if w.window_id != self.target_window
+        ]
+
+    def _sync_window_refs(self, result: CompileResult) -> dict[str, str]:
+        """The canonical ``window_id -> ref`` map for this compilation.
+
+        The body prints the target under the tree root's ref and every other
+        window under a header ref. This is the one place that writes **both**
+        maps. Before it, only the forward map was updated for the target, so a
+        reverse lookup (the compiler's window pin and the desktop summary)
+        answered with a stale ref the body never printed: one window appeared
+        as ``w2`` in the ``WINDOWS`` line and ``w1`` in the tree underneath it.
+        """
+        refs: dict[str, str] = {}
         target_ref = result.root.ref if result.root else None
-        out: list[str] = []
-        for i, w in enumerate(self.windows):
-            if w.window_id == self.target_window:
-                # Register the target under the tree's window ref so CALL w?.focus
-                # resolves to it. The compiler may have allocated a ref (its own
-                # window node, e.g. `w2`) that the header already gave to another
-                # window; rehome that window first, refs must stay unique.
-                if target_ref:
-                    owner = self._window_refs.get(target_ref)
-                    if owner is not None and owner != w.window_id:
-                        while True:
-                            spare = self.registry.allocator.next("w")
-                            if spare not in self._window_refs:
-                                break
-                        self._window_refs_by_id[owner] = spare
-                        self._window_refs[spare] = owner
-                    self._window_refs[target_ref] = w.window_id
+        if target_ref and self.target_window:
+            owner = self._window_refs.get(target_ref)
+            if owner is not None and owner != self.target_window:
+                # Another window already claimed the tree's ref; rehome it in
+                # both directions first - refs must stay unique.
+                while True:
+                    spare = self.registry.allocator.next("w")
+                    if spare not in self._window_refs:
+                        break
+                self._window_refs_by_id[owner] = spare
+                self._window_refs[spare] = owner
+            stale = self._window_refs_by_id.get(self.target_window)
+            if (
+                stale
+                and stale != target_ref
+                and self._window_refs.get(stale) == self.target_window
+            ):
+                # Drop the forward alias of the name this window used to go by,
+                # so the pair stays one-to-one.
+                self._window_refs.pop(stale, None)
+            self._window_refs[target_ref] = self.target_window
+            self._window_refs_by_id[self.target_window] = target_ref
+            refs[self.target_window] = target_ref
+        for window in self.windows:
+            if window.window_id == self.target_window:
                 continue
-            window_ref = self._header_window_ref(w.window_id)
-            out.append(f"WINDOW {window_ref} {_q(w.title)}")
-        return out
+            refs[window.window_id] = self._header_window_ref(window.window_id)
+        return refs
 
     def _header_window_ref(self, window_id: str) -> str:
         ref = self._window_refs_by_id.get(window_id)
@@ -1330,6 +1371,35 @@ class Session:
             self._window_refs_by_id[window_id] = ref
             self._window_refs[ref] = window_id
         return ref
+
+    def _observation_warnings(self, tree: RawTree) -> list[str]:
+        """Warning lines for a capture that may not describe the window.
+
+        Two failures make an application look like it has no controls, and
+        neither is the window's content:
+
+        * the raise was refused (``FOREGROUND_DENIED``) - a covered or minimized
+          self-drawn window publishes an empty shell;
+        * the snapshot is structurally empty while the window has a title -
+          the window was read, its content was not rendered.
+
+        The empty-tree test is deliberately the strictest one (the root has
+        *no* children). A real small window - a dialog with two buttons - still
+        has children, so it is never reported.
+        """
+        out: list[str] = []
+        code = getattr(self.provider, "last_foreground_error", None)
+        if code:
+            out.append(
+                f"~ foreground denied ({code}); tree may be empty for "
+                "covered windows"
+            )
+        title = (tree.window.title or "").strip() if tree.window is not None else ""
+        if title and not tree.root.children:
+            out.append(
+                "~ tree looks empty; window may be covered or app not rendering"
+            )
+        return out
 
     def _desktop_summary(self, result: CompileResult) -> list[dict] | None:
         """The desktop as *data* for the projection: one entry per window.
@@ -1344,20 +1414,17 @@ class Session:
         observation may spend on it. The structure therefore carries only what
         the window list already knows.
 
-        Refs are assigned exactly as the header assigns them, so the line the
-        projection renders names the same windows the body and ``CALL
-        wN.focus()`` do; the target keeps the compiled root's ref.
+        Refs come from :meth:`_sync_window_refs`, the same map the body and the
+        long-form header use, so the summary line, the rendered root and ``CALL
+        wN.focus()`` / ``OBSERVE wN`` all name one window the same way.
         """
         if not self.windows:
             return None
-        # Reuse the header's ref bookkeeping (including rehoming the target when
-        # another window already claimed the tree's ref) rather than keeping a
-        # second copy of that rule.
-        self._window_header(result)
+        refs = self._sync_window_refs(result)
         out: list[dict] = []
         for window in self.windows:
-            ref = self._window_refs_by_id.get(window.window_id)
-            if ref is None:  # pragma: no cover - the header registers every window
+            ref = refs.get(window.window_id)
+            if ref is None:  # pragma: no cover - the map covers every window
                 ref = self._header_window_ref(window.window_id)
             out.append(
                 {
@@ -1437,28 +1504,9 @@ class Session:
         self, action: Action, timeout_s: float, started: float, limit: int
     ) -> str:
         """Re-read the viewport until a match appears or ``timeout_s`` passes."""
-        deadline = started + timeout_s
-        polls = 0
-        while time.monotonic() < deadline:
-            poll_started = time.monotonic()
-            tree, partial = self._snapshot_viewport()
-            result = self._recompile_with(tree, remember=not partial)
-            self._apply_viewport_meta(result)
-            # Same bookkeeping as ``observe``: settle's next probe must compare
-            # against what this capture actually read.
-            self._watch_natives = _unique_natives(result) if partial else []
-            polls += 1
-            hits = self._find_hits(action)
-            if hits:
-                return self._render_find_hits(hits, limit)
-            spent_ms = (time.monotonic() - poll_started) * 1000
-            if spent_ms < _FIND_POLL_FLOOR_MS:
-                time.sleep(
-                    min(
-                        _FIND_POLL_FLOOR_MS / 1000,
-                        max(0.0, deadline - time.monotonic()),
-                    )
-                )
+        hits, polls = self._find_wait_hits(action, timeout_s, started)
+        if hits:
+            return self._render_find_hits(hits, limit)
         waited = time.monotonic() - started
         message = f"0 matches in {polls} viewport reads"
         # Only say "not searched" when the capture actually cut something: a
@@ -1477,6 +1525,77 @@ class Session:
             hint="observe",
             message=message,
         ).render()
+
+    def _find_wait_hits(
+        self, action: Action, timeout_s: float, started: float
+    ) -> tuple[list[SemanticNode], int]:
+        """The waiting search, returning the hits and how many reads ran.
+
+        Shared by ``find(timeout=)`` and a script's ``AWAIT`` so the two wait
+        the same way - one implementation, one set of caveats about viewport
+        reads. An empty list means the deadline passed without a match.
+        """
+        deadline = started + timeout_s
+        polls = 0
+        while time.monotonic() < deadline:
+            poll_started = time.monotonic()
+            tree, partial = self._snapshot_viewport()
+            result = self._recompile_with(tree, remember=not partial)
+            self._apply_viewport_meta(result)
+            # Same bookkeeping as ``observe``: settle's next probe must compare
+            # against what this capture actually read.
+            self._watch_natives = _unique_natives(result) if partial else []
+            polls += 1
+            hits = self._find_hits(action)
+            if hits:
+                return hits, polls
+            spent_ms = (time.monotonic() - poll_started) * 1000
+            if spent_ms < _FIND_POLL_FLOOR_MS:
+                time.sleep(
+                    min(
+                        _FIND_POLL_FLOOR_MS / 1000,
+                        max(0.0, deadline - time.monotonic()),
+                    )
+                )
+        return [], polls
+
+    def await_element(self, action: Action) -> SemanticNode:
+        """The element a script's ``AWAIT`` step names, or a timeout error.
+
+        A bound ``timeout=`` of zero is a single in-memory search; a positive
+        one re-reads the viewport exactly as ``find(timeout=)`` does. The
+        first hit is the binding: when several match, naming the type or a
+        scope is how the caller narrows it, and the same first hit is what
+        ``find`` would print first.
+        """
+        if self.result is None:
+            self._recompile()
+        timeout_s = (
+            DEFAULT_AWAIT_TIMEOUT_S if action.timeout is None else action.timeout
+        )
+        started = time.monotonic()
+        hits = self._find_hits(action)
+        if not hits and self._viewport_limited:
+            # The element may exist just outside the captured rows; one full
+            # read before waiting or refusing, as ``find`` does.
+            self._recompile()
+            hits = self._find_hits(action)
+        if not hits and timeout_s > 0:
+            hits, polls = self._find_wait_hits(action, timeout_s, started)
+        waited = time.monotonic() - started
+        if hits:
+            return hits[0]
+        wanted = (
+            f"{action.query_type.upper()} {_q(action.query or '')}"
+            if action.query_type
+            else _q(action.query or "")
+        )
+        raise SomnusError(
+            ErrorCode.TARGET_NOT_FOUND,
+            ref=f"after={waited:.1f}s",
+            hint="observe",
+            message=f"AWAIT {wanted} found nothing; the element did not appear",
+        )
 
     def _find_hits(self, action: Action) -> list[SemanticNode]:
         """The matches for one search pass (no retries, no waiting)."""
@@ -1619,7 +1738,7 @@ class Session:
 
     # ------------------------------------------------------------------ call
 
-    def call(self, action: Action, *, confirmed: bool | None = None) -> CallOutcome:
+    def call(self, action: Action) -> CallOutcome:
         if self.result is None:
             self._recompile()
         assert self.result is not None
@@ -1664,7 +1783,6 @@ class Session:
 
         resolution = self._resolve_with_hint(resolver, action)
         self.policy.check_process(self._target_process())
-        self.policy.check_action(resolution, confirmed=confirmed)
 
         # Raise the target before acting. The primitive runs against the window
         # and whatever it has rendered; a covered or minimized self-drawn window
@@ -1710,102 +1828,49 @@ class Session:
         # If the element refuses every route (or is gone), the same capability
         # is retried once on a twin ref that shares its fingerprint.
         chain, resolution, healed = self._execute_with_twin(
-            action, resolution, resolver, confirmed=confirmed
+            action, resolution, resolver
         )
         effective_ref = healed or (action.ref or "")
         written = chain.written
 
-        # Settle, recompile, compute delta, verify. Refresh the window list
-        # first (unless the session turned post-action enumeration off): an
-        # action may have opened a dialog or replaced the target window
-        # entirely (closing a document raises a save dialog), and the delta
-        # must reflect the desktop as it is now.
-        if self.post_action_enum:
-            self.refresh_windows()
-        # Re-raise before the settle snapshot: the action (or the user) may have
-        # moved the foreground away, and the settled tree is only complete for a
-        # window that is rendered.
-        if self.target_window:
-            self._peek(self.target_window)
-        # Layered probe: compare only the watched set (captured layers + the
-        # touched ref and its ancestors). No captured layer, or a previous frame
-        # whose watched set is not fully evaluable -> no probe at all (full reads).
+        # Settle, recompile, compute delta, verify.
         try:
-            with _timed(self.timing, "settle"):
-                tree, settle_result = self._settle(fetch=self._fetch_snapshot, refs=[effective_ref])
+            tree, result, delta, settle_result, popup_text = self._read_after_action(
+                action, resolution, verifier, effective_ref, before_index
+            )
         except KeyError:
-            # The target window vanished mid-action (e.g. the save dialog
-            # replaced it). The action itself succeeded; report unverified
-            # with a window delta instead of failing the whole call. This path
-            # re-enumerates unconditionally: the window is gone, so the list is
-            # the only thing that can say what replaced it.
-            self.refresh_windows()
-            text = f"OK_UNVERIFIED rev={self.rev}\n{self._window_delta()}".strip()
-            text += f"\n~ target replaced (window {self.target_window} closed)" if self._window_by_ref(self.target_window) is None else ""
-            return CallOutcome(
-                status="OK_UNVERIFIED",
-                rev=self.rev,
-                delta=Delta(),
-                text=text,
-                settled=False,
-            )
-        # Signature before compile (normalisation rewrites the raw nodes).
-        self._remember_raw(tree)
-        result = self._compile_tree(tree, self._current_pack())
-        self.registry.reconcile(result)
-        self.result = result
-        self._bump_rev()
-
-        if _TRACE_STATES:
-            # The ref the agent used may be gone after a recompile; compare by
-            # fingerprint so "did the button I was about to touch change state"
-            # is answerable even when the ref shifted.
-            before_node = verifier.by_ref.get(action.ref or "")
-            after_node = None
-            if before_node is not None:
-                for node in result.root.walk():
-                    if node.fingerprint == before_node.fingerprint:
-                        after_node = node
-                        break
-            log.info(
-                "after settled=%s timed_out=%s before_states=%s after_states=%s",
-                settle_result.settled,
-                settle_result.timed_out,
-                sorted(before_node.states) if before_node else None,
-                sorted(after_node.states) if after_node else "<ref gone>",
-            )
-
-        # A context_menu call opened a popup that has no native link to its
-        # origin; remember the association and mount it *before* the delta is
-        # computed, so the very response that opened the menu already shows it
-        # under the node that owns it - the agent should not have to make a
-        # second call to see what it just opened.
-        popup_text = ""
-        if any(s.primitive == "context_menu" for s in resolution.steps):
-            self._record_menu_owner(
-                effective_ref,
-                result,
-                before_fingerprints=set(before_index),
-            )
-            if self._menu_owner:
-                self._reattach_open_menu(result)
-            else:
-                # Nothing mounted, so the menu is not part of this window's own
-                # tree. The classic Win32 Shell menu is a separate top-level
-                # popup window (#32768), which would otherwise leave the agent
-                # with "context_menu succeeded" and nothing to act on.
-                popup_text = self._mount_popup_content(effective_ref)
-
-        after_index = index_by_fingerprint(result.root)
-        delta = diff_trees(before_index, after_index)
+            return self._target_replaced_outcome()
 
         verify = verifier.verify(resolution.effects, effective_ref, delta)
+        retried_via: str | None = None
         if verify.status == "EFFECT_NOT_CONFIRMED":
-            raise SomnusError(
+            # The route reported success but the settled tree does not show the
+            # declared effect. Before refusing, try the next untried route on
+            # the same target - once. It is the same capability through another
+            # channel (measured on Chromium editors: the Value setter answers
+            # success and writes nothing), not a risk judgement.
+            original_error = SomnusError(
                 ErrorCode.EFFECT_NOT_CONFIRMED,
                 ref=effective_ref,
                 message="; ".join(verify.failed),
             )
+            retry = self._retry_unconfirmed(action, resolution, chain, effective_ref)
+            if retry is None:
+                raise original_error
+            chain = retry
+            written = retry.written
+            try:
+                tree, result, delta, settle_result, popup_text = self._read_after_action(
+                    action, resolution, verifier, effective_ref, before_index
+                )
+            except KeyError:
+                return self._target_replaced_outcome()
+            verify = verifier.verify(resolution.effects, effective_ref, delta)
+            if verify.status == "EFFECT_NOT_CONFIRMED":
+                # The retry did not confirm either: the original failure is the
+                # honest answer, and there is no second retry.
+                raise original_error
+            retried_via = retry.route
 
         # Status honesty: `OK_UNVERIFIED` means "ran, could not confirm". When
         # the UI settled *and* the tree did not change at all, the action ran
@@ -1852,6 +1917,12 @@ class Session:
             # element (same fingerprint) did. Say which one acted, so the agent's
             # next CALL uses a ref that works.
             note = f"~ healed {action.ref}→{healed}"
+            body = f"{body}\n{note}" if body else note
+        if retried_via:
+            # The first route reported success but its effect did not land; a
+            # later route did. Say which one, or the agent will think the
+            # original channel is reliable.
+            note = f"~ retried via {retried_via}"
             body = f"{body}\n{note}" if body else note
         # A context_menu on a tray icon may open its menu as a *separate
         # top-level window* (QQ's CEF tray menu), invisible to the in-window
@@ -1982,6 +2053,143 @@ class Session:
             settled=settle_result.settled,
         )
 
+    def _read_after_action(
+        self,
+        action: Action,
+        resolution,
+        verifier: Verifier,
+        effective_ref: str,
+        before_index: dict,
+    ) -> tuple[RawTree, CompileResult, Delta, Any, str]:
+        """Settle, recompile, and diff the tree after an action attempt.
+
+        Shared by the first attempt and the ``EFFECT_NOT_CONFIRMED`` retry: both
+        need the same evidence ("did the tree move"), and the verifier's
+        baseline stays the one captured before the action, so a change made by
+        either attempt counts.
+        """
+        # Refresh the window list first (unless the session turned post-action
+        # enumeration off): an action may have opened a dialog or replaced the
+        # target window entirely (closing a document raises a save dialog), and
+        # the delta must reflect the desktop as it is now.
+        if self.post_action_enum:
+            self.refresh_windows()
+        # Re-raise before the settle snapshot: the action (or the user) may have
+        # moved the foreground away, and the settled tree is only complete for a
+        # window that is rendered.
+        if self.target_window:
+            self._peek(self.target_window)
+        # Layered probe: compare only the watched set (captured layers + the
+        # touched ref and its ancestors). No captured layer, or a previous frame
+        # whose watched set is not fully evaluable -> no probe at all (full reads).
+        with _timed(self.timing, "settle"):
+            tree, settle_result = self._settle(
+                fetch=self._fetch_snapshot, refs=[effective_ref]
+            )
+        # Signature before compile (normalisation rewrites the raw nodes).
+        self._remember_raw(tree)
+        result = self._compile_tree(tree, self._current_pack())
+        self.registry.reconcile(result)
+        self.result = result
+        self._bump_rev()
+
+        if _TRACE_STATES:
+            # The ref the agent used may be gone after a recompile; compare by
+            # fingerprint so "did the button I was about to touch change state"
+            # is answerable even when the ref shifted.
+            before_node = verifier.by_ref.get(action.ref or "")
+            after_node = None
+            if before_node is not None:
+                for node in result.root.walk():
+                    if node.fingerprint == before_node.fingerprint:
+                        after_node = node
+                        break
+            log.info(
+                "after settled=%s timed_out=%s before_states=%s after_states=%s",
+                settle_result.settled,
+                settle_result.timed_out,
+                sorted(before_node.states) if before_node else None,
+                sorted(after_node.states) if after_node else "<ref gone>",
+            )
+
+        # A context_menu call opened a popup that has no native link to its
+        # origin; remember the association and mount it *before* the delta is
+        # computed, so the very response that opened the menu already shows it
+        # under the node that owns it - the agent should not have to make a
+        # second call to see what it just opened.
+        popup_text = ""
+        if any(s.primitive == "context_menu" for s in resolution.steps):
+            self._record_menu_owner(
+                effective_ref,
+                result,
+                before_fingerprints=set(before_index),
+            )
+            if self._menu_owner:
+                self._reattach_open_menu(result)
+            else:
+                # Nothing mounted, so the menu is not part of this window's own
+                # tree. The classic Win32 Shell menu is a separate top-level
+                # popup window (#32768), which would otherwise leave the agent
+                # with "context_menu succeeded" and nothing to act on.
+                popup_text = self._mount_popup_content(effective_ref)
+
+        after_index = index_by_fingerprint(result.root)
+        delta = diff_trees(before_index, after_index)
+        return tree, result, delta, settle_result, popup_text
+
+    def _target_replaced_outcome(self) -> CallOutcome:
+        """The response for a target window that vanished mid-call.
+
+        The action itself succeeded; report unverified with a window delta
+        instead of failing the whole call. This path re-enumerates
+        unconditionally: the window is gone, so the list is the only thing that
+        can say what replaced it.
+        """
+        self.refresh_windows()
+        text = f"OK_UNVERIFIED rev={self.rev}\n{self._window_delta()}".strip()
+        text += (
+            f"\n~ target replaced (window {self.target_window} closed)"
+            if self._window_by_ref(self.target_window) is None
+            else ""
+        )
+        return CallOutcome(
+            status="OK_UNVERIFIED",
+            rev=self.rev,
+            delta=Delta(),
+            text=text,
+            settled=False,
+        )
+
+    def _retry_unconfirmed(
+        self, action: Action, resolution, chain: _ChainResult, ref: str
+    ) -> _ChainResult | None:
+        """Run the next untried route after ``EFFECT_NOT_CONFIRMED`` (once).
+
+        The honest next step is the chain's *next* alternative on the same
+        target: a capability's routes are alternatives, and one of them may
+        reach the control through a channel the first one only pretended to
+        use. This is not a risk decision and not a confirmation gate - it is
+        one more attempt, and only one. ``None`` means there is nothing left to
+        try (or the next route is unusable), so the caller re-raises the
+        original effect error.
+        """
+        if chain.undetermined or not chain.remaining:
+            return None
+        retry_action = replace(action, ref=ref)
+        try:
+            retried = self._execute_chain(
+                retry_action, resolution, steps=chain.remaining
+            )
+        except SomnusError as err:
+            if _TRACE_STATES:
+                log.info("effect retry unusable (%s); keeping the original error", err.code)
+            return None
+        if _TRACE_STATES:
+            log.info(
+                "effect not confirmed: retried %s via %s", ref, retried.route
+            )
+        return retried
+
     def _execute_step(self, step) -> Any:
         with _timed(self.timing, "inject"):
             return self.provider.execute(step.native, step.primitive, step.value)
@@ -2043,8 +2251,6 @@ class Session:
         action: Action,
         resolution,
         resolver: "Resolver",
-        *,
-        confirmed: bool | None = None,
     ) -> tuple[_ChainResult, Any, str | None]:
         """Execute the action; on "does not answer", retry the same capability once.
 
@@ -2060,12 +2266,19 @@ class Session:
                 raise
             twin_action = replace(action, ref=twin)
             twin_resolution = self._resolve_with_hint(resolver, twin_action)
-            self.policy.check_action(twin_resolution, confirmed=confirmed)
             chain = self._execute_chain(twin_action, twin_resolution)
             return chain, twin_resolution, twin
 
-    def _execute_chain(self, action: Action, resolution) -> _ChainResult:
+    def _execute_chain(
+        self, action: Action, resolution, *, steps: list | None = None
+    ) -> _ChainResult:
         """Walk a resolution's route chain at execution time.
+
+        ``steps`` is supplied only by the ``EFFECT_NOT_CONFIRMED`` retry: it is
+        the tail of the chain the first attempt never reached, already in the
+        order that attempt would have walked. Re-deriving the order here would
+        be wrong - the successful route has just been remembered and would sort
+        back to the front, replaying it instead of advancing.
 
         A capability may carry several `via` steps (write through the Value
         pattern, *else* focus and type) and the resolver keeps the ones the
@@ -2087,7 +2300,11 @@ class Session:
         exec_result = None
         route = ""
         written: Any = None
-        ordered_steps = self._order_steps(action.ref or "", resolution.steps)
+        ordered_steps = (
+            list(steps)
+            if steps is not None
+            else self._order_steps(action.ref or "", resolution.steps)
+        )
         denied: list[tuple[str, SomnusError]] = []
         for index, step in enumerate(ordered_steps):
             # Authorisation is per step: a capability may declare a native
@@ -2128,7 +2345,10 @@ class Session:
                 # later step can be judged yet, so this is the end of the chain.
                 route = step.primitive
                 return _ChainResult(
-                    exec_result, route=route, undetermined=True
+                    exec_result,
+                    route=route,
+                    undetermined=True,
+                    remaining=ordered_steps[index + 1 :],
                 )
             if exec_result.ok:
                 if step.primitive in _PREPARATORY_PRIMITIVES and not is_last:
@@ -2142,7 +2362,12 @@ class Session:
                 self._remember_route(action.ref or "", step.primitive)
                 if step.primitive in _WRITE_PRIMITIVES:
                     written = step.value
-                return _ChainResult(exec_result, route=route, written=written)
+                return _ChainResult(
+                    exec_result,
+                    route=route,
+                    written=written,
+                    remaining=ordered_steps[index + 1 :],
+                )
             if exec_result.unsupported:
                 # This element does not offer this interface; try the next
                 # declared route rather than reporting a dead end.
@@ -2200,9 +2425,7 @@ class Session:
         # Unreachable: the loop returns or raises on every path.
         return _ChainResult(exec_result, route=route, written=written)
 
-    def call_batch(
-        self, actions: list[Action], *, confirmed: bool | None = None
-    ) -> CallOutcome:
+    def call_batch(self, actions: list[Action]) -> CallOutcome:
         """Execute several CALL statements in one round trip.
 
         The batch is the unit, not the statement. Every step is resolved and
@@ -2298,7 +2521,6 @@ class Session:
             # here, and a step that finds no usable interface retries its twin
             # in the execute loop below.
             resolution = self._resolve_with_hint(resolver, action)
-            self.policy.check_action(resolution, confirmed=confirmed)
             # A refused *route* is skipped at execution, as in a single call;
             # a step whose every route is refused can never run, which the
             # dry run refuses here while refusal is still free.
@@ -2356,7 +2578,7 @@ class Session:
         ):
             try:
                 chain, used_resolution, healed = self._execute_with_twin(
-                    action, resolution, resolver, confirmed=confirmed
+                    action, resolution, resolver
                 )
             except SomnusError as err:
                 step_states.append(f"ERR {err.code}")
@@ -2529,6 +2751,182 @@ class Session:
             raw = raw if len(raw) <= 60 else raw[:57] + "..."
             lines.append(f"  {index}. {raw} -> not-run")
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------- run
+
+    def run_script(
+        self,
+        steps: list[Action],
+        *,
+        window: str | None = None,
+    ) -> str:
+        """Execute a parsed ``run`` script and return SUI-Text.
+
+        There are two executors, chosen by the script itself, because the two
+        kinds of script can make different promises:
+
+        * **No AWAIT** - nothing in the script depends on an earlier step's
+          effect, so the batch path is exactly right: every step is resolved
+          and authorised before the first one runs, then one settle, one delta
+          and one rev. That guarantee is kept, not weakened;
+        * **With AWAIT** - a later step names an element that only exists after
+          an earlier step settled (a menu item, a dialog button). The script is
+          therefore resolved *step by step, at execution time*, each step
+          settling before the next; the first failure stops it and reports the
+          steps that ran plus their net delta, exactly like ``BATCH PARTIAL``.
+
+        ``window`` focuses that window before the first step, so the whole flow
+        is addressable without a separate ``CALL wN.focus()`` round trip.
+
+        Deliberately **no confirmation gate** - the same rule every other CALL
+        follows in this build: a critical (``!``) capability executes directly,
+        because stopping a one-call flow to ask for consent would put a second
+        model turn back into exactly the flow ``run`` exists to collapse.
+        """
+        if not steps:
+            raise SomnusError(ErrorCode.PARSE_ERROR, message="empty script")
+        if window:
+            self.focus_window(window)
+        self._check_it_bindings(steps)
+        if not any(step.kind == "await" for step in steps):
+            outcome = self.call_batch(steps)
+            # Same body, same step lines, same delta; only the word changes so
+            # the reply names the tool the caller actually used.
+            return (
+                "RUN " + outcome.text[6:]
+                if outcome.text.startswith("BATCH ")
+                else outcome.text
+            )
+        return self._run_awaiting(steps)
+
+    @staticmethod
+    def _check_it_bindings(steps: list[Action]) -> None:
+        """Refuse ``$it`` before the ``AWAIT`` that binds it.
+
+        Checked for the whole script up front: the misordering is a property of
+        the text, so it costs nothing to refuse before any step moves the UI.
+        """
+        bound = False
+        for index, step in enumerate(steps, start=1):
+            if step.kind == "await":
+                bound = True
+                continue
+            if step.ref == "$it" and not bound:
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    ref="$it",
+                    message=(
+                        f"step {index}: $it is not bound - an AWAIT must run "
+                        "before a step can name it"
+                    ),
+                )
+
+    def _run_awaiting(self, steps: list[Action]) -> str:
+        """The step-by-step executor for a script that contains an AWAIT.
+
+        Every step goes through the session's ``call`` path, so it keeps every
+        other authorisation - the process allow-list, the route policy, the
+        capability resolution - and only the confirmation gate is (deliberately)
+        absent, as it is for every CALL in this build.
+        """
+        if self.result is None:
+            self._recompile()
+        assert self.result is not None
+        #: The script's whole delta is one tree comparison at the end, the same
+        #: way a batch computes it - the steps in between are not observations.
+        before_index = index_by_fingerprint(self.result.root)
+        bound: str | None = None
+        step_states: list[str] = []
+        error_line: str | None = None
+        failed_at = 0
+        settled = True
+        notes: list[str] = []
+        for index, step in enumerate(steps, start=1):
+            if step.kind == "await":
+                try:
+                    hit = self.await_element(step)
+                except KeyError:
+                    # The window vanished mid-wait (a modal may have replaced
+                    # it); a wait is a read, so report it rather than crash.
+                    step_states.append(f"ERR {ErrorCode.TARGET_NOT_FOUND}")
+                    error_line = SomnusError(
+                        ErrorCode.TARGET_NOT_FOUND,
+                        ref="window",
+                        hint="observe",
+                        message="the target window closed while waiting",
+                    ).render()
+                    failed_at = index
+                    break
+                except SomnusError as err:
+                    step_states.append(f"ERR {err.code}")
+                    error_line = err.render()
+                    failed_at = index
+                    break
+                bound = hit.ref
+                step_states.append(f"ok ($it={bound})")
+                continue
+            if step.capability == "focus" and self._window_by_ref(step.ref or ""):
+                # Focusing mid-script re-allocates refs and discards `$it`;
+                # the tool's `window` argument is the supported way.
+                step_states.append(f"ERR {ErrorCode.INVALID_ARGUMENT}")
+                error_line = SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    ref=step.ref,
+                    message=(
+                        f"step {index}: CALL wN.focus() cannot be a script step - "
+                        "switching windows re-allocates refs; pass window= instead"
+                    ),
+                ).render()
+                failed_at = index
+                break
+            action = replace(step, ref=bound) if step.ref == "$it" else step
+            try:
+                outcome = self.call(action)
+            except SomnusError as err:
+                step_states.append(f"ERR {err.code}")
+                error_line = err.render()
+                failed_at = index
+                break
+            settled = outcome.settled
+            step_states.append("ok")
+            # A write echo and a window appearing are not part of the tree delta
+            # (and each step's own reply has already advanced the window
+            # baseline), so they are carried over here rather than lost.
+            for line in outcome.text.splitlines():
+                if line.startswith(("+ WINDOW", "- WINDOW", "~ WINDOW")):
+                    if line not in notes:
+                        notes.append(line)
+                elif line.startswith("~ ") and " text=" in line and line not in notes:
+                    notes.append(line)
+        after_index = index_by_fingerprint(self.result.root)
+        delta = diff_trees(before_index, after_index)
+
+        performed = sum(1 for state in step_states if state.startswith("ok"))
+        settled_tag = "" if settled else " settled=false"
+        if error_line:
+            head = (
+                f"RUN PARTIAL steps={performed}/{len(steps)} "
+                f"failed-at={failed_at} rev={self.rev}{settled_tag}"
+            )
+        else:
+            head = (
+                f"RUN OK steps={performed}/{len(steps)} rev={self.rev}{settled_tag}"
+            )
+        text = head + "\n" + self._step_lines(steps, step_states)
+        if error_line:
+            text += f"\n{error_line}"
+            text += (
+                f"\n~ steps 1-{performed} really ran; fix the failing step and "
+                "continue with a fresh RUN"
+                if performed
+                else "\n~ the failing step ran first; nothing else was sent"
+            )
+        if notes:
+            text += "\n" + "\n".join(notes)
+        body = self.delta_text(delta)
+        if body:
+            text += f"\n{body}"
+        return text
 
     def delta_text(self, delta: Delta) -> str:
         return delta.render()
@@ -2998,17 +3396,15 @@ class Session:
 
     # ------------------------------------------------------------------ dispatch
 
-    def dispatch(self, text: str, *, confirmed: bool | None = None) -> str:
+    def dispatch(self, text: str) -> str:
         """Parse and execute a single SUI-Text command, returning SUI-Text."""
         try:
             action = parse_action(text)
         except SomnusError as err:
             return err.render()
-        return self.run(action, confirmed=confirmed)
+        return self.run(action)
 
-    def dispatch_lines(
-        self, block: str, *, confirmed: bool | None = None
-    ) -> str:
+    def dispatch_lines(self, block: str) -> str:
         """Execute a plain-text block of SUI-Text commands, one per line.
 
         This is the transport for models without function calling: the same
@@ -3020,10 +3416,10 @@ class Session:
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            out.append(self.dispatch(line, confirmed=confirmed))
+            out.append(self.dispatch(line))
         return "\n".join(out)
 
-    def run(self, action: Action, *, confirmed: bool | None = None) -> str:
+    def run(self, action: Action) -> str:
         try:
             if action.kind == "observe":
                 # ``OBSERVE w5 full`` - the window's whole tree, no folding.
@@ -3052,7 +3448,7 @@ class Session:
             if action.kind == "inspect":
                 return self.inspect(action).text
             if action.kind == "call":
-                return self.call(action, confirmed=confirmed).text
+                return self.call(action).text
             if action.kind == "switch":
                 return self.switch_session(action.query or "main")
             if action.kind == "session":
