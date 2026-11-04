@@ -14,8 +14,8 @@ pixels: no coordinates, keys or ids to guess.
 | `switch` | move between desktops | `SWITCH main\|child`, `SESSION open\|close\|detach` |
 | `configure` | tune call timing | `CONFIGURE quiet_ms=N poll_ms=N timeout_s=N post_action_enum=on\|off` |
 
-`observe` describes **one window**. `OBSERVE windows` lists windows only
-(cheapest way to find one); `OBSERVE w2 desktop` adds others.
+`observe` replies start with a `WINDOWS` line naming each desktop window — pick
+the one you need from it.
 
 ## Format
 
@@ -61,35 +61,16 @@ Entity caps (`+add`, `+open`, `+submit`) are always printed.
 
 ## Arguments
 
-The names after a cap are its parameters:
-`+customize(size:small|medium|large)` takes `size`. Pass `name=value`, or one
-value positionally.
-
-```
-CALL q1.set_text("Hello")        ← positional
-CALL q1.set_text(text="Hello")   ← named
-CALL p1.customize(size="large", qty=2)
-```
-
-Quote values with spaces, commas or parentheses. **`=` is the only separator**
-— `set_text(text:"Hello")` writes that literal. A write echoes what landed:
-`~ q1 text="Hello"`.
+The names after a cap are its parameters; pass `name=value`, or one value
+positionally. Quote values with spaces, commas or parentheses. **`=` is the only
+separator**; a write echoes what landed: `~ q1 text="Hello"`.
 
 ## Batching
 
-Several `CALL` statements, one per line in one `call`, run **in order in one
-round trip** — one settle, one delta:
-
-```
-CALL q1.set_text("张三")
-CALL q2.set_text("a@b.c")
-```
-
-Every step is validated before the first runs: an impossible step refuses the
-batch while nothing has moved, and a failing step stops it. Steps must name
-elements that exist **when the batch starts** — open a menu, then invoke its
-items, is two calls. `wN.focus()` and `context_menu` are refused inside a batch
-for the same reason.
+Several `CALL` lines in one `call` run **in order in one round trip** — one
+settle, one delta. Every step is validated before the first runs; steps must
+name elements that exist **when the batch starts** (open a menu, then invoke its
+items, is two calls). `wN.focus()` and `context_menu` are refused inside a batch.
 
 ## Gestures
 
@@ -104,35 +85,19 @@ Three capabilities; the runtime never picks for you.
 **`activate` is not a click.** For a button it presses; for a file or list row it
 **opens**. To pick without launching, use `select`.
 
-`activate` is printed only when the platform offers a default action; a control
-without one shows its real gesture (`+expand +collapse`, or nothing). It can
-still be refused (UIA reports patterns it does not honour), so trust the reply:
+`activate` is printed only when a default action exists; some controls only
+offer `+expand`/`+collapse`. It can still be refused, so trust the reply:
 
 ```
-CALL mb1.expand()                     ← menu bar entry: expand, not activate
-+ MENUITEM mi5 "新建"                  ← items arrive in this reply
-CALL mi5.activate()                   ← the command inside uses activate
+CALL mb1.expand()      ← menu bar entry: expand, not activate
++ MENUITEM mi5 "新建"   ← items arrive in this reply
+CALL mi5.activate()
 ```
 
-`context_menu` cannot be checked up front; read the status:
-
-```
-OK             ← a menu appeared (printed below)
-OK_UNVERIFIED  ← no menu; body names the real gesture
-```
-
-**When `activate` only highlights** (QQ chat rows), the command is in the menu:
-
-```
-CALL li5.context_menu()
-+ MENU mn1 "菜单"
-+ MENUITEM mi3 "打开独立聊天窗口"
-CALL mi3.activate()
-+ WINDOW w20 "宝宝"
-```
-
-`context_menu` moves no pointer, needs no keystroke or foreground, closes by
-itself.
+If `activate` only highlights a row, its command is under `context_menu`.
+`context_menu` cannot be checked up front; `OK` means a menu appeared,
+`OK_UNVERIFIED` means the body names the real gesture. It moves no pointer,
+needs no keystroke or foreground, and closes by itself.
 
 ## Two desktops, one at a time
 
@@ -150,17 +115,13 @@ cannot disturb them.
 `observe` before acting.
 
 Switch when work must not disturb the user (`SESSION open` does both), or the
-window is on the other side. Say which desktop you are on; the user cannot see
-it.
+window is on the other side. Say which desktop you are on.
 
 ## Settings
 
-`CONFIGURE` defaults: `quiet_ms=40 poll_ms=10 timeout_s=3.0 post_action_enum=on`.
-Smaller `quiet_ms` is faster but can read an animation mid-flight (a button may
-still look disabled); larger is safer. `poll_ms` = probe spacing; `timeout_s`
-caps one settle. `post_action_enum=on` reports a window the action opened (off
-saves ~100ms/call and can hide it). Session scope; `persist=true` writes the
-global config; it never skips checks.
+`CONFIGURE` tunes call timing (`quiet_ms`, `poll_ms`, `timeout_s`,
+`post_action_enum`); defaults and trade-offs are in the server settings note.
+Session scope; `persist=true` writes the config.
 
 ## Rules
 

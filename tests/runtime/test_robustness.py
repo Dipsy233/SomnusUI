@@ -46,9 +46,13 @@ def test_l0_budget_accounts_for_window_header():
 
 
 def test_observe_one_window_does_not_list_the_others():
-    """Asking for one window's content must return that window, not a desktop
-    dump the caller did not ask for and must pay tokens for (live: ten
-    unrelated windows prefixed every observation, roughly doubling its cost)."""
+    """The desktop summary names the windows; it must not walk their trees.
+
+    Live, ten unrelated *trees* prefixed every observation and roughly doubled
+    its cost. Naming them in one ``WINDOWS`` line is the deliberate trade (it
+    replaces an ``OBSERVE windows`` turn); reading their contents is what must
+    not happen.
+    """
     trees = [restaurant_demo_tree()]
     for i in range(8):
         trees.append(notepad_tree())
@@ -57,8 +61,13 @@ def test_observe_one_window_does_not_list_the_others():
     session = _new_session(*trees)
     scoped = session.observe()
     full = session.observe(include_other_windows=True)
-    assert "Helper Application Number" not in scoped.text
-    assert "Helper Application Number" in full.text
+    # One summary line names them (truncated with `+N more`)...
+    assert "WINDOWS " in scoped.text
+    assert "Helper Application Number" in scoped.text
+    # ...but neither observation contains another window's *content*.
+    assert "Text Editor" not in scoped.text
+    assert "Text Editor" not in full.text
+    # The long-form header spends more lines than the summary does.
     assert scoped.tokens < full.tokens
 
 

@@ -317,6 +317,88 @@ def test_the_tool_is_advertised_once():
 
 
 # ---------------------------------------------------------------------------
+# find's optional timeout
+# ---------------------------------------------------------------------------
+
+
+class FindStub:
+    """Records how ``find`` was called; the sentinel notices an omitted kwarg."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    def find(self, action, timeout_s="absent"):
+        self.calls.append(timeout_s)
+        return "OK"
+
+
+def test_find_schema_advertises_timeout():
+    from somnus.protocol.tools import TOOL_SPECS
+
+    spec = next(s for s in TOOL_SPECS if s["name"] == "find")
+    assert "timeout" in spec["inputSchema"]["properties"]
+
+
+def test_find_timeout_is_passed_as_timeout_s():
+    from somnus.protocol.tools import call_tool
+
+    session = FindStub()
+    out = call_tool(session, "find", {"query": "Big Mac", "timeout": 2})
+    assert out == "OK"
+    assert session.calls == [2.0]
+
+
+def test_find_without_timeout_does_not_require_the_new_signature():
+    from somnus.protocol.tools import call_tool
+
+    session = FindStub()
+    out = call_tool(session, "find", {"query": "Big Mac"})
+    assert out == "OK"
+    assert session.calls == ["absent"]
+
+
+def test_find_timeout_zero_is_accepted():
+    from somnus.protocol.tools import call_tool
+
+    session = FindStub()
+    assert call_tool(session, "find", {"query": "x", "timeout": 0}) == "OK"
+    assert session.calls == [0.0]
+
+
+@pytest.mark.parametrize(
+    "bad", [-1, -0.5, "-1", "2", True, False, [2], float("nan"), float("inf")]
+)
+def test_find_timeout_rejects_invalid_values(bad):
+    from somnus.protocol.tools import call_tool
+
+    session = FindStub()
+    out = call_tool(session, "find", {"query": "x", "timeout": bad})
+    assert out.startswith("ERR INVALID_ARGUMENT"), out
+    assert "timeout expected number >= 0" in out
+    assert session.calls == []
+
+
+class OldFindStub:
+    """A session whose ``find`` predates the optional ``timeout_s``."""
+
+    def find(self, action, *, limit=50):
+        return "OK"
+
+
+def test_find_with_no_timeout_still_works_on_an_old_signature():
+    from somnus.protocol.tools import call_tool
+
+    assert call_tool(OldFindStub(), "find", {"query": "x"}) == "OK"
+
+
+def test_find_timeout_on_an_old_signature_is_reported_not_crashed():
+    from somnus.protocol.tools import call_tool
+
+    out = call_tool(OldFindStub(), "find", {"query": "x", "timeout": 1})
+    assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out
+
+
+# ---------------------------------------------------------------------------
 # the loading hint and the two hosts
 # ---------------------------------------------------------------------------
 

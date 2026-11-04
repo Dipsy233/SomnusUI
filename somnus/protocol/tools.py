@@ -11,6 +11,8 @@ calling.
 
 from __future__ import annotations
 
+import inspect
+import math
 from typing import Any
 
 from somnus.config import (
@@ -62,6 +64,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "query": {
                     "type": "string",
                     "description": 'keyword, or FIND syntax: product "Big Mac" [in ref]',
+                },
+                "timeout": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": (
+                        "seconds to wait for a match before answering; "
+                        "omit = answer immediately"
+                    ),
                 },
             },
             "required": ["query"],
@@ -177,7 +187,24 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
                 action = parse_action(raw)
             else:
                 action = Action(kind="find", query=raw)
-            return session.find(action)
+            timeout_s, problem = _find_timeout(args.get("timeout"))
+            if problem:
+                return SomnusError(
+                    ErrorCode.INVALID_ARGUMENT, message=problem
+                ).render()
+            # Omitted timeout keeps the old one-argument call: the collection
+            # side's signature is `find(pattern, window=None, timeout_s=None)`,
+            # so an absent timeout means exactly the same thing there.
+            if timeout_s is None:
+                return session.find(action)
+            if not _accepts_timeout_s(session.find):
+                # Never crash the host on an optional argument: say the wait
+                # this build cannot honour is unavailable.
+                return SomnusError(
+                    ErrorCode.ACTION_NOT_SUPPORTED,
+                    message="this session's find has no timeout yet",
+                ).render()
+            return session.find(action, timeout_s=timeout_s)
         if name == "inspect":
             rng = None
             if args.get("start") is not None and args.get("end") is not None:
@@ -341,3 +368,28 @@ def _effective_settings(session: Session, applied: Any) -> dict[str, Any]:
             DEFAULT_POST_ACTION_ENUM,
         ),
     }
+
+
+def _find_timeout(value: Any) -> tuple[float | None, str | None]:
+    """Validate ``find``'s optional ``timeout`` (seconds).
+
+    Strict on purpose: ``"2"`` is a string and is refused rather than parsed,
+    and a negative or non-finite value is refused rather than clamped, because
+    the caller asked for a wait that cannot be honoured.
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, f"timeout expected number >= 0 got={value!r}"
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0:
+        return None, f"timeout expected number >= 0 got={value!r}"
+    return seconds, None
+
+
+def _accepts_timeout_s(method: Any) -> bool:
+    """Whether the session's ``find`` takes the optional ``timeout_s``."""
+    try:
+        return "timeout_s" in inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins only
+        return False

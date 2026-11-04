@@ -111,6 +111,7 @@ class ProjectionEngine:
         depth_limit: int | None = None,
         full: bool = False,
         expanded: set[int] | None = None,
+        desktop_summary: list[dict] | None = None,
     ) -> RenderPlan:
         """Build the render plan.
 
@@ -118,6 +119,11 @@ class ProjectionEngine:
         (``OBSERVE w5 full``). ``expanded`` is the set of ids the agent asked
         to expand this round, overriding both the projection's collapse rule
         and the auto-collapse heuristic for those nodes only.
+
+        ``desktop_summary`` is the capture layer's window list: one line
+        describing the desktop is prepended so the model does not need a
+        separate ``OBSERVE windows`` turn. ``None`` (the default) renders
+        exactly as before - no line, no blank, no fragment.
         """
         projection = projection or Projection()
         expanded = expanded or set()
@@ -129,6 +135,18 @@ class ProjectionEngine:
         # (`OBSERVE w1 expand l1`), so the plan needs the root's ref.
         self._window_ref = root.ref
         counter = {"nodes": 0, "tokens": 0}
+
+        # Desktop summary first: it replaces a whole `observe windows` turn, so
+        # it is planned before the tree and its tokens are charged to the same
+        # budget. It is never skipped by the budget - the line is a couple of
+        # tokens and losing it sends the model on an extra round trip.
+        desktop_line = _desktop_summary_line(desktop_summary)
+        if desktop_line:
+            plan.lines.append(
+                Line(node=root, depth=0, marker=True, marker_text=desktop_line)
+            )
+            counter["tokens"] += count_tokens(desktop_line)
+
         self._walk(
             root, 0, max_depth, projection, plan, counter,
             top=True, full=full, expanded=expanded,
@@ -535,3 +553,90 @@ def _viewport_display(
         else visible
     )
     return dataclasses.replace(node, attrs=attrs)
+
+
+# ---------------------------------------------------------------------------
+# desktop summary line
+# ---------------------------------------------------------------------------
+
+#: At most this many windows are listed; the rest becomes `+N more`. Six is
+#: what fits in one readable line at L0 and is more than enough to tell an
+#: agent what desktop it is on.
+_MAX_DESKTOP_WINDOWS = 6
+#: A title longer than this is truncated. It is a *label*, not content; the
+#: full string is not needed to choose a window.
+_DESKTOP_TITLE_MAX = 40
+
+
+def _field(item: object, key: str, default: object = None) -> object:
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _desktop_title(text: str) -> str:
+    """Quote a window title so the summary line stays one parseable line.
+
+    Collapses whitespace (a real newline would split the line), truncates to
+    `_DESKTOP_TITLE_MAX`, then escapes backslash/quote and the `|` segment
+    separator. Truncating *before* escaping matters: cutting an escape in half
+    would leave a dangling backslash.
+    """
+    flat = " ".join(text.split())
+    if len(flat) > _DESKTOP_TITLE_MAX:
+        flat = flat[: _DESKTOP_TITLE_MAX - 1] + "…"
+    escaped = flat.replace("\\", "\\\\").replace('"', '\\"').replace("|", "\\|")
+    return f'"{escaped}"'
+
+
+def _window_id_token(value: object) -> str:
+    text = " ".join(str(value).split())
+    if not text:
+        return "?"
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("|", "\\|")
+
+
+def _desktop_segment(entry: object) -> str:
+    segment = _window_id_token(_field(entry, "window_id"))
+    title = _field(entry, "title")
+    if isinstance(title, str) and title.strip():
+        segment += " " + _desktop_title(title)
+    ops = _field(entry, "ops")
+    if isinstance(ops, int) and not isinstance(ops, bool):
+        segment += f" ops={ops}"
+    if _field(entry, "active"):
+        segment += " active"
+    return segment
+
+
+def _desktop_summary_line(summary: object) -> str:
+    """`WINDOWS w1 "QQ" ops=12 | w2 "设置" ops=31 | w3 "…" active`.
+
+    * ``None``/empty -> ``""`` and the caller adds nothing (byte-identical to
+      today's observation);
+    * ``active`` is appended to the active window's own segment - no extra
+      marker;
+    * ``ops`` is omitted when absent (never ``ops=None``);
+    * more than six windows -> first six plus ``+N more``; if the active window
+      fell outside the first six, it replaces the sixth so it is always present
+      and the list still has six entries.
+    """
+    if not summary:
+        return ""
+    items = [entry for entry in summary if _field(entry, "window_id")]
+    if not items:
+        return ""
+
+    active = next(
+        (index for index, entry in enumerate(items) if _field(entry, "active")),
+        None,
+    )
+    shown = items[:_MAX_DESKTOP_WINDOWS]
+    if active is not None and active >= _MAX_DESKTOP_WINDOWS:
+        shown = shown[: _MAX_DESKTOP_WINDOWS - 1] + [items[active]]
+
+    segments = [_desktop_segment(entry) for entry in shown]
+    hidden = len(items) - len(shown)
+    if hidden > 0:
+        segments.append(f"+{hidden} more")
+    return "WINDOWS " + " | ".join(segments)

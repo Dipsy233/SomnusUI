@@ -96,6 +96,12 @@ _VIEWPORT_MOVING_PRIMITIVES = frozenset(
     {"scroll", "scroll_into_view", "expand", "collapse"}
 )
 
+#: Minimum spacing between FIND's waiting re-reads, in milliseconds. A viewport
+#: read is its own throttle on a real provider (measured ~50-410ms across the
+#: suite's windows), so the floor only exists so a replay provider - whose read
+#: is ~0ms - cannot spin a core for the whole timeout.
+_FIND_POLL_FLOOR_MS = 20
+
 #: Primitives that write text into a control. After one of these succeeds the
 #: response echoes the exact value written, so the agent can confirm what
 #: landed without a follow-up `inspect`: the delta only shows a `value` change
@@ -1195,11 +1201,19 @@ class Session:
                 node = result.find(item)
                 if node is not None:
                     expanded_ids.add(id(node))
+        # The desktop as data, for the projection's `WINDOWS ...` line. It is
+        # skipped when the caller asked for the long-form header
+        # (``include_other_windows``): that header already lists the same
+        # windows in the same order, and rendering both would say it twice.
+        desktop_summary = (
+            None if include_other_windows else self._desktop_summary(result)
+        )
         plan = engine.plan(
             result.root,
             projection,
             full=full,
             expanded=expanded_ids,
+            desktop_summary=desktop_summary,
         )
 
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
@@ -1317,6 +1331,43 @@ class Session:
             self._window_refs[ref] = window_id
         return ref
 
+    def _desktop_summary(self, result: CompileResult) -> list[dict] | None:
+        """The desktop as *data* for the projection: one entry per window.
+
+        Fields are ``window_id`` (the ref ``CALL <ref>.focus()`` accepts),
+        ``title`` and ``active``. ``None`` when there is nothing to report (no
+        windows enumerated), which the projection renders as today's output.
+
+        ``ops`` is deliberately absent. Counting operable elements needs one
+        shallow read per window; measured on five live suite windows that is
+        ~111ms in total (43ms of it the form window alone), above the ~80ms an
+        observation may spend on it. The structure therefore carries only what
+        the window list already knows.
+
+        Refs are assigned exactly as the header assigns them, so the line the
+        projection renders names the same windows the body and ``CALL
+        wN.focus()`` do; the target keeps the compiled root's ref.
+        """
+        if not self.windows:
+            return None
+        # Reuse the header's ref bookkeeping (including rehoming the target when
+        # another window already claimed the tree's ref) rather than keeping a
+        # second copy of that rule.
+        self._window_header(result)
+        out: list[dict] = []
+        for window in self.windows:
+            ref = self._window_refs_by_id.get(window.window_id)
+            if ref is None:  # pragma: no cover - the header registers every window
+                ref = self._header_window_ref(window.window_id)
+            out.append(
+                {
+                    "window_id": ref,
+                    "title": window.title or "",
+                    "active": bool(window.active),
+                }
+            )
+        return out
+
     def _pack_projection(self):
         """Projection rules for the current window: the generic defaults plus
         the selected pack's rules (pack rules win, they come later)."""
@@ -1333,7 +1384,102 @@ class Session:
 
     # ------------------------------------------------------------------ find
 
-    def find(self, action: Action, *, limit: int = 50) -> str:
+    def find(
+        self,
+        action: "Action | str",
+        window: str | None = None,
+        timeout_s: float | None = None,
+        *,
+        limit: int = 50,
+    ) -> str:
+        """Search the current window (or `window`) for a matching node.
+
+        Two call shapes land here: the text/tool protocol passes an
+        ``Action(kind="find", ...)``, and the waiting contract is
+        ``find(pattern, window=None, timeout_s=None)``. ``timeout_s`` of
+        ``None`` or ``0`` is exactly today's answer - one in-memory search, no
+        extra reads. A positive value turns the search into a *wait*: the
+        viewport is re-read until the query matches or the deadline passes.
+
+        Waiting re-reads the viewport capture (structure + the rows on screen),
+        not the whole tree: measured on the suite's 240-row store screen one
+        viewport read is ~413ms against ~3923ms for a full snapshot, and it
+        arrives as a compilable result, so a hit is answered immediately rather
+        than after a second round-trip. The read is its own throttle; only a
+        provider whose read is cheaper than :data:`_FIND_POLL_FLOOR_MS` gets an
+        explicit sleep.
+
+        A miss on a viewport-truncated collection is **not** retried with a full
+        read while waiting: that read costs seconds and would push the timeout
+        far past its deadline. The timeout reply says which rows were not
+        searched, so the agent can widen the view with ``OBSERVE``.
+        """
+        if not isinstance(action, Action):
+            action = Action(kind="find", query=str(action), scope=window)
+        elif window:
+            action = replace(action, scope=window)
+        started = time.monotonic()
+        hits = self._find_hits(action)
+        if hits:
+            return self._render_find_hits(hits, limit)
+        waiting = timeout_s is not None and timeout_s > 0
+        if self._viewport_limited and not waiting:
+            # Today's behaviour: a row may simply not have been captured.
+            self._recompile()
+            hits = self._find_hits(action)
+            if hits:
+                return self._render_find_hits(hits, limit)
+        if not waiting:
+            return self._render_find_miss()
+        return self._find_wait(action, float(timeout_s), started, limit)
+
+    def _find_wait(
+        self, action: Action, timeout_s: float, started: float, limit: int
+    ) -> str:
+        """Re-read the viewport until a match appears or ``timeout_s`` passes."""
+        deadline = started + timeout_s
+        polls = 0
+        while time.monotonic() < deadline:
+            poll_started = time.monotonic()
+            tree, partial = self._snapshot_viewport()
+            result = self._recompile_with(tree, remember=not partial)
+            self._apply_viewport_meta(result)
+            # Same bookkeeping as ``observe``: settle's next probe must compare
+            # against what this capture actually read.
+            self._watch_natives = _unique_natives(result) if partial else []
+            polls += 1
+            hits = self._find_hits(action)
+            if hits:
+                return self._render_find_hits(hits, limit)
+            spent_ms = (time.monotonic() - poll_started) * 1000
+            if spent_ms < _FIND_POLL_FLOOR_MS:
+                time.sleep(
+                    min(
+                        _FIND_POLL_FLOOR_MS / 1000,
+                        max(0.0, deadline - time.monotonic()),
+                    )
+                )
+        waited = time.monotonic() - started
+        message = f"0 matches in {polls} viewport reads"
+        # Only say "not searched" when the capture actually cut something: a
+        # viewport read that kept every row (a small window) searched the whole
+        # window, and the note would send the agent on a pointless OBSERVE.
+        if any(
+            bool(node.attrs.get("items_truncated"))
+            for node in (self.result.root.walk() if self.result else ())
+        ):
+            message += "; rows outside the captured viewport were not searched"
+        # ``ref`` is the slot the error line prints right after the code; the
+        # contract for a timed-out wait is ``ERR TARGET_NOT_FOUND after=<s>``.
+        return SomnusError(
+            ErrorCode.TARGET_NOT_FOUND,
+            ref=f"after={waited:.1f}s",
+            hint="observe",
+            message=message,
+        ).render()
+
+    def _find_hits(self, action: Action) -> list[SemanticNode]:
+        """The matches for one search pass (no retries, no waiting)."""
         if self.result is None:
             self._recompile()
         assert self.result is not None
@@ -1401,32 +1547,9 @@ class Session:
             parent = _find_parent(result_root(self), node)
             if parent is not None and parent.fingerprint in seen_fingerprints:
                 parent_fps.add(node.fingerprint)
-        matches = [m for m in matches if m.fingerprint not in parent_fps]
+        return [m for m in matches if m.fingerprint not in parent_fps]
 
-        if not matches:
-            if self._viewport_limited:
-                # The current result came from the viewport capture: the rows
-                # that are not on screen simply were not read. A miss here may
-                # be "not captured", not "not present", so take one full read
-                # (which clears the flag) and search again rather than
-                # dead-ending the agent.
-                self._recompile()
-                return self.find(action, limit=limit)
-            # A bare `FOUND 0` dead-ends the agent. Name the top-level
-            # containers of the current window so the next query can be
-            # scoped (e.g. `FIND "..." in l2`) or an observe can re-orient.
-            containers = [
-                f"{n.display_type} {n.ref}"
-                + (f" {_q(n.name)}" if n.name else "")
-                for n in self.result.root.walk()
-                if n.children and (n.name or n.role in ("list", "tree", "table", "pane", "screen"))
-            ][:5]
-            hint = "\n".join(f"  {c}" for c in containers)
-            return "FOUND 0\n" + (
-                "containers you can scope into (FIND \"\u2026\" in REF) or INSPECT:\n" + hint
-                if hint
-                else "window appears empty; OBSERVE to re-orient"
-            )
+    def _render_find_hits(self, matches: list[SemanticNode], limit: int) -> str:
         out = [f"FOUND {len(matches)}"]
         # Full capability line: with default caps omitted (the grammars' implicit
         # table), a bare `+context_menu`-only line made the agent believe
@@ -1438,6 +1561,24 @@ class Session:
         if len(matches) > limit:
             out.append(f"… +{len(matches) - limit} more")
         return "\n".join(out)
+
+    def _render_find_miss(self) -> str:
+        # A bare `FOUND 0` dead-ends the agent. Name the top-level
+        # containers of the current window so the next query can be
+        # scoped (e.g. `FIND "..." in l2`) or an observe can re-orient.
+        assert self.result is not None
+        containers = [
+            f"{n.display_type} {n.ref}"
+            + (f" {_q(n.name)}" if n.name else "")
+            for n in self.result.root.walk()
+            if n.children and (n.name or n.role in ("list", "tree", "table", "pane", "screen"))
+        ][:5]
+        hint = "\n".join(f"  {c}" for c in containers)
+        return "FOUND 0\n" + (
+            "containers you can scope into (FIND \"\u2026\" in REF) or INSPECT:\n" + hint
+            if hint
+            else "window appears empty; OBSERVE to re-orient"
+        )
 
     # ------------------------------------------------------------------ inspect
 

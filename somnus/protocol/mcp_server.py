@@ -132,7 +132,13 @@ def settings_brief(session: Session) -> str:
         "says settled=false and still reports the delta). "
         "post_action_enum=on reports a window the action opened; off saves ~100ms "
         "per call and can hide it. Change with configure({...}) - session scope; "
-        "persist=true also writes the global config."
+        "persist=true also writes the global config. "
+        "Every observe reply opens with a WINDOWS line "
+        '(`WINDOWS w1 "QQ" ops=12 | w2 "..." active`): ops is that window\'s '
+        "printed capability count, active marks the focused one; pick a wN from "
+        "it instead of a separate observe-windows call. find accepts "
+        "timeout=<seconds> to wait for a match before answering; omit = answer "
+        "from the current tree immediately."
     )
 
 

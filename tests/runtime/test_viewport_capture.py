@@ -404,9 +404,16 @@ def test_observe_expand_passes_the_native_path_and_resolves_the_new_ref(monkeypa
     seen_expanded: list = []
     original_plan = session_module.ProjectionEngine.plan
 
-    def spy(self, root, projection, *, full=False, expanded=None):
+    def spy(self, root, projection, *, full=False, expanded=None, desktop_summary=None):
         seen_expanded.append(expanded)
-        return original_plan(self, root, projection, full=full, expanded=expanded)
+        return original_plan(
+            self,
+            root,
+            projection,
+            full=full,
+            expanded=expanded,
+            desktop_summary=desktop_summary,
+        )
 
     monkeypatch.setattr(session_module.ProjectionEngine, "plan", spy)
 
