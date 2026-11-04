@@ -10,8 +10,13 @@ Runs the acceptance scenario N times against the mock provider and reports:
 * Compression ratio: raw JSON tokens / SUI-Text tokens (>= 10x).
 * Action success rate (OK / total).
 * Task success rate over the scripted task set.
+* Wall clock and per-segment timings (observe / enum / snapshot / probe /
+  inject / settle / compile), reported as p50/p95 so a change can be compared
+  against the previous baseline instead of "feels faster".
 
-The harness is deterministic; it is the same code path CI runs.
+The harness is deterministic; it is the same code path CI runs. Timings are the
+one exception by nature - the gates never look at them, and
+``tests/scenarios/test_bench.py`` compares only the deterministic metrics.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -112,6 +118,12 @@ class BenchReport:
     leaks: list[str] = field(default_factory=list)
     zero_vision: bool = True
     step_counts: list[int] = field(default_factory=list)
+    #: Wall clock of one scripted task (all of its steps), in milliseconds.
+    wall_ms: list[float] = field(default_factory=list)
+    #: Wall clock of one cold observe, in milliseconds.
+    observe_ms: list[float] = field(default_factory=list)
+    #: Segment name -> one duration per task (from ``Session.timing``).
+    segment_ms: dict[str, list[float]] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -137,7 +149,29 @@ class BenchReport:
             "zero_vision": self.zero_vision,
             "leaks": self.leaks[:5],
             "leak_count": len(self.leaks),
+            "timing": {
+                "wall": _stats(self.wall_ms),
+                "observe": _stats(self.observe_ms),
+                **{
+                    name: _stats(values)
+                    for name, values in sorted(self.segment_ms.items())
+                },
+            },
         }
+
+
+def _stats(values: list[float]) -> dict[str, Any]:
+    """p50/p95 of a duration list (milliseconds, one decimal)."""
+    if not values:
+        return {"n": 0, "p50": 0.0, "p95": 0.0}
+    ordered = sorted(values)
+
+    def pct(fraction: float) -> float:
+        # Nearest-rank: index 0 for a single sample, never past the end.
+        index = min(len(ordered) - 1, int(round(fraction * (len(ordered) - 1))))
+        return round(ordered[index], 1)
+
+    return {"n": len(ordered), "p50": pct(0.50), "p95": pct(0.95)}
 
 
 #: One scripted task: (name, screen, list of SUI-Text commands).
@@ -250,7 +284,9 @@ def run_benchmark(args: Any) -> int:
 
         raw_tokens = _raw_tokens()
 
+        obs_started = time.perf_counter()
         obs = session.observe()
+        report.observe_ms.append((time.perf_counter() - obs_started) * 1000)
         report.overview_tokens.append(obs.tokens)
         report.compression_ratios.append(raw_tokens / max(1, obs.tokens))
         report.runs += 1
@@ -262,6 +298,11 @@ def run_benchmark(args: Any) -> int:
             p2 = S.make_provider(screen)
             policy_kw = TASK_POLICY.get(name)
             s2 = Session(p2, policy=Policy(**policy_kw) if policy_kw else None)
+            # Segment timings are collected per task; `Session.timing` is a
+            # public attribute so the harness can turn it on for the run
+            # without depending on the environment being set before import.
+            s2.timing = {}
+            task_started = time.perf_counter()
             s2.observe()
             anchors = S.resolve_anchors(s2, ANCHORS.get(name, {}))
             ok = True
@@ -288,6 +329,9 @@ def run_benchmark(args: Any) -> int:
             if ok:
                 report.task_ok += 1
             report.step_counts.append(steps)
+            report.wall_ms.append((time.perf_counter() - task_started) * 1000)
+            for segment, value in s2.timing.items():
+                report.segment_ms.setdefault(segment, []).append(value)
 
     summary = report.summary()
     print(json.dumps(summary, indent=2, ensure_ascii=False))
