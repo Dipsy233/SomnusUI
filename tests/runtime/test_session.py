@@ -366,3 +366,69 @@ def test_a_missing_set_text_on_a_table_cell_names_the_combo_field():
     assert (
         f"try {field.ref} (INPUT inside COMBOBOX '文件名:')" in out
     ), out
+
+
+# ------------------------------- an Invoke that answers NULL names SelectionItem
+
+
+def _selectable_panel_tree(*, selectionitem: bool = True):
+    from somnus.ir.node import RawTree, WindowInfo
+    from tests.fixtures.builders import _n
+
+    patterns = frozenset({"invoke", "selectionitem"} if selectionitem else {"invoke"})
+    button = _n(
+        "w1",
+        (0,),
+        "button",
+        name="三",
+        patterns=patterns,
+    )
+    root = _n("w1", (), "pane", name="计算器", children=[button])
+    return RawTree(
+        window=WindowInfo(
+            window_id="w1", title="计算器", process="CalculatorApp.exe", pid=1
+        ),
+        root=root,
+        raw_revision=1,
+    )
+
+
+class _NullInvoke(MockProvider):
+    def __init__(self, *, selectionitem: bool = True):
+        super().__init__(fixtures=[_selectable_panel_tree(selectionitem=selectionitem)])
+
+    def execute(self, ref, primitive, value=None, timeout_s=3.0):
+        from somnus.ir.action import ExecResult
+
+        if primitive == "activate":
+            self.executed.append((ref, primitive, value))
+            return ExecResult(
+                ok=False,
+                error="ACTION_NOT_SUPPORTED",
+                message="no usable interface on this element (tried activate); NULL COM pointer access",
+                unsupported=True,
+            )
+        return super().execute(ref, primitive, value, timeout_s)
+
+
+def test_a_null_invoke_failure_names_select():
+    session = Session(_NullInvoke())
+    session.observe()
+    button = next(n for n in session.result.root.walk() if n.name == "三")
+
+    out = session.dispatch(f"CALL {button.ref}.activate()")
+
+    assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out
+    assert "try select" in out, out
+    assert session.dispatch(f"CALL {button.ref}.select()").startswith("OK")
+
+
+def test_a_null_invoke_without_selection_does_not_invent_select():
+    session = Session(_NullInvoke(selectionitem=False))
+    session.observe()
+    button = next(n for n in session.result.root.walk() if n.name == "三")
+
+    out = session.dispatch(f"CALL {button.ref}.activate()")
+
+    assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out
+    assert "try select" not in out, out

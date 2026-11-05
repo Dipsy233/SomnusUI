@@ -3003,16 +3003,23 @@ class Session:
                         )
             twin = self._retryable_twin(action, err)
             if twin is None:
-                if action.capability == "set_text" and route_failed:
-                    hint = self._text_failure_hint(action.ref or "")
-                    if hint:
-                        err.message = (
-                            f"{err.message}; {hint}" if err.message else hint
-                        )
+                hint = self._failure_hint(action, err)
+                if hint:
+                    err.message = f"{err.message}; {hint}" if err.message else hint
                 raise
             twin_action = replace(action, ref=twin)
             twin_resolution = self._resolve_with_hint(resolver, twin_action)
-            chain = self._execute_chain(twin_action, twin_resolution)
+            try:
+                chain = self._execute_chain(twin_action, twin_resolution)
+            except SomnusError as twin_err:
+                hint = self._failure_hint(action, twin_err)
+                if hint:
+                    twin_err.message = (
+                        f"{twin_err.message}; {hint}"
+                        if twin_err.message
+                        else hint
+                    )
+                raise
             return chain, twin_resolution, twin
 
     def _nested_text_ref(self, ref: str) -> str | None:
@@ -3073,6 +3080,34 @@ class Session:
             return ""
         holders = self._combo_text_holders(ref)
         return f"try {holders[0]}" if holders else ""
+
+    def _failure_hint(self, action: Action, err: SomnusError) -> str:
+        """A one-line candidate for the capability that just refused."""
+        if action.capability == "set_text" and err.code in (
+            ErrorCode.ACTION_NOT_SUPPORTED,
+            ErrorCode.NATIVE_EXECUTION_FAILED,
+        ):
+            return self._text_failure_hint(action.ref or "")
+        if (
+            action.capability == "activate"
+            and err.code == ErrorCode.ACTION_NOT_SUPPORTED
+        ):
+            return self._activate_failure_hint(action.ref or "")
+        return ""
+
+    def _activate_failure_hint(self, ref: str) -> str:
+        """Name the selection gesture when an Invoke exists but answers NULL.
+
+        Calculator panel items publish Invoke and SelectionItem; their Invoke
+        returns "NULL COM pointer access", while SelectionItem.Select is the
+        gesture the app actually implements. The capability was real (the
+        platform advertised it), so the failure is reported, not hidden - with
+        the sibling capability the element does answer.
+        """
+        node = self.result.find(ref) if self.result is not None else None
+        if node is not None and "select" in node.cap_names():
+            return "try select"
+        return ""
 
     def _execute_chain(
         self, action: Action, resolution, *, steps: list | None = None
