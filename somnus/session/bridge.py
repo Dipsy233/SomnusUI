@@ -40,6 +40,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -250,6 +252,17 @@ class PeerServer:
 
     _session: Any = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    #: `process.start` authorization, resolved from the peer's own settings.
+    #: ``allow_processes`` still decides which executables may be operated or
+    #: spawned; ``child_allow_spawn`` is the capability switch for spawning at all.
+    _allow_spawn: bool = field(default=True, repr=False)
+    _allow_processes: tuple[str, ...] = field(default=(), repr=False)
+    #: Processes this peer started, by pid. The handles are how ``process.status``
+    #: answers exactly instead of guessing from a pid. They are deliberately not
+    #: killed on close: a program started with ``child-session run -- cmd /c start
+    #: notepad`` must outlive the run that started it, or the caller could never
+    #: observe what it just launched.
+    _children: dict[int, Any] = field(default_factory=dict, repr=False)
 
     def _build_session(self):
         """The peer's own session: a real UIA provider over this session's windows.
@@ -264,6 +277,8 @@ class PeerServer:
         from somnus.runtime.session import Session
 
         settings = load_settings(self.config_path)
+        self._allow_spawn = bool(settings.child_allow_spawn)
+        self._allow_processes = tuple(settings.allow_processes)
         provider = get_provider("uia", allow_list=list(settings.allow_processes) or None)
         policy = self.policy or Policy(
             allow_processes=settings.allow_processes,
@@ -373,11 +388,164 @@ class PeerServer:
                 return {"result": {"text": self._session.dispatch(params.get("text", ""))}}
             if method == "ping":
                 return {"result": {"pong": True}}
+            if method.startswith("process."):
+                return self._handle_process(method, params)
+            if method == "snapshot.viewport":
+                return self._handle_provider("provider.snapshot.viewport", params)
             if method.startswith("provider."):
                 return self._handle_provider(method, params)
             return {"error": {"code": -32601, "message": f"unknown method {method}"}}
         except Exception as exc:  # noqa: BLE001 - reported, never raised
             return {"error": {"code": -32000, "message": str(exc)}}
+
+    # -- process.start / status / kill ---------------------------------------
+
+    @staticmethod
+    def _proc_error(code: str, message: str) -> dict[str, Any]:
+        """One process.* failure in the same shape as a provider error."""
+        return {"error": {"code": code, "message": message}}
+
+    def _handle_process(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Start, inspect and stop programs **on this session's desktop**.
+
+        The peer is already a process inside the child session, so a program it
+        starts inherits that session's window station and desktop - no
+        ``CreateProcessAsUser``, no privileges, no token games. That is the whole
+        reason this capability lives here rather than in the agent's process.
+        """
+        if method == "process.start":
+            return self._process_start(params)
+        if method == "process.status":
+            return self._process_status(params)
+        if method == "process.kill":
+            return self._process_kill(params)
+        return self._proc_error("UNKNOWN_METHOD", f"unknown process method {method}")
+
+    def _process_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not self._allow_spawn:
+            return self._proc_error(
+                "PERMISSION_DENIED",
+                "process.start is disabled: set child_allow_spawn = true in the "
+                "settings file (or SOMNUS_CHILD_ALLOW_SPAWN=1) and restart the peer",
+            )
+
+        command = params.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return self._proc_error(
+                "INVALID_ARGUMENT", "command must be a non-empty string"
+            )
+        args = params.get("args") or []
+        if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+            return self._proc_error(
+                "INVALID_ARGUMENT", "args must be a list of strings"
+            )
+        cwd = params.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            return self._proc_error("INVALID_ARGUMENT", "cwd must be a string or null")
+        if cwd is not None and not os.path.isdir(cwd):
+            return self._proc_error(
+                "INVALID_ARGUMENT", f"cwd is not a directory: {cwd}"
+            )
+        stdout_path = params.get("stdout_path")
+        stderr_path = params.get("stderr_path")
+        if not isinstance(stdout_path, str) or not stdout_path:
+            return self._proc_error(
+                "INVALID_ARGUMENT", "stdout_path must be a non-empty string"
+            )
+        if not isinstance(stderr_path, str) or not stderr_path:
+            return self._proc_error(
+                "INVALID_ARGUMENT", "stderr_path must be a non-empty string"
+            )
+
+        if self._allow_processes:
+            allowed = {p.casefold() for p in self._allow_processes}
+            exe = os.path.basename(command).casefold()
+            if exe not in allowed:
+                return self._proc_error(
+                    "PERMISSION_DENIED",
+                    f"{exe!r} is not in allow_processes "
+                    f"({', '.join(self._allow_processes)})",
+                )
+
+        out = err = None
+        try:
+            out = open(stdout_path, "wb")
+            err = open(stderr_path, "wb")
+        except OSError as exc:
+            return self._proc_error(
+                "NATIVE_EXECUTION_FAILED", f"cannot open the output files: {exc}"
+            )
+        try:
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            proc = subprocess.Popen(
+                [command, *args],
+                cwd=cwd or None,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                creationflags=creationflags,
+                close_fds=True,
+            )
+        except (OSError, ValueError) as exc:
+            return self._proc_error(
+                "NATIVE_EXECUTION_FAILED", f"cannot start {command!r}: {exc}"
+            )
+        finally:
+            # The child owns the handles now; leaving them open in the peer would
+            # keep the files locked after the child exits.
+            if out is not None:
+                out.close()
+            if err is not None:
+                err.close()
+
+        self._children[proc.pid] = proc
+        log.info("process.start %r pid=%s cwd=%s", command, proc.pid, cwd)
+        return {"result": {"pid": proc.pid}}
+
+    def _process_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        pid = params.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return self._proc_error(
+                "INVALID_ARGUMENT", "pid must be a positive integer"
+            )
+        proc = self._children.get(pid)
+        if proc is not None:
+            code = proc.poll()
+            return {
+                "result": {"pid": pid, "alive": code is None, "exit_code": code}
+            }
+        # A pid this peer did not start (or one from before a peer restart): answer
+        # from the OS. A handle that cannot be opened means "not there" as far as
+        # this session can tell; the caller's next observation is the real check.
+        alive, code = _pid_state(pid)
+        return {"result": {"pid": pid, "alive": alive, "exit_code": code}}
+
+    def _process_kill(self, params: dict[str, Any]) -> dict[str, Any]:
+        pid = params.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return self._proc_error(
+                "INVALID_ARGUMENT", "pid must be a positive integer"
+            )
+        proc = self._children.get(pid)
+        if proc is not None:
+            if proc.poll() is not None:
+                return {"result": {"pid": pid, "killed": False}}
+            try:
+                proc.kill()
+                proc.wait(timeout=3.0)
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                return self._proc_error(
+                    "NATIVE_EXECUTION_FAILED", f"cannot kill pid {pid}: {exc}"
+                )
+            return {"result": {"pid": pid, "killed": True}}
+        killed = _terminate_pid(pid)
+        if not killed:
+            return self._proc_error(
+                "NATIVE_EXECUTION_FAILED",
+                f"cannot kill pid {pid} (not running, or no access from the "
+                "child session)",
+            )
+        return {"result": {"pid": pid, "killed": True}}
 
     def _handle_provider(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Serve the provider interface, so the far session looks local.
@@ -410,6 +578,42 @@ class PeerServer:
             )
             return {"result": {"tree": wire.raw_tree_to_dict(tree)}}
 
+        if method == "provider.snapshot.viewport":
+            capture = getattr(provider, "snapshot_viewport", None)
+            if capture is None:
+                return {
+                    "error": {
+                        "code": "ACTION_NOT_SUPPORTED",
+                        "message": "viewport capture is not supported by this provider",
+                    }
+                }
+            expanded = {
+                tuple(int(part) for part in path)
+                for path in (params.get("expanded_paths") or ())
+            }
+            tree = capture(
+                params["window_id"],
+                max_depth=int(params.get("max_depth", 20)),
+                expanded_paths=expanded,
+            )
+            return {
+                "result": {
+                    "tree": wire.raw_tree_to_dict(tree),
+                    "viewport_meta": wire.viewport_meta_to_dict(
+                        getattr(provider, "viewport_meta", None)
+                    ),
+                    "last_viewport_partial": bool(
+                        getattr(provider, "last_viewport_partial", True)
+                    ),
+                    "truncated": any(node.truncated for node in tree.walk()),
+                }
+            }
+
+        if method == "provider.top_level_signature":
+            signature = getattr(provider, "top_level_signature", None)
+            value = signature() if signature is not None else None
+            return {"result": {"signature": value}}
+
         if method == "provider.execute":
             result = provider.execute(
                 wire.native_ref_from_dict(params["ref"]),
@@ -431,6 +635,75 @@ class PeerServer:
             except Exception:  # noqa: BLE001
                 pass
             self._session = None
+
+
+# ---------------------------------------------------------------------------
+# Process-state helpers (Windows; portable fallbacks return "not there")
+# ---------------------------------------------------------------------------
+
+
+def _pid_state(pid: int) -> tuple[bool, int | None]:
+    """``(alive, exit_code)`` for a pid this peer did not start.
+
+    ``exit_code`` is None while alive, or when the process is already gone and
+    the OS kept no code we can read. A handle that cannot be opened is reported
+    as "not there": from the child session's point of view that is the honest
+    answer, and the caller's next ``OBSERVE`` is the real check.
+    """
+    if not sys.platform.startswith("win"):
+        return False, None
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    SYNCHRONIZE = 0x00100000
+    STILL_ACTIVE = 259
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)
+    ]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+
+    handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+    if not handle:
+        return False, None
+    code = wintypes.DWORD()
+    try:
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False, None
+    finally:
+        k32.CloseHandle(handle)
+    if code.value == STILL_ACTIVE:
+        return True, None
+    return False, int(code.value)
+
+
+def _terminate_pid(pid: int) -> bool:
+    """Terminate an untracked pid; False means the OS refused or it was gone."""
+    if not sys.platform.startswith("win"):
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_TERMINATE = 0x0001
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    k32.TerminateProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    handle = k32.OpenProcess(PROCESS_TERMINATE, False, pid)
+    if not handle:
+        return False
+    try:
+        return bool(k32.TerminateProcess(handle, 1))
+    finally:
+        k32.CloseHandle(handle)
 
 
 # ---------------------------------------------------------------------------

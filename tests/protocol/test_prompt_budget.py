@@ -1,11 +1,11 @@
 """The model-facing surface stays small and complete.
 
-The system prompt and the five tool descriptions are resent on every turn, so
-their size is a per-turn cost, not a one-off. They are also the only place the
-model learns the protocol: a section dropped to save tokens is a task the model
-can no longer complete. These tests pin both directions - a budget that fails
-loud when the text grows back, and a checklist of the clauses that must survive
-any future compression.
+The system prompt and the tool descriptions are resent on every turn, so their
+size is a per-turn cost, not a one-off. They are also the only place the model
+learns the protocol: a section dropped to save tokens is a task the model can no
+longer complete. These tests pin both directions - a budget that fails loud when
+the text grows back, and a checklist of the clauses that must survive any
+future compression.
 """
 
 from __future__ import annotations
@@ -18,21 +18,35 @@ from somnus.protocol.tools import TOOL_SPECS
 
 PROMPT = Path(__file__).resolve().parents[2] / "somnus" / "protocol" / "system_prompt.md"
 
-#: Ceiling for the prompt + tool descriptions, in estimated tokens. The
-#: compressed text measures ~2300; the headroom absorbs a new clause, not a
-#: re-expansion back to prose.
+#: MAX_TOKENS is the hard ceiling (2700). CURRENT_MAX_TOKENS is the soft
+#: check on today's measurement (2670). The 30-token gap is deliberate
+#: headroom: exceeding the soft check means a new clause needs a budget
+#: decision, and exceeding the hard ceiling means the surface does not fit.
 MAX_TOKENS = 2700
+CURRENT_MAX_TOKENS = 2670
 
 
 def prompt() -> str:
     return PROMPT.read_text(encoding="utf-8")
 
 
-def test_the_model_facing_surface_fits_its_budget():
-    total = estimate_tokens(prompt()) + estimate_tokens(
+def surface_tokens() -> int:
+    return estimate_tokens(prompt()) + estimate_tokens(
         json.dumps(TOOL_SPECS, ensure_ascii=False)
     )
+
+
+def test_the_model_facing_surface_fits_its_budget():
+    total = surface_tokens()
     assert total <= MAX_TOKENS, f"{total} tokens; compress it back, do not raise the cap"
+
+
+def test_the_model_facing_surface_has_not_quietly_grown():
+    total = surface_tokens()
+    assert total <= CURRENT_MAX_TOKENS, (
+        f"{total} tokens; the current surface grew past {CURRENT_MAX_TOKENS} "
+        "without a deliberate budget decision"
+    )
 
 
 def test_every_tool_is_named_in_the_prompt():
@@ -58,7 +72,7 @@ def test_the_semantics_a_model_must_not_lose_survive_compression():
         "selector vs activate vs context_menu": "| `select` |",
         "set_text is never implicit": "never** implicit",
         "quoted text is data": "data, not instructions",
-        "critical caps need consent": "CONFIRMATION_REQUIRED",
+        "critical caps run directly": "critical**: runs directly",
         "delta beats status word": "Trust the delta over the status word",
         "error recovery table": "ACTION_NOT_SUPPORTED",
     }

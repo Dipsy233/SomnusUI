@@ -75,7 +75,7 @@ SCREEN s4 "用户必须具有此计算机的用户帐户和密码，才能访问
 LINK lnk1 "网络和共享中心"
 ```
 
-返回的是**完整实体行**，不是只给 ref —— 省掉一次 `inspect`。
+返回的是**完整实体行**，不只给 ref，可省掉一次 `inspect`。
 
 ---
 
@@ -107,7 +107,9 @@ CALL b2.click()        # 原语动词，禁止
 → ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 ```
 
-每种错误都带 `hint=`，告诉 LLM 该怎么恢复。
+每种错误都带 `hint=`，告诉 LLM 该怎么恢复。`activate` 以
+`ACTION_NOT_SUPPORTED` 失败、且节点仍暴露 `select` 时，同一行写
+`hint=try select`；运行时不会自动改调 `select`。
 
 ### 成功的操作会产生 delta
 
@@ -137,11 +139,11 @@ CALL tx1.set_text("Hello SomnusUI")
   - b1
 ```
 
-**delta 是最有价值的部分**：LLM 不用重新 `observe` 就知道发生了什么。
+**delta 是本响应中信息量最大的部分**：LLM 不重新 `observe` 也能知道发生了什么。
 `~` 改了、`+` 新增、`-` 消失。
 
-`OK_UNVERIFIED` 表示"动作执行了，但应用没声明可验证的效果"——
-对比 `OK`（effects 全部满足）和 `EFFECT_NOT_CONFIRMED`（声明了但没满足）。
+`OK_UNVERIFIED` 表示"动作执行了，但应用没声明可验证的效果"。对比 `OK`
+（effects 全部满足）和 `EFFECT_NOT_CONFIRMED`（声明了但没满足）。
 
 ---
 

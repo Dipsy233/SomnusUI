@@ -52,12 +52,22 @@ def test_select_and_activate_are_separate_capabilities():
 
 
 def test_select_step_targets_selectionitem_not_invoke():
-    """Each capability resolves to its own native primitive"""
+    """Each capability resolves to its own native primitive.
+
+    ``select`` still runs SelectionItemPattern first. Since P2-1 it may declare
+    an ``activate`` *fallback* after it, because a self-drawn row (a WPF
+    combo-box item) sometimes publishes Invoke and refuses SelectionItem, and
+    the runtime must try the next UIA-reachable gesture instead of dead-ending.
+    The first route must remain ``select``: escalating must never be the default,
+    since Invoke on a file row *opens* it rather than highlighting it.
+    """
     tree = _listitem_tree(frozenset({"invoke", "selectionitem"}))
     result = Compiler().compile(tree, pack=None)
     node = result.find("li1")
     assert node is not None
-    assert [s.primitive for s in node.get_cap("select").via] == ["select"]
+    steps = [s.primitive for s in node.get_cap("select").via]
+    assert steps[0] == "select"
+    assert steps[1:] == ["activate"], steps
     assert [s.primitive for s in node.get_cap("activate").via] == ["activate"]
 
 

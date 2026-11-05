@@ -12,7 +12,7 @@ from somnus.ir.node import NativeRef, RawNode, RawTree, SemanticNode, WindowInfo
 from somnus.packs import get_pack
 from somnus.providers.mock import MockProvider
 from somnus.runtime.session import Session
-from somnus.sui.serialize import RenderOptions, render_node_line
+from somnus.sui.serialize import RenderOptions, render_delta, render_node_line
 from tests.fixtures.builders import demo_scripts, notepad_tree, restaurant_demo_tree
 
 
@@ -67,6 +67,13 @@ def test_long_text_uses_len_and_preview():
 def test_short_text_is_unchanged():
     node = SemanticNode(ref="t1", role="text", value="hello")
     assert render_node_line(node).strip() == "TEXT t1"
+
+
+def test_delta_clips_a_long_changed_value():
+    """A 100 KB value must not reprint in full inside a `~` delta line."""
+    line = render_delta([("q1", "value", "", "A" * 100_000)])
+    assert "…" in line
+    assert len(line) < 300, len(line)
 
 
 # -------------------------------------------------------------- relations
@@ -226,6 +233,35 @@ def test_find_without_type_hides_entity_children():
     assert out.startswith("FOUND 1")
     assert out.count("PRODUCT") == 1
     assert "TEXT" not in out
+
+
+def test_find_keeps_a_child_with_an_action_the_parent_lacks():
+    """A combo and its editable INPUT share a name; both are useful hits."""
+    field = _n(
+        "w1",
+        (0, 0),
+        "input",
+        name="文件名:",
+        value="",
+        patterns=frozenset({"value", "text"}),
+    )
+    combo = _n("w1", (0,), "select", name="文件名:", children=[field])
+    root = _n("w1", (), "dialog", name="另存为", children=[combo])
+    tree = RawTree(
+        window=WindowInfo(
+            window_id="w1", title="另存为", process="notepad.exe", pid=1
+        ),
+        root=root,
+        raw_revision=1,
+    )
+    session = Session(MockProvider(fixtures=[tree]))
+    session.observe()
+
+    out = session.find("文件名:")
+
+    assert out.startswith("FOUND 2"), out
+    assert "SELECT sel1" in out, out
+    assert "INPUT q1" in out and "+set_text" in out, out
 
 
 def test_observe_unknown_window_falls_back():

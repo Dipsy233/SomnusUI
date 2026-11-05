@@ -35,11 +35,11 @@ somnus --demo repl
 
 启动后进入 `sui>` 提示符，输入 `quit` / `exit` / `:q` 退出。
 
-危险操作（`critical` 风险，如发送、删除）默认返回 `CONFIRMATION_REQUIRED`。
-在确认过意图后，用 `--confirmed` 启动以预先授权：
+本构建没有任何确认门控：`critical` 风险的能力（如发送、删除）被调用时**直接执行**，
+`+submit!` 只是能力描述，不是权限请求。宿主若需要人工确认，应在自己的调用层实现。
 
 ```bash
-somnus --no-pack --confirmed repl
+somnus --no-pack repl
 ```
 
 ## 一次典型会话
@@ -93,8 +93,7 @@ agent 移到子会话里。agent 同一时间只在一个桌面上，用 `SWITCH
 ```text
 sui> SWITCH child
 OK session=child windows=3
-  WINDOW w1 "此电脑"
-  ...
+desktop changed; observe again
 
 sui> OBSERVE w2                 ← 现在 ref 指的是子会话里的窗口
 sui> CALL q1.set_text("hi")     ← 输入发生在子会话，不影响用户
@@ -111,8 +110,17 @@ OK session=main windows=11      ← 回到用户的桌面
 | `SESSION close` | 结束子会话并回到 main |
 | `SESSION detach` | 本进程退出后仍保留它 |
 
-**切换会丢弃全部 ref。** 切换后窗口列表不同，`w1` 不是"过期"，而是变成了
-新桌面上的另一个窗口——先重新 `OBSERVE` 再操作。
+**真正切换桌面时不分配任何 ref。** 响应为 `OK session=… windows=N`，随后
+`desktop changed; observe again`。重新 `OBSERVE` 之前，`CALL` 与 `INSPECT`
+引用旧节点或旧窗口 ref 时返回 `STALE_TARGET`。
+
+## 启动程序
+
+`launch` 是工具调用，不属于 SUI-Text 命令集，`sui>` REPL 不解析它。MCP 或
+JSON-RPC 宿主发送 `{command, args, cwd, window, wait_s}`，返回 `OK pid=…` 与
+新增窗口行；`wait_s` 默认 3 秒。从 main 启动到子桌面时使用
+`window="child"`，响应只列标题并提示 `switch child`；该路径要求子会话已打开、
+peer 可用，且 `child_allow_spawn` 为真。
 
 系统级配置（需管理员，只需一次）：
 
@@ -126,7 +134,7 @@ somnus child-session close
 
 ## 手势
 
-`select`、`activate`、`context_menu` 是三个不同的能力，运行时不替你选择：
+`select`、`activate`、`context_menu` 是三个不同的能力，运行时不做选择：
 
 | 能力 | 含义 | 人类对应 |
 | --- | --- | --- |
@@ -134,8 +142,8 @@ somnus child-session close
 | `activate` | 执行元素的**默认动作** | 双击 |
 | `context_menu` | 打开上下文菜单 | 右键 |
 
-`activate` 不是“点一下”：对按钮是按下，对文件或列表行是**打开**。
-某些应用对 `activate` 只做高亮（如聊天列表的会话行），它既不打开也不报错——
+`activate` 的含义由元素类型决定：对按钮是按下，对文件或列表行是**打开**。
+某些应用对 `activate` 只做高亮（如聊天列表的会话行），它既不打开也不报错。
 此时用 `context_menu` 打开菜单，再对菜单项 `activate`：
 
 ```text
@@ -158,14 +166,14 @@ OK_UNVERIFIED rev=5
 - 应用把菜单交给系统（Win32 Shell，窗口类 `#32768`）时，运行时同样把它
   取回来挂在原节点下。
 
-菜单消失（被点了、被别处焦点顶掉）后挂载自动解除。
+菜单消失（被点击、被其他焦点顶掉）后挂载自动解除。
 以返回的 delta 为准，它比状态字更可信。
 
-### 两个实测的平台坑（WPF）
+### 两个实测的 WPF 平台问题
 
-**菜单栏顶层项要用 `expand`，不是 `activate`。** WPF 的 `MenuItem` **声称**
-支持 `activate`（它继承了 `ButtonBase` 的 Invoke pattern），但菜单栏顶层的项
-不实现这个行为——调用会被如实拒绝：
+**菜单栏顶层项使用 `expand`。** WPF 的 `MenuItem` **声明**支持 `activate`
+（它继承了 `ButtonBase` 的 Invoke pattern），但菜单栏顶层的项不实现这个行为；
+调用会被如实拒绝：
 
 ```text
 sui> CALL mi2.expand()          ← 菜单栏项：expand 才打开子菜单
@@ -176,11 +184,14 @@ sui> CALL mi2.activate()        ← 声明了，但执行时被拒
 ERR ACTION_NOT_SUPPORTED mi2 hint=report-user
 ```
 
-里面真正的**命令项**才用 `activate`。"声明了"不等于"能执行"——UIA 里这两件
-事是分开的，所以以打印出的能力和返回值为准，不靠猜。
+`activate` 以 `ACTION_NOT_SUPPORTED` 最终失败、且节点仍暴露 `select` 时，同一行
+追加 `hint=try select`。运行时不会自动改调 `select`。
+
+里面真正的**命令项**才用 `activate`。"声明了"不等于"能执行"。UIA 里这两件
+事是分开的，因此以打印出的能力和返回值为准。
 
 **XAML `ContextMenu` 触发不了 `context_menu`。** WPF 在 XAML 里挂的
-`ContextMenu` 是框架层的东西，UIA 的 `ShowContextMenu`（系统层的动词）够不着它。
+`ContextMenu` 是框架层的机制，UIA 的 `ShowContextMenu`（系统层的动词）无法触达它。
 运行时检测到没弹出菜单就**如实报**，并给出该元素真正有的能力：
 
 ```text
@@ -191,15 +202,15 @@ OK_UNVERIFIED rev=2
 ```
 
 能触发 `context_menu` 的是走真正 Win32 菜单循环的控件（托盘图标、Shell 菜单，
-窗口类 `#32768`）；自绘控件里由应用自己响应 `ShowContextMenu` 的也行。这不是
-运行时的缺陷，是平台的边界，运行时的处理（报实情 + 给替代）就是为它准备的。
+窗口类 `#32768`）；自绘控件里由应用自己响应 `ShowContextMenu` 的也可以触达。
+这是平台边界；运行时通过报告实情和提供替代能力来处理。
 
 ## 使用前先把窗口提到前台
 
-agent 读或操作一个窗口时，会**先把该窗口提到前台**。这不是副作用，是前提：
+agent 读或操作一个窗口时，会**先把该窗口提到前台**。该行为是前提条件：
 被遮挡或最小化的窗口并不可靠地渲染。普通 Win32/WPF/UWP 应用通常仍有完整树，
 但自绘界面（Chromium/Electron/Qt Quick：QQ、豆包、Steam）在被真正显示前什么都
-不渲染——无障碍树萎缩到壳，agent 会以为这个应用没有控件。最小化是最极端的情况：
+不渲染。无障碍树萎缩到壳，agent 会认为这个应用没有控件。最小化是最极端的情况：
 CEF 应用完全不布局。
 
 因此运行时在做任何事之前先提窗口：

@@ -21,6 +21,7 @@ from somnus.compiler.normalize import normalize
 from somnus.compiler.pack_schema import Pack
 from somnus.compiler.relations import build_relations
 from somnus.compiler.simplify import auto_collapse_groups, simplify
+from somnus.compiler.twins import collapse_twins
 from somnus.ir.capability import Capability
 from somnus.ir.node import (
     RawNode,
@@ -75,6 +76,15 @@ ROLE_REF_PREFIX = {
 }
 
 REVERSED_REF_PREFIX = {v: k for k, v in {**ROLE_REF_PREFIX, **REF_PREFIX}.items()}
+
+#: Viewport-capture metadata carried by a container the provider had to cut at
+#: the viewport edge (docs/viewport-capture-proposal.md). Copied onto the
+#: semantic node so :mod:`somnus.projection` is the only consumer; the
+#: projection strips them from rendering and turns them into the
+#: `rows=/visible=/scroll=` summary. Supporting both the raw-node fields and a
+#: raw ``attrs`` mapping keeps the compiler independent of how the collector
+#: chooses to transport them.
+_VIEWPORT_KEYS = ("items_total", "items_visible", "items_truncated", "scroll_pct")
 
 
 @dataclass(slots=True)
@@ -228,6 +238,10 @@ class Compiler:
             if tree.window.active:
                 root.states = root.states | {"active"}
             result.root = root
+            # Duplicates first: a folded node must not reach the registry's
+            # ambiguity decision, nor be named by a collection/relation pass.
+            collapse_twins(result.root, result)
+            _annotate_selection_values(result.root)
             self._annotate_collections(result.root)
             self._attach_relations(result)
             return result
@@ -263,6 +277,8 @@ class Compiler:
 
         # 6. Collection annotation: a container whose children are all entities
         #    of one type becomes a collection: entity=<type> count=N +find.
+        collapse_twins(result.root, result)
+        _annotate_selection_values(result.root)
         self._annotate_collections(result.root)
         self._attach_relations(result)
         return result
@@ -353,6 +369,7 @@ class Compiler:
             virtual_count=raw.virtual_count,
             layer=self._layer(raw, depth),
         )
+        _carry_viewport_fields(raw, node)
         node.ref = self.allocator.next(self._prefix(raw, em, node.layer))
         ref = node.ref
         if node.entity:
@@ -772,6 +789,23 @@ def _duplicate_identities(children: list[RawNode]) -> set[str]:
     return {ident for ident, count in counts.items() if count > 1}
 
 
+def _carry_viewport_fields(raw: RawNode, node: SemanticNode) -> None:
+    """Move the collector's viewport summary onto the semantic node.
+
+    The collector may attach the fields directly to ``RawNode`` (the natural
+    place for provider output) or park them in a raw ``attrs`` mapping while the
+    IR catches up; both are accepted. Missing fields are simply absent, so an
+    old tree or a mock fixture compiles exactly as before.
+    """
+    raw_extra = getattr(raw, "attrs", None)
+    for key in _VIEWPORT_KEYS:
+        value = getattr(raw, key, None)
+        if value is None and isinstance(raw_extra, dict):
+            value = raw_extra.get(key)
+        if value is not None:
+            node.attrs[key] = value
+
+
 def _clip(text: str | None, limit: int = 80) -> str | None:
     if text is None:
         return None
@@ -779,6 +813,49 @@ def _clip(text: str | None, limit: int = 80) -> str | None:
     if len(text) > limit:
         return text[: limit - 1] + "…"
     return text
+
+
+def _annotate_selection_values(root: SemanticNode) -> None:
+    """Publish a combo box's *current* selection as an attribute.
+
+    A selection control's visible state is which item is picked, and UIA reports
+    it per item (``IsSelected`` → the ``selected`` state), not as a property of
+    the combo box itself. Without lifting that signal onto the container:
+
+    * the observation showed the items but not "which one is the value";
+    * a successful ``select`` produced an *empty delta* (the delta compares
+      attributes/values, not states), so the call was indistinguishable from a
+      no-op; and
+    * the verifier had no field to check after a selection.
+
+    Writing the selected item's label into ``attrs["value"]`` fixes all three:
+    the projection renders ``value="中"``, ``WATCHED_ATTRS`` already includes
+    ``value`` so the next delta reads ``~ sel1 value "低"→"中"``, and
+    ``Verifier._field_value`` can evaluate a ``value`` effect.
+
+    Only a node that actually owns a selected child is annotated - an ordinary
+    list whose children are not selectable keeps its plain rendering. A node
+    whose own ``value`` already carries the label (some providers report the
+    combo's text there) is left untouched: the platform's own answer is better
+    evidence than our reconstruction.
+    """
+    for node in root.walk():
+        if node.role != "select" or "value" in node.attrs:
+            continue
+        label = node.value
+        if not label:
+            selected = None
+            for child in node.walk():
+                if child is node:
+                    continue
+                if "selected" in child.states:
+                    selected = child
+                    break
+            if selected is None:
+                continue
+            label = selected.name or selected.value
+        if label:
+            node.attrs["value"] = _clip(str(label))
 
 
 def _dedupe_caps(caps: list[Capability]) -> list[Capability]:

@@ -33,12 +33,13 @@ Verified live, in both directions: a process in session 1 enumerates sessions 0
 and 1 and nothing else; a process in session 2 enumerates sessions 0 and 2. The
 accessibility tree behaves the same way. It is a kernel boundary.
 
-## For the agent: one tool
+## For the agent: desktop switching
 
-The agent drives **one desktop at a time**. It is not given both, because every
-ref (`w1`, `b3`, `q1`) is a bare name that only means something relative to a
-desktop; two at once would make every call ambiguous, and asking the model to
-disambiguate each one would cost more than the feature is worth.
+The agent drives **one desktop at a time**. Desktop switching is one tool. The
+agent is not given both desktops, because every ref (`w1`, `b3`, `q1`) is a
+bare name that only means something relative to a desktop; two at once would
+make every call ambiguous, and asking the model to disambiguate each one would
+cost more than the feature is worth.
 
 ```
 SWITCH main          go to the user's desktop
@@ -48,9 +49,61 @@ SESSION close        end it, and return
 SESSION detach       leave it running after this process exits
 ```
 
-Switching **discards every ref**. After a `SWITCH` the window list is different,
-so `w1` does not merely go stale - it names whatever `w1` is on the new desktop.
-Re-`OBSERVE` before acting.
+A switch that changes desktop **assigns no refs**. The reply is
+`OK session=… windows=N` followed by `desktop changed; observe again`. Until a
+fresh `OBSERVE`, `CALL` and `INSPECT` that name an old node or window ref return
+`STALE_TARGET` with `hint=observe`. A switch that does not change desktop
+returns `OK session=… (already here)` and leaves the current refs valid.
+
+## Starting programs on the child desktop
+
+A program has to be started *inside* the child session to appear there. The
+peer already runs there, so it starts the program with its own token - no
+`CreateProcessAsUser`, no elevation, no token borrowing:
+
+```bash
+somnus child-session run --cwd E:/0down/SomnusUI -- python.exe -m pytest -m windows
+somnus child-session run -- cmd /c start notepad.exe      # launcher exits, Notepad stays
+```
+
+`run` sends `process.start` to the peer, polls `process.status` until the child
+command exits (or `--timeout`, default 600 s, kills it), then prints the exit
+code and the full stdout/stderr. Output files live in
+`%TEMP%\somnusui-child-run\<timestamp>\`; the last run is kept and its paths are
+printed, older runs are removed.
+
+Wire methods (not agent-facing tools):
+
+| method | params | result |
+| --- | --- | --- |
+| `process.start` | `command`, `args[]`, `cwd`, `stdout_path`, `stderr_path` | `{pid}` |
+| `process.status` | `pid` | `{pid, alive, exit_code}` (`exit_code` null while alive) |
+| `process.kill` | `pid` | `{pid, killed}` |
+
+Errors are `PERMISSION_DENIED` / `INVALID_ARGUMENT` / `NATIVE_EXECUTION_FAILED`
+with a message. `process.kill` exists so `run --timeout` can end the command; a
+program started through a launcher (`cmd /c start ...`) is left running for the
+caller to observe.
+
+Two switches decide who may start what:
+
+- `child_allow_spawn` (default `true`) - the capability itself;
+- `allow_processes` (empty = any) - the executable's basename must be in it,
+  which is the same list that decides which processes may be *operated*. A
+  program that could not be operated is not allowed to be spawned either.
+
+`run` is CLI-only. The model-facing surface has eight tools. `launch` starts a
+program on the current desktop (local `CreateProcess` on main, the peer's
+`process.start` on child). Both paths apply `allow_processes`; the peer path
+also requires `child_allow_spawn`. `wait_s` defaults to 3 s. The reply carries
+`pid` and at most six `+ WINDOW` lines, then `+ N more`; more than one new
+window adds `~ N windows from one launch`. On the current desktop it assigns
+refs unless the session still awaits a fresh `OBSERVE` after a switch; then it
+adds `desktop changed; observe again`. From main, `window="child"` starts
+the program through the peer and reports titles only, followed by
+`~ on child; switch child to address them`. There is no `SESSION run` command
+in SUI-Text.
+
 
 ## Architecture
 
@@ -74,10 +127,11 @@ registry, resolver, policy and the ref namespace. The far side runs a **thin
 peer** that owns a `Session` and answers tool calls - perception and actuation,
 no model, no policy of its own.
 
-That is what makes it *one agent* rather than two, and it is why a switch is
-cheap: `Session` is written against `AccessibilityProvider`, so the far session
-is simply another provider (`peerprovider.py`). Switching swaps the provider and
-resets the refs; the compiler and runtime never learn anything was remote.
+That keeps the design at one agent. A switch has low cost: `Session` is written
+against `AccessibilityProvider`, so the far session is another provider
+(`peerprovider.py`). Switching swaps the provider, resets the ref namespace and
+assigns no refs; the compiler and runtime do not detect that the provider is
+remote.
 
 The transport is a named pipe, chosen after measuring what crosses the boundary
 (see below). It carries the provider interface directly - `list_windows`,
@@ -121,9 +175,8 @@ loopback logon cannot take it.
 
 ## Cleanup
 
-An orphaned loopback is not merely untidy: it holds a session open, so a later
-start attaches to it instead of making a new one, which reads as "the settings
-did not take effect".
+An orphaned loopback holds a session open, so a later start attaches to it and
+does not create a new one. This appears as "the settings did not take effect".
 
 - A session this process opened is cleaned up **when the process exits**
   (`atexit`), unless `SESSION detach` said otherwise.
@@ -156,14 +209,13 @@ It was implemented against a live loopback. The result:
 
 - `RemoteAutomationClientSession` **constructs and `Start()`s** from the RDP
   host, with `SessionId` reading back;
-- but `ConnectionRequested` **never fires**;
+- `ConnectionRequested` **does not fire**;
 - and `RemoteAutomationServer.ReportSession` answers **"class not registered"** -
   in the main session *and* inside the child session, with the connection up.
 
-So it pairs with a private provider context that Microsoft's own remote-desktop
-stack sets up and a third-party host cannot reproduce. Recorded rather than
-argued: `somnus/session/bridge.py` carries the same finding at the point where it
-would have been used.
+It pairs with a private provider context that Microsoft's own remote-desktop
+stack sets up and a third-party host cannot reproduce. This finding is recorded
+in `somnus/session/bridge.py` at the point where it would have been used.
 
 ### A virtual desktop
 

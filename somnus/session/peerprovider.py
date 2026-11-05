@@ -34,6 +34,15 @@ from somnus.session.bridge import PeerBridge, PeerUnavailable
 log = logging.getLogger("somnus.session.peerprovider")
 
 
+class PeerProcessError(RuntimeError):
+    """The peer refused a ``process.*`` request (schema or authorization)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
 @dataclass
 class PeerProvider:
     """An ``AccessibilityProvider`` backed by the peer in another session.
@@ -51,6 +60,15 @@ class PeerProvider:
     call_timeout: float = 120.0
 
     name: str = "peer"
+
+    #: Container viewport metadata from the last ``snapshot_viewport``, keyed
+    #: by window and native path exactly as :class:`UiaProvider` exposes it.
+    viewport_meta: dict = field(default_factory=dict, repr=False)
+    #: Whether the last viewport read was viewport-scoped. False means the
+    #: peer fell back to a full snapshot, so the session hides its probe.
+    last_viewport_partial: bool = field(default=False, repr=False)
+    #: One-shot note for ``observe`` when the peer has no viewport capture.
+    viewport_fallback_note: str = field(default="", repr=False)
 
     _bridge: PeerBridge | None = field(default=None, repr=False)
     _connected: bool = field(default=False, repr=False)
@@ -131,6 +149,55 @@ class PeerProvider:
             raise PeerUnavailable(f"snapshot failed: {error.get('message')}")
         return wire.raw_tree_from_dict(tree)
 
+    def top_level_signature(self):
+        """The far session's cheap desktop signature, for launch wait loops."""
+        response = self.ensure().request({"method": "provider.top_level_signature"})
+        return (response.get("result") or {}).get("signature")
+
+    def snapshot_viewport(
+        self,
+        window_id: str,
+        max_depth: int = 20,
+        expanded_paths: set[tuple[int, ...]] | None = None,
+    ) -> RawTree:
+        """Forward the viewport capture, keeping its metadata on this side.
+
+        The peer's raw tree and ``viewport_meta`` are separate payload fields;
+        the session copies the metadata onto compiled container attributes and
+        uses ``last_viewport_partial`` to decide whether a probe is safe.
+        """
+        self.viewport_meta = {}
+        self.last_viewport_partial = False
+        self.viewport_fallback_note = ""
+        payload = {
+            "method": "snapshot.viewport",
+            "params": {
+                "window_id": window_id,
+                "max_depth": max_depth,
+                "expanded_paths": [list(path) for path in (expanded_paths or ())],
+            },
+        }
+        result = self.ensure().request(payload)
+        error = result.get("error") or {}
+        if error:
+            if error.get("code") == "ACTION_NOT_SUPPORTED":
+                self.viewport_fallback_note = (
+                    "peer has no viewport capture; full snapshot budget applies"
+                )
+                return self.snapshot(window_id, max_depth=max_depth)
+            raise PeerUnavailable(f"viewport snapshot failed: {error.get('message')}")
+        payload = result.get("result") or {}
+        tree = payload.get("tree")
+        if tree is None:
+            raise PeerUnavailable("viewport snapshot failed: no tree")
+        self.viewport_meta = wire.viewport_meta_from_dict(
+            payload.get("viewport_meta")
+        )
+        self.last_viewport_partial = bool(
+            payload.get("last_viewport_partial", True)
+        )
+        return wire.raw_tree_from_dict(tree)
+
     def execute(
         self,
         ref: NativeRef,
@@ -173,6 +240,77 @@ class PeerProvider:
         from somnus.providers.base import NullSubscription
 
         return NullSubscription()
+
+    # -- processes on the far desktop ---------------------------------------
+
+    @staticmethod
+    def _process_result(response: dict[str, Any], key: str) -> Any:
+        error = response.get("error") or {}
+        if error:
+            raise PeerProcessError(
+                str(error.get("code", "NATIVE_EXECUTION_FAILED")),
+                str(error.get("message", "")),
+            )
+        return (response.get("result") or {}).get(key)
+
+    def start_process(
+        self,
+        command: str,
+        args: list[str] | None = None,
+        *,
+        cwd: str | None = None,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> int:
+        """Start a program **on the far desktop** and return its pid.
+
+        The peer inherits that session's window station and desktop, so this
+        needs no privilege. ``PeerProcessError`` carries the peer's code
+        (``INVALID_ARGUMENT`` / ``PERMISSION_DENIED`` / ``NATIVE_EXECUTION_FAILED``).
+        """
+        result = self._process_result(
+            self.ensure().request(
+                {
+                    "method": "process.start",
+                    "params": {
+                        "command": command,
+                        "args": list(args or []),
+                        "cwd": cwd,
+                        "stdout_path": stdout_path,
+                        "stderr_path": stderr_path,
+                    },
+                }
+            ),
+            "pid",
+        )
+        return int(result)
+
+    def _process_status(self, pid: int) -> dict[str, Any]:
+        response = self.ensure().request(
+            {"method": "process.status", "params": {"pid": int(pid)}}
+        )
+        error = response.get("error") or {}
+        if error:
+            raise PeerProcessError(
+                str(error.get("code", "NATIVE_EXECUTION_FAILED")),
+                str(error.get("message", "")),
+            )
+        return dict(response.get("result") or {})
+
+    def process_status(self, pid: int) -> dict[str, Any]:
+        """``{"pid", "alive", "exit_code"}`` for a pid on the far desktop."""
+        return self._process_status(pid)
+
+    def process_kill(self, pid: int) -> bool:
+        """Terminate a pid on the far desktop; False when it was already gone."""
+        return bool(
+            self._process_result(
+                self.ensure().request(
+                    {"method": "process.kill", "params": {"pid": int(pid)}}
+                ),
+                "killed",
+            )
+        )
 
     def close(self) -> None:
         if self._bridge is not None:

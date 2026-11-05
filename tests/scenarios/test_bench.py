@@ -40,9 +40,30 @@ def test_benchmark_passes_its_gates():
 
 
 def test_benchmark_is_deterministic():
-    """Two runs of the same size must report the same numbers.
+    """Two runs of the same size must report the same *metrics*.
 
     The harness is the project's measurement device; a metric that drifts
-    between identical runs cannot be compared over time.
+    between identical runs cannot be compared over time. Wall clock is the
+    documented exception - it exists precisely because it does vary - so it is
+    excluded here and checked separately below.
     """
-    assert _run(2)["summary"] == _run(2)["summary"]
+    first = _run(2)["summary"]
+    second = _run(2)["summary"]
+    first.pop("timing", None)
+    second.pop("timing", None)
+    assert first == second
+
+
+def test_benchmark_reports_wall_clock_p50_and_p95():
+    """The timing block must be present and well-formed for comparison.
+
+    A run without timings cannot answer "is this faster than before", which is
+    the only reason the column exists.
+    """
+    timing = _run(2)["summary"]["timing"]
+    for name in ("wall", "observe"):
+        assert timing[name]["n"] > 0, timing
+    assert timing["wall"]["p50"] <= timing["wall"]["p95"], timing
+    # The per-call segments the runtime instruments must be there too.
+    for segment in ("snapshot", "compile"):
+        assert segment in timing, timing

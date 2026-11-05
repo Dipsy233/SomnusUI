@@ -70,18 +70,15 @@ def test_call_twice_accumulates():
     assert "~ c1 total 5.99→8.48" in out
 
 
-def test_call_critical_requires_confirmation():
+def test_call_critical_executes_directly():
+    """No confirmation gate: a critical cap runs when it is called."""
     session = _new_session()
     session.observe()
     out = session.dispatch("CALL b5.submit()")
-    assert out.startswith("ERR CONFIRMATION_REQUIRED")
-
-
-def test_call_critical_with_confirmation():
-    session = _new_session()
-    session.observe()
-    out = session.dispatch("CALL b5.submit()", confirmed=True)
-    assert out.startswith("OK")
+    assert out.startswith("OK"), out
+    assert [primitive for _ref, primitive, _value in session.provider.executed] == [
+        "activate"
+    ]
 
 
 def test_call_missing_capability():
@@ -183,3 +180,255 @@ def test_registry_stale_detection():
     assert fp is not None
     assert not registry.is_stale("p1", {fp})
     assert registry.is_stale("p1", {"different"})
+
+
+# ------------------------------------------------- nested text in a container
+
+
+_WRITES = frozenset({"set_text", "paste_text", "type_text"})
+
+
+def _save_dialog_tree():
+    """A dialog whose named container holds the real filename INPUT."""
+    from somnus.ir.node import RawTree, WindowInfo
+    from tests.fixtures.builders import _n
+
+    wid = "w1"
+    filename = _n(
+        wid,
+        (0, 0),
+        "input",
+        name="文件名:",
+        value="",
+        patterns=frozenset({"value", "text"}),
+        automation_id="file_name",
+    )
+    name_box = _n(
+        wid,
+        (0,),
+        "input",
+        name="名称",
+        patterns=frozenset({"value", "legacyiaccessible"}),
+        automation_id="name_box",
+        children=[filename],
+    )
+    root = _n(wid, (), "dialog", name="另存为", children=[name_box])
+    window = WindowInfo(
+        window_id=wid,
+        title="另存为",
+        process="notepad.exe",
+        pid=1,
+    )
+    return RawTree(window=window, root=root, raw_revision=1)
+
+
+class _SendInputDenied(MockProvider):
+    """The outer control refuses synthetic input; the nested field can be set.
+
+    ``fail_nested=True`` makes both refuse, which is the honest total failure:
+    the reply must carry the error and the candidate, never an ``OK``.
+    """
+
+    def __init__(self, *, fail_nested: bool = False):
+        super().__init__(fixtures=[_save_dialog_tree()])
+        self.fail_nested = fail_nested
+
+    def execute(self, ref, primitive, value=None, timeout_s=3.0):
+        from somnus.ir.action import ExecResult
+
+        if primitive in _WRITES and (
+            ref.path == (0,) or (self.fail_nested and ref.path == (0, 0))
+        ):
+            self.executed.append((ref, primitive, value))
+            return ExecResult(
+                ok=False,
+                error="NATIVE_EXECUTION_FAILED",
+                message="SendInput sent 0/1 (err 5)",
+            )
+        return super().execute(ref, primitive, value, timeout_s)
+
+
+def _nodes_by_name(session):
+    session.observe()
+    return {n.name: n for n in session.result.root.walk() if n.name}
+
+
+def test_set_text_falls_back_to_the_nested_input():
+    provider = _SendInputDenied()
+    session = Session(provider)
+    nodes = _nodes_by_name(session)
+    outer, nested = nodes["名称"], nodes["文件名:"]
+
+    out = session.dispatch(f'CALL {outer.ref}.set_text("报告.txt")')
+
+    assert out.startswith("OK"), out
+    assert f"~ healed {outer.ref}\u2192{nested.ref}" in out, out
+    # The write really ran on the nested field, through its Value interface.
+    assert provider.executed[-1][0].path == (0, 0), provider.executed
+    assert provider.executed[-1][1] == "set_text", provider.executed
+
+
+def test_a_total_set_text_failure_names_the_candidate_and_never_says_ok():
+    provider = _SendInputDenied(fail_nested=True)
+    session = Session(provider)
+    nodes = _nodes_by_name(session)
+    outer, nested = nodes["名称"], nodes["文件名:"]
+
+    out = session.dispatch(f'CALL {outer.ref}.set_text("报告.txt")')
+
+    assert out.startswith("ERR NATIVE_EXECUTION_FAILED"), out
+    assert not out.startswith("OK"), out
+    assert f"try {nested.ref} (INPUT inside COMBOBOX)" in out, out
+    assert "SendInput sent 0/1 (err 5)" in out, out
+
+
+# ------------------------------------ a table cell is not the filename field
+
+
+def _file_list_dialog_tree(*, cell_writable: bool = True):
+    """The save dialog shape: row cells named 名称 beside the 文件名 combo."""
+    from somnus.ir.node import RawTree, WindowInfo
+    from tests.fixtures.builders import _n
+
+    wid = "w1"
+    cell_patterns = frozenset({"value"}) if cell_writable else frozenset()
+    cell = _n(
+        wid,
+        (0, 0, 0),
+        "input" if cell_writable else "text",
+        name="名称",
+        value="accept_main",
+        patterns=cell_patterns,
+        automation_id="name_cell",
+    )
+    row = _n(wid, (0, 0), "listitem", name="accept_main", children=[cell])
+    listing = _n(
+        wid, (0,), "list", name="项目视图", children=[row], patterns=frozenset({"scroll"})
+    )
+    filename = _n(
+        wid,
+        (1, 0),
+        "input",
+        name="文件名:",
+        value="",
+        patterns=frozenset({"value", "text"}),
+        automation_id="file_name",
+    )
+    combo = _n(wid, (1,), "select", name="文件名:", children=[filename])
+    root = _n(wid, (), "dialog", name="另存为", children=[listing, combo])
+    return RawTree(
+        window=WindowInfo(
+            window_id=wid, title="另存为", process="notepad.exe", pid=1
+        ),
+        root=root,
+        raw_revision=1,
+    )
+
+
+class _CellWriteDenied(MockProvider):
+    def __init__(self, *, cell_writable: bool = True):
+        super().__init__(fixtures=[_file_list_dialog_tree(cell_writable=cell_writable)])
+
+    def execute(self, ref, primitive, value=None, timeout_s=3.0):
+        from somnus.ir.action import ExecResult
+
+        if ref.path == (0, 0, 0) and primitive in _WRITES:
+            self.executed.append((ref, primitive, value))
+            return ExecResult(
+                ok=False,
+                error="NATIVE_EXECUTION_FAILED",
+                message="SendInput sent 0/1 (err 5)",
+            )
+        return super().execute(ref, primitive, value, timeout_s)
+
+
+def test_a_failed_write_on_a_table_cell_names_the_combo_field():
+    session = Session(_CellWriteDenied())
+    nodes = _nodes_by_name(session)
+    cell, field = nodes["名称"], nodes["文件名:"]
+
+    out = session.dispatch(f'CALL {cell.ref}.set_text("报告.txt")')
+
+    assert out.startswith("ERR NATIVE_EXECUTION_FAILED"), out
+    assert (
+        f"try {field.ref} (INPUT inside COMBOBOX '文件名:')" in out
+    ), out
+
+
+def test_a_missing_set_text_on_a_table_cell_names_the_combo_field():
+    session = Session(_CellWriteDenied(cell_writable=False))
+    nodes = _nodes_by_name(session)
+    cell, field = nodes["名称"], nodes["文件名:"]
+
+    out = session.dispatch(f'CALL {cell.ref}.set_text("报告.txt")')
+
+    assert out.startswith("ERR CAPABILITY_NOT_FOUND"), out
+    assert (
+        f"try {field.ref} (INPUT inside COMBOBOX '文件名:')" in out
+    ), out
+
+
+# ------------------------------- an Invoke that answers NULL names SelectionItem
+
+
+def _selectable_panel_tree(*, selectionitem: bool = True):
+    from somnus.ir.node import RawTree, WindowInfo
+    from tests.fixtures.builders import _n
+
+    patterns = frozenset({"invoke", "selectionitem"} if selectionitem else {"invoke"})
+    button = _n(
+        "w1",
+        (0,),
+        "button",
+        name="三",
+        patterns=patterns,
+    )
+    root = _n("w1", (), "pane", name="计算器", children=[button])
+    return RawTree(
+        window=WindowInfo(
+            window_id="w1", title="计算器", process="CalculatorApp.exe", pid=1
+        ),
+        root=root,
+        raw_revision=1,
+    )
+
+
+class _NullInvoke(MockProvider):
+    def __init__(self, *, selectionitem: bool = True):
+        super().__init__(fixtures=[_selectable_panel_tree(selectionitem=selectionitem)])
+
+    def execute(self, ref, primitive, value=None, timeout_s=3.0):
+        from somnus.ir.action import ExecResult
+
+        if primitive == "activate":
+            self.executed.append((ref, primitive, value))
+            return ExecResult(
+                ok=False,
+                error="ACTION_NOT_SUPPORTED",
+                message="no usable interface on this element (tried activate); NULL COM pointer access",
+                unsupported=True,
+            )
+        return super().execute(ref, primitive, value, timeout_s)
+
+
+def test_a_null_invoke_failure_names_select():
+    session = Session(_NullInvoke())
+    session.observe()
+    button = next(n for n in session.result.root.walk() if n.name == "三")
+
+    out = session.dispatch(f"CALL {button.ref}.activate()")
+
+    assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out
+    assert "try select" in out, out
+    assert session.dispatch(f"CALL {button.ref}.select()").startswith("OK")
+
+
+def test_a_null_invoke_without_selection_does_not_invent_select():
+    session = Session(_NullInvoke(selectionitem=False))
+    session.observe()
+    button = next(n for n in session.result.root.walk() if n.name == "三")
+
+    out = session.dispatch(f"CALL {button.ref}.activate()")
+
+    assert out.startswith("ERR ACTION_NOT_SUPPORTED"), out
+    assert "try select" not in out, out

@@ -54,7 +54,20 @@ def run_primitive(
         if primitive == "focus":
             element.SetFocus()
         elif primitive == "read":
-            return ExecResult(ok=True)
+            # `read` is a *content* primitive, not a no-op acknowledgement.
+            # This is what makes `CALL q1.read()` answer "what is in the box"
+            # in one command (the observation also carries a short preview;
+            # this call returns up to the read preview cap with the exact
+            # length and a truncation flag).
+            payload = _read_payload(element)
+            if payload is None:
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message="no readable value/text surface on this element",
+                    unsupported=True,
+                )
+            return ExecResult(ok=True, message=payload)
         elif primitive == "activate":
             _pattern(element, UIA.UIA_InvokePatternId, UIA.IUIAutomationInvokePattern).Invoke()
         elif primitive == "set_text":
@@ -64,11 +77,34 @@ def run_primitive(
         elif primitive == "toggle":
             _pattern(element, UIA.UIA_TogglePatternId, UIA.IUIAutomationTogglePattern).Toggle()
         elif primitive == "select":
-            _pattern(
+            pat = _pattern(
                 element,
                 UIA.UIA_SelectionItemPatternId,
                 UIA.IUIAutomationSelectionItemPattern,
-            ).Select()
+            )
+            pat.Select()
+            # Read the state back. UIA reports the interface as available and
+            # then the element may ignore the call - the shape WPF's duplicated
+            # drop-down rows produce (the "ghost" copy answers nothing while the
+            # real row selects). Without this read-back the call reported success
+            # for a gesture the UI never performed, and the agent's next
+            # observation looked like the selection silently failed.
+            #
+            # A False answer is reported as *unsupported* rather than as a hard
+            # failure, so the declared route chain can escalate to the next
+            # UIA-reachable gesture (`activate`/Invoke) instead of dead-ending.
+            # When the property cannot be read at all the result stays `ok`: an
+            # unobservable element must not be turned into a failure.
+            if _selection_did_not_take(pat) is True:
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message=(
+                        "SelectionItemPattern.Select returned but the element "
+                        "did not become selected"
+                    ),
+                    unsupported=True,
+                )
         elif primitive == "expand":
             _pattern(
                 element,
@@ -346,6 +382,119 @@ def _text_landed_verifier(element: Any, expected: Any):
 _UIA_TEXT_PATTERN_ID = 10014
 _TEXT_READ_CAP = 65536
 
+#: Hard ceiling on what a `read` call pulls across COM. A 100 KB document must
+#: not be transferred whole just to answer "what does this say"; the Text
+#: pattern honours a length cap, so the request is `cap + 1` and a result that
+#: fills it means "there is more".
+_READ_TEXT_CAP = 4096
+#: Characters returned inline by `read`. 200 is comfortable for a field or a
+#: short note and bounded enough that a reply never becomes a document dump.
+_READ_PREVIEW_CHARS = 200
+
+#: UIA_TextControlTypeId. A text *display* carries its content in the accessible
+#: Name; its Value surface may answer an empty string, which is not "no content".
+_UIA_TEXT_CONTROL_TYPE = 50020
+
+
+def _safe_property(element: Any, name: str) -> Any:
+    try:
+        return getattr(element, name)
+    except Exception:  # noqa: BLE001 - an unreadable property is absent
+        return None
+
+
+def _read_text_bounded(element: Any, max_chars: int) -> tuple[str | None, bool]:
+    """Read the element's text with a hard cap, and whether the cap was hit.
+
+    The Text pattern goes first because it is the only surface that takes a
+    length cap; the Value property is the fallback for controls that publish
+    no Text interface. Both are the same two surfaces
+    ``_text_landed_verifier`` uses, so a control that can be verified after
+    typing can also be read here.
+    """
+    text: str | None = None
+    capped = False
+    try:
+        raw = element.GetCurrentPattern(_UIA_TEXT_PATTERN_ID)
+        if raw is not None:
+            # A provider double may already hand back the interface; a real one
+            # returns an IUnknown that must be cast before its members exist.
+            query = getattr(raw, "QueryInterface", None)
+            pattern = query(_text_pattern_interface()) if query else raw
+            value = pattern.DocumentRange.GetText(max_chars)
+            if isinstance(value, str):
+                text = value
+                capped = len(value) >= max_chars
+    except Exception:  # noqa: BLE001 - no Text pattern, or it refused
+        text = None
+    if text:
+        return text, capped
+    try:
+        value = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
+    except Exception:  # noqa: BLE001 - unreadable element
+        return text, capped
+    if isinstance(value, str) and value:
+        return value, False
+    # Both surfaces answered empty: that is a readable empty field, not a
+    # failure.
+    if text is not None or isinstance(value, str):
+        return "", False
+    return None, False
+
+
+def _escape_read_text(text: str) -> str:
+    """Make a read payload one parseable line (newline/tab visible as escapes)."""
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+
+
+def _read_payload(element: Any) -> str | None:
+    """`value="…" len=N [truncated=true]` for a readable element, else None.
+
+    The length is exact unless the provider cap was hit, in which case it is a
+    lower bound (`len>=4097`) - claiming an exact 100 KB count would mean
+    reading the whole document, which is exactly what this guard exists to
+    avoid.
+    """
+    text, capped = _read_text_bounded(element, _READ_TEXT_CAP + 1)
+    if text == "" and _safe_property(element, "CurrentControlType") == _UIA_TEXT_CONTROL_TYPE:
+        # A text display's content is its accessible Name. Some providers also
+        # answer Value with an empty string; treating that as the content made
+        # `read` answer `value=""` while the delta showed the changed Name.
+        name = _safe_property(element, "CurrentName")
+        if isinstance(name, str) and name:
+            text, capped = name, False
+    if text is None:
+        # A pure text label's content is its accessible Name (that is already
+        # the whole "read" answer for it).
+        name = _safe_property(element, "CurrentName")
+        if isinstance(name, str) and name:
+            text, capped = name, False
+    if text is None:
+        return None
+
+    preview = text
+    truncated = capped or len(text) > _READ_PREVIEW_CHARS
+    if len(text) > _READ_PREVIEW_CHARS:
+        preview = text[: _READ_PREVIEW_CHARS - 1] + "…"
+    length = (
+        f"len>={_READ_TEXT_CAP + 1}" if capped else f"len={len(text)}"
+    )
+    payload = f'value="{_escape_read_text(preview)}" {length}'
+    if truncated:
+        payload += " truncated=true; use INSPECT with range=0:2000 for more"
+    return payload
+
+
+#: UIA_ValuePatternId / the Value.Value property, used to read back what a
+#: control holds while typing into it (see `_text_landed_verifier`).
+_UIA_VALUE_VALUE_PROPERTY = 30045
+
 
 def _read_surface(element: Any):
     """Pick the property that actually reports this element's text.
@@ -437,6 +586,39 @@ def _pattern(element: Any, pattern_id: int, interface: Any) -> Any:
 #: UIA_ValuePatternId / the Value.Value property, used to read back what a
 #: control holds while typing into it (see `_text_landed_verifier`).
 _UIA_VALUE_VALUE_PROPERTY = 30045
+
+
+#: How many times a `Select` is re-read before "it did not take" is reported,
+#: and how long to wait between reads. WPF applies a selection on the UI thread
+#: and the pattern can return before that thread has committed it, so one
+#: immediate read is too eager. The budget is deliberately tiny (two extra
+#: 25 ms reads): this runs inside the per-primitive timeout and the honest
+#: answer "not selected" must not turn into a stall.
+_SELECT_READBACK_ATTEMPTS = 3
+_SELECT_READBACK_DELAY_S = 0.025
+
+
+def _selection_did_not_take(pattern: Any) -> bool | None:
+    """Whether the element is still unselected after ``Select``.
+
+    Returns ``True`` (did not take), ``False`` (it is selected) or ``None``
+    (the property could not be read - "unobservable", never a failure).
+
+    ``CurrentIsSelected`` is the live SelectionItem state. Reading it *after*
+    the call is the only way to tell "Select ran" from "Select was accepted and
+    ignored", which is exactly the ghost-row shape that made combo-box selection
+    look successful while the value never changed.
+    """
+    for attempt in range(_SELECT_READBACK_ATTEMPTS):
+        try:
+            selected = bool(pattern.CurrentIsSelected)
+        except Exception:  # noqa: BLE001 - unreadable is not a failure
+            return None
+        if selected:
+            return False
+        if attempt < _SELECT_READBACK_ATTEMPTS - 1:
+            time.sleep(_SELECT_READBACK_DELAY_S)
+    return True
 
 
 class _PatternMissing(Exception):

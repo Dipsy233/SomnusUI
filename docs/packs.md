@@ -121,9 +121,10 @@ caps:
 * **`effects`** is how the verifier knows an action worked. Supported forms:
   `ref.field += N`, `-=`, `=`, `!=`, `contains`, `startswith`. Effects on
   fields the runtime cannot observe are treated as *unverifiable*, and the
-  action returns `OK_UNVERIFIED` rather than failing.
-* **`risk: critical`** (or a critical capability name) forces
-  `CONFIRMATION_REQUIRED` unless the host pre-confirms.
+  action returns `OK_UNVERIFIED` without failing.
+* **`risk: critical`** (or a critical capability name) is printed as `!` in
+  SUI-Text. It is descriptive only: this build has no confirmation gate, so the
+  capability executes directly when called.
 
 The `key` field is the fingerprint primary key: prefer `$self.automation_id`
 or a pack member's automation id. When `key` resolves, volatile names are
@@ -131,7 +132,7 @@ excluded from the fingerprint, so a changing label never invalidates a ref.
 
 ### Conditional steps and the synthetic-input fallbacks
 
-A `via` entry may be a mapping instead of a string, gating the step on the
+A `via` entry may be a mapping or a string, gating the step on the
 native patterns the target exposes. The condition is evaluated at **compile
 time**, so the resolver only ever receives steps the target can actually run,
 and the LLM never sees the fallback primitive.
@@ -178,9 +179,8 @@ What a pack adds is *certainty*, not reachability:
 | Match basis | name + native pattern | `class_name` / `automation_id` (language-independent) |
 | Domain actions | the primitive vocabulary | semantic caps (`add`, `submit`, ...) |
 
-Generic capabilities are derived only from patterns, so they never guess
-(generic capabilities never guess); a control that exposes no pattern gets no capability
-rather than a wrong one.
+Generic capabilities are derived only from patterns and are never guessed; a
+control that exposes no pattern gets no capability.
 
 ### Write a pack when
 

@@ -5,12 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-ActionKind = Literal["call", "find", "inspect", "observe", "unknown"]
+ActionKind = Literal["call", "find", "inspect", "observe", "unknown", "await"]
 
 
 @dataclass(slots=True)
 class Action:
-    """A parsed, validated LLM request."""
+    """A parsed, validated LLM request.
+
+    ``kind="await"`` is a script's waiting step: ``query_type`` fills the
+    optional TYPE, ``query`` the name, ``scope`` the optional ``in REF`` and
+    ``timeout`` the optional wait in seconds (``None`` = the runtime default).
+    """
 
     kind: ActionKind
     ref: str | None = None
@@ -24,6 +29,8 @@ class Action:
     range: tuple[int, int] | None = None
     window: str | None = None
     rev: int | None = None
+    #: script AWAIT's optional wait, in seconds.
+    timeout: float | None = None
     raw: str = ""
 
 

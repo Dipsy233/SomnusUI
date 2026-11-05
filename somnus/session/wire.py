@@ -67,6 +67,7 @@ def window_to_dict(window: WindowInfo) -> dict[str, Any]:
         "visible": window.visible,
         "rect": list(window.rect) if window.rect else None,
         "hwnd": window.hwnd,
+        "frame": window.frame,
     }
 
 
@@ -81,6 +82,7 @@ def window_from_dict(data: dict[str, Any]) -> WindowInfo:
         visible=data.get("visible", True),
         rect=tuple(rect) if rect else None,
         hwnd=int(data.get("hwnd") or 0),
+        frame=bool(data.get("frame", False)),
     )
 
 
@@ -133,6 +135,36 @@ def raw_tree_from_dict(data: dict[str, Any]) -> RawTree:
         root=raw_node_from_dict(data["root"]),
         raw_revision=data.get("raw_revision", 0),
     )
+
+
+def viewport_meta_to_dict(meta: dict[str, dict[tuple[int, ...], dict]] | None) -> dict:
+    """Serialize container viewport metadata, keeping ``native_path`` explicit.
+
+    The provider keys this map by a native path tuple; JSON has no tuple keys,
+    so each container becomes one entry whose ``native_path`` is that path.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for window_id, containers in (meta or {}).items():
+        entries = []
+        for path, info in (containers or {}).items():
+            entry = dict(info)
+            entry["native_path"] = list(path)
+            entries.append(entry)
+        out[window_id] = entries
+    return out
+
+
+def viewport_meta_from_dict(data: dict | None) -> dict[str, dict[tuple[int, ...], dict]]:
+    out: dict[str, dict[tuple[int, ...], dict]] = {}
+    for window_id, entries in (data or {}).items():
+        containers = {}
+        for entry in entries or ():
+            path = tuple(entry.get("native_path") or ())
+            containers[path] = {
+                key: value for key, value in entry.items() if key != "native_path"
+            }
+        out[window_id] = containers
+    return out
 
 
 # ---------------------------------------------------------------------------

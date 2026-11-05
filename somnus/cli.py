@@ -18,7 +18,6 @@ Global options::
     --demo                       use the built-in restaurant demo fixtures
     --pack ID                    force an app pack
     --allow PROCESS              allow-list a process (repeatable)
-    --confirmed                  pre-confirm critical actions
     --allow-clipboard            permit the Ctrl+V channel for this run
     --allow-keyboard             permit synthetic typing for this run
     --config PATH                read settings from PATH
@@ -50,6 +49,7 @@ def _load_fixture(path: str):
 
 def build_session(args: argparse.Namespace) -> Session:
     from somnus.config import load as load_settings
+    from somnus.runtime.settle import Settler
 
     # Read once per session so the flag/config/env precedence is applied in one
     # place (see somnus/config.py).
@@ -98,7 +98,6 @@ def build_session(args: argparse.Namespace) -> Session:
 
     policy = Policy(
         allow_processes=tuple(args.allow or ()) or settings.allow_processes,
-        confirmed=bool(args.confirmed),
         # Synthetic input is on by default in this build (see
         # somnus/config.py): the flag is a one-run override in either
         # direction, `settings` is the persistent answer, and None means "let
@@ -120,8 +119,16 @@ def build_session(args: argparse.Namespace) -> Session:
         provider,
         pack_id=args.pack,
         policy=policy,
+        settler=Settler(
+            quiet_ms=settings.settle_quiet_ms,
+            poll_interval_ms=settings.settle_poll_ms,
+            timeout_s=settings.settle_timeout_s,
+            skip_when_deterministic=bool(getattr(provider, "is_deterministic", False)),
+        ),
         allow_packs=not getattr(args, "no_pack", False),
     )
+    # Session-scope switch, also updated later by ``configure``.
+    session.post_action_enum = settings.post_action_enum
 
     # Remember how to rebuild a local provider. ``Session.switch_session`` swaps
     # providers (only one may hold UIA state, so the old one is released), and
@@ -390,6 +397,9 @@ def cmd_child_session(args: argparse.Namespace) -> int:
             bridge.close()
         return 0
 
+    if action == "run":
+        return _child_run(args)
+
     if action == "start":
         visible = not getattr(args, "headless", False)
         auto = getattr(args, "auto", False)
@@ -464,6 +474,208 @@ def cmd_child_session(args: argparse.Namespace) -> int:
     return 2
 
 
+def _child_run(args: argparse.Namespace) -> int:
+    """Run one command on the child desktop and report its exit code + output.
+
+    The command is started *by the peer*, i.e. by a process that already lives in
+    the child session. A program launched there inherits that session's window
+    station and desktop without any privilege: no ``CreateProcessAsUser``, no
+    token duplication, no elevation. That is the supported way to put test
+    windows on the child desktop.
+
+    Output is redirected to files under ``%TEMP%\\somnusui-child-run``; the last
+    run's directory is kept and printed, older ones are removed.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from somnus.session import childsession, lifecycle
+    from somnus.session.bridge import PeerBridge
+    from somnus.session.launch import ChildSessionRun, HostMissing
+
+    command = list(getattr(args, "command", []) or [])
+    while command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print(
+            "usage: somnus child-session run [--cwd DIR] [--timeout S] -- "
+            "CMD [ARGS...]",
+            file=sys.stderr,
+        )
+        return 2
+
+    timeout_s = float(getattr(args, "timeout", 600.0))
+    if timeout_s <= 0:
+        print("--timeout must be positive", file=sys.stderr)
+        return 2
+    cwd = getattr(args, "cwd", None) or None
+    if cwd is not None and not Path(cwd).is_dir():
+        print(f"cwd is not a directory: {cwd}", file=sys.stderr)
+        return 2
+
+    live = childsession.live_child_session()
+    if live is None:
+        print(
+            "child session: none open; starting one (auto-logon, headless)...",
+            file=sys.stderr,
+        )
+        run = ChildSessionRun(visible=False, auto_logon=True)
+        try:
+            run.start()
+        except HostMissing as err:
+            print(str(err), file=sys.stderr)
+            return 1
+        except RuntimeError as err:
+            print(f"cannot open the child session: {err}", file=sys.stderr)
+            return 1
+        if run.child_session_id is None:
+            print("child session did not complete its logon", file=sys.stderr)
+            return 1
+        # This process now owns it; the exit hook closes it unless it is detached.
+        lifecycle.claim(run.child_session_id)
+        run.detach()
+
+    bridge = PeerBridge(connect_timeout=60.0, call_timeout=max(30.0, timeout_s + 30.0))
+    if not bridge.connect():
+        print(
+            "no peer is listening in the child session; register it with "
+            "`somnus child-session peer-setup` and reopen the session",
+            file=sys.stderr,
+        )
+        return 1
+
+    base = Path(tempfile.gettempdir()) / "somnusui-child-run"
+    base.mkdir(parents=True, exist_ok=True)
+    run_dir = base / time.strftime("%Y%m%d-%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for old in list(base.iterdir()):
+        if old.is_dir() and old != run_dir:
+            shutil.rmtree(old, ignore_errors=True)
+    stdout_path = str(run_dir / "stdout.txt")
+    stderr_path = str(run_dir / "stderr.txt")
+
+    try:
+        response = bridge.request(
+            {
+                "method": "process.start",
+                "params": {
+                    "command": command[0],
+                    "args": command[1:],
+                    "cwd": cwd,
+                    "stdout_path": stdout_path,
+                    "stderr_path": stderr_path,
+                },
+            }
+        )
+        if "error" in response:
+            error = response["error"]
+            print(
+                f"ERR {error.get('code', 'NATIVE_EXECUTION_FAILED')} "
+                f"{error.get('message', '')}",
+                file=sys.stderr,
+            )
+            return 1
+        pid = int((response.get("result") or {}).get("pid"))
+
+        started = time.monotonic()
+        timed_out = False
+        exit_code: int | None = None
+        while True:
+            status = bridge.request(
+                {"method": "process.status", "params": {"pid": pid}}
+            )
+            if "error" in status:
+                error = status["error"]
+                print(
+                    f"ERR {error.get('code', 'NATIVE_EXECUTION_FAILED')} "
+                    f"{error.get('message', '')}",
+                    file=sys.stderr,
+                )
+                return 1
+            result = status.get("result") or {}
+            if not result.get("alive"):
+                exit_code = result.get("exit_code")
+                break
+            if time.monotonic() - started > timeout_s:
+                timed_out = True
+                kill = bridge.request(
+                    {"method": "process.kill", "params": {"pid": pid}}
+                )
+                killed = "error" not in kill and (kill.get("result") or {}).get("killed")
+                # Give the OS a moment to reap, then take the final state.
+                for _ in range(10):
+                    time.sleep(0.2)
+                    final = bridge.request(
+                        {"method": "process.status", "params": {"pid": pid}}
+                    )
+                    if "error" not in final and not (final.get("result") or {}).get("alive"):
+                        exit_code = (final.get("result") or {}).get("exit_code")
+                        break
+                print(
+                    f"timeout after {timeout_s:.1f}s; kill="
+                    f"{'ok' if killed else 'FAILED'}",
+                    file=sys.stderr,
+                )
+                break
+            time.sleep(0.2)
+    finally:
+        bridge.close()
+
+    elapsed = time.monotonic() - started
+
+    def _read(path: str) -> str:
+        """Read a redirected stream without assuming the child's encoding.
+
+        A Python child whose stdout is a file uses the locale encoding (cp936
+        here), not UTF-8; reading with one fixed codec turned a correct
+        observation into mojibake. Try UTF-8 first (the common case for tools
+        that emit it), then fall back to the platform's default encoding.
+        """
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            return f"<cannot read {path}: {exc}>"
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            # The child's stdout is a file, so its Python uses the Windows ANSI
+            # code page (cp936 here). Ask Windows for that code page rather than
+            # this process's locale, which PowerShell 7 may have set to UTF-8.
+            try:
+                import ctypes
+
+                acp = int(ctypes.windll.kernel32.GetACP())
+                return data.decode(f"cp{acp}", errors="replace")
+            except (AttributeError, OSError, ValueError):
+                import locale
+
+                return data.decode(
+                    locale.getpreferredencoding(False), errors="replace"
+                )
+
+    stdout_text = _read(stdout_path)
+    stderr_text = _read(stderr_path)
+    print(
+        f"child-session run: pid={pid} exit={exit_code} "
+        f"timeout={'yes' if timed_out else 'no'} elapsed={elapsed:.1f}s"
+    )
+    print(f"stdout [{stdout_path}]:")
+    if stdout_text:
+        print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+    else:
+        print("(empty)")
+    print(f"stderr [{stderr_path}]:")
+    if stderr_text:
+        print(stderr_text, end="" if stderr_text.endswith("\n") else "\n")
+    else:
+        print("(empty)")
+
+    if timed_out:
+        return 124
+    return int(exit_code) if exit_code is not None else 1
+
+
 def cmd_windows(args: argparse.Namespace) -> int:
     session = build_session(args)
     for w in session.refresh_windows():
@@ -494,7 +706,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
 def cmd_call(args: argparse.Namespace) -> int:
     session = build_session(args)
     session.observe()
-    text = session.dispatch(args.action, confirmed=args.confirmed)
+    text = session.dispatch(args.action)
     print(text)
     return 0 if not text.startswith("ERR") else 1
 
@@ -573,7 +785,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--allow", action="append", default=None)
-    parser.add_argument("--confirmed", action="store_true")
     parser.add_argument(
         "--config",
         default=None,
@@ -823,6 +1034,32 @@ def build_parser() -> argparse.ArgumentParser:
         "probe",
         help="ask the peer what it can see (a smoke test for the pipe)",
     ).set_defaults(func=cmd_child_session)
+
+    run_parser = csub.add_parser(
+        "run",
+        help=(
+            "run a command on the child desktop through the peer, then print "
+            "its exit code and full stdout/stderr (output files are kept under "
+            "%%TEMP%%\\somnusui-child-run)"
+        ),
+    )
+    run_parser.add_argument(
+        "--cwd",
+        default=None,
+        help="working directory for the command (default: the peer's own)",
+    )
+    run_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=600.0,
+        help="seconds to wait before killing the command (default 600)",
+    )
+    run_parser.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        help="the command and its arguments, after `--`",
+    )
+    run_parser.set_defaults(func=cmd_child_session)
 
     p = sub.add_parser("record")
     p.add_argument("window", nargs="?")

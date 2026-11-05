@@ -110,6 +110,8 @@ def test_inspect_matches_the_observation(name, builder, scripts):
     obs = session.observe().text
     ref = None
     for line in obs.splitlines():
+        if line.startswith("WINDOWS "):
+            continue  # the desktop summary names windows, not tree nodes
         parts = line.split()
         if len(parts) >= 2 and parts[0].isupper() and re.fullmatch(r"[a-z]+\d+", parts[1]):
             ref = parts[1]

@@ -20,7 +20,7 @@ from somnus.providers.mock import MockProvider
 from somnus.protocol.jsonrpc import JsonRpcServer
 from somnus.protocol.tools import TOOL_SPECS, call_tool
 from somnus.runtime.session import Session
-from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
+from tests.fixtures.builders import demo_scripts, notepad_tree, restaurant_demo_tree
 
 
 @pytest.fixture
@@ -36,11 +36,14 @@ def session():
 # ---------------------------------------------------------------------------
 
 
-def test_the_five_tools_are_advertised():
-    # The four perception/action tools, plus ``switch``, which moves the agent
-    # between the two Windows sessions.
-    names = [spec["name"] for spec in TOOL_SPECS]
-    assert names == ["observe", "find", "inspect", "call", "switch"]
+def test_the_eight_tools_are_advertised():
+    # The four perception/action tools, plus ``switch`` (moves the agent between
+    # the two Windows sessions), ``configure`` (tunes call timing), ``run``
+    # (a CALL/AWAIT script in one round trip) and ``launch`` (starts a program).
+    names = {spec["name"] for spec in TOOL_SPECS}
+    assert names == {
+        "observe", "find", "inspect", "call", "run", "switch", "launch", "configure"
+    }
 
 
 @pytest.mark.parametrize("spec", TOOL_SPECS, ids=lambda s: s["name"])
@@ -63,6 +66,18 @@ def test_only_find_and_call_require_an_argument():
     assert required["find"] == ["query"]
     assert required["inspect"] == ["ref"]
     assert required["call"] == ["action"]
+    assert required["run"] == ["script"]
+    assert required["launch"] == ["command"]
+
+
+def test_no_tool_advertises_a_confirmation_switch():
+    """This build has no confirmation gate, so no tool asks for consent.
+
+    ``!`` on a capability is metadata, not a permission request: every tool
+    executes what it is given.
+    """
+    for spec in TOOL_SPECS:
+        assert "confirmed" not in spec["inputSchema"].get("properties", {}), spec["name"]
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +158,29 @@ def test_a_null_arguments_object_is_tolerated(session):
     # not a crash.
     text = call_tool(session, "observe", None)
     assert "WINDOW w1" in text
+
+
+def test_a_100kb_write_reply_stays_bounded():
+    """The write echo and delta share one 80-character value limit.
+
+    Without it the reply carried the full 100 KB twice: once as the delta's
+    old/new value and once as the `~ ref text=` echo.
+    """
+    from somnus.projection.budget import estimate_tokens
+
+    session = Session(MockProvider(fixtures=[notepad_tree("")]))
+    text = call_tool(session, "observe")
+    ref = next(
+        line.split()[1] for line in text.splitlines() if "INPUT" in line
+    )
+    big = "A" * 100_000
+    out = call_tool(session, "call", {"action": f'CALL {ref}.set_text("{big}")'})
+    assert out.startswith("OK"), out
+    assert "…" in out
+    assert "len=100000" in out
+    assert len(out) < 400, len(out)
+    assert estimate_tokens(out) < 100, estimate_tokens(out)
+    session.close()
 
 
 # ---------------------------------------------------------------------------
