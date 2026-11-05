@@ -601,6 +601,9 @@ Acceptance gates (`python -m somnus.cli bench --runs 100`, mock/fixtures):
 | Task success | ≥ 90% | 100% (median 3 steps) |
 | L0 observation | ≤ 300 tokens | 91 tokens (median and maximum) |
 
+Small, untruncated viewport windows may raise the L0 budget to 80 nodes / depth
+10 / 700 tokens so their controls stay visible.
+
 The isolation check enumerates the actual automation ids, class names and
 runtime ids of the tree under test and asserts that none appears in the text
 the model receives. Application data that resembles an id, such as a form's

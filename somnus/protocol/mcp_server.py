@@ -109,11 +109,13 @@ def _make_call_tool(session: Session):
 
 
 def settings_brief(session: Session) -> str:
-    """The one-time ``initialize`` note: the timing in force and its trade-offs.
+    """The one-time ``initialize`` note: the shared rules and live timing.
 
     MCP sends ``instructions`` when the client initializes, so this costs
-    nothing per turn. It is generated from the live session, not from the
-    defaults, because a settings file may already have changed them.
+    nothing per turn. It carries the rules every tool relies on once; tool
+    descriptions carry only what is specific to that tool. It is generated
+    from the live session, not from the defaults, because a settings file may
+    already have changed them.
     """
     settler = getattr(session, "settler", None)
     quiet = getattr(settler, "quiet_ms", DEFAULT_SETTLE_QUIET_MS)
@@ -121,34 +123,63 @@ def settings_brief(session: Session) -> str:
     timeout = getattr(settler, "timeout_s", DEFAULT_SETTLE_TIMEOUT_S)
     enum = bool(getattr(session, "post_action_enum", DEFAULT_POST_ACTION_ENUM))
     return (
-        f"Settings in this process: settle_quiet_ms={quiet} "
+        "Operate a GUI by calling capabilities on entities; replies are text, "
+        "no pixels/ids.\n"
+        "Refs (w1, p3) come from observe and name elements of the current "
+        "tree; a switch discards every ref. STALE_TARGET = ref no longer "
+        "resolves, find again; relocation prints ~ healed old→new.\n"
+        "observe raises the target window (windows_only does not); an unknown "
+        "window ref observes the current target, or the active/first window "
+        "when none is set.\n"
+        "Syntax: CALL ref.cap(args). A capability belongs to the node printing "
+        "it (+add on PRODUCT = CALL p1.add()). Args: name=value or one "
+        "positional; quote spaces/commas/parentheses; = is the only separator. "
+        'A text write echoes: ~ q1 text="Hello".\n'
+        "observe = tree + refs; find = named-node search incl folded lists, "
+        'query = `FIND [ref] [type] "text" [in ref]` or a keyword; inspect = one '
+        "node's attrs, caps, params, relations.\n"
+        "Implicit caps: focus everywhere, read where text is readable; "
+        "activate where Invoke/LegacyIAccessible exists or role = "
+        "LINK/MENUITEM; toggle CHECKBOX/SWITCH; select "
+        "SELECT(combo)/LISTITEM/TAB/RADIO/ROW/TREEITEM; scroll "
+        "LIST/TREE/TABLE/PANE; context_menu on operable controls except "
+        "MENU/MENUITEM; other roles get these from their pattern. set_text only "
+        "where the node is writable.\n"
+        "select picks (selection only); activate runs the default action "
+        "(press a button, open a file/list row); context_menu opens a menu, no "
+        "menu = OK_UNVERIFIED.\n"
+        "Reply: ~ changed, + added, - removed; trust the delta over the status "
+        "word. OK_UNVERIFIED = ran, no verified effect; empty delta + OK = no "
+        "tree change, inspect. $it binds at AWAIT; earlier use is "
+        "INVALID_ARGUMENT. PARTIAL = steps=N/M, failed-at=K (BATCH may say "
+        "stopped-at=K), rev=R; not-run = unsent. A find-timeout hit from one "
+        "escalated full read is marked (full read).\n"
+        "Limits: call 20 statements, run 40 steps, find prints <=50 hit lines, "
+        "extra hits fold as `… +N more`; strings 80 chars; read returns a "
+        "200-char preview from "
+        "<=4096 chars (truncated=true), inspect with start/end reads more. "
+        "settle_quiet_ms/settle_poll_ms in ms; find/AWAIT/settle timeouts in "
+        "seconds.\n"
+        "L0: 40 nodes, depth 3, 300 tokens; a small untruncated viewport "
+        "(<=120 nodes) may get 80 nodes, depth 10, 700 tokens. Over a limit, "
+        "nodes are omitted and the reply ends with `… +N more`.\n"
+        'observe opens with `WINDOWS w1 "QQ" | w2 "..." active` (<=6, then '
+        "+N more); active = focused. windows_only returns `WINDOWS count=N`, "
+        'then `WINDOW wN "title"` with obs/active flags.\n'
+        "Errors: `ERR CODE ref hint=...`. PARSE_ERROR syntax; "
+        "TARGET_NOT_FOUND/STALE_TARGET find or observe; TARGET_AMBIGUOUS "
+        "refine; CAPABILITY_NOT_FOUND/INVALID_ARGUMENT inspect; "
+        "ACTION_NOT_SUPPORTED/PERMISSION_DENIED report; TARGET_DISABLED "
+        "precondition; EFFECT_NOT_CONFIRMED/TIMEOUT observe.\n"
+        f"Settings: settle_quiet_ms={quiet} "
         f"settle_poll_ms={poll} settle_timeout_s={timeout} "
-        f"post_action_enum={'on' if enum else 'off'}. "
-        "settle_quiet_ms = how long the UI must stay unchanged before an action "
-        "counts as done: smaller = faster calls, too small can read an animation "
-        "mid-flight and mistake a still-disabled button for the settled state; "
-        "larger = safer but every call waits longer. settle_poll_ms = probe "
-        "spacing. settle_timeout_s = hard cap for one settle (the reply then "
-        "says settled=false and still reports the delta). "
-        "post_action_enum=on reports a window the action opened; off saves ~100ms "
-        "per call and can hide it. Change with configure({...}) - session scope; "
-        "persist=true also writes the global config. "
-        "Every observe reply opens with a WINDOWS line "
-        '(`WINDOWS w1 "QQ" ops=12 | w2 "..." active`): ops is that window\'s '
-        "printed capability count, active marks the focused one; pick a wN from "
-        "it instead of a separate observe-windows call. find accepts "
-        "timeout=<seconds> to wait for a match before answering; omit = answer "
-        "from the current tree immediately. run takes script (one step per "
-        "line, max 40) plus an optional window to focus first: steps are "
-        "CALL ref.cap(args), or AWAIT [TYPE] \"name\" [in ref] [timeout=s] "
-        "(2s default) which waits for the element an earlier step opened and "
-        "binds it to $it (CALL $it.cap(args)). Without an AWAIT the whole "
-        "script is validated before the first step runs; with one, each step "
-        "settles before the next and the first failure reports the steps that "
-        "ran. A critical (!) capability runs directly in every tool - this "
-        "build has no confirmation gate. "
-        "Output is RUN OK|PARTIAL steps=N/M, one line per step, then the merged "
-        "delta."
+        f"post_action_enum={'on' if enum else 'off'}. quiet_ms: settle wait; "
+        "smaller = faster, too small can read an animation mid-flight; larger "
+        "= safer. timeout_s: caps one settle (settled=false, delta still "
+        "reported). post_action_enum=on reports an opened window; off saves "
+        "~100ms per call and can hide it. configure(...) sets it; persist=true "
+        "writes global config. Critical (!) caps run directly; no confirmation "
+        "gate."
     )
 
 

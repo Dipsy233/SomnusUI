@@ -30,48 +30,39 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "observe",
         "description": (
-            "Semantic overview (L0) of one window: screens, entities, "
-            "capabilities. No pixels or native ids. Call it first - it assigns "
-            "the refs every other tool uses."
+            "L0 overview; assigns refs. Use first/after switch; find for a "
+            "name. Returns @rev, WINDOWS, tree (`?` unreadable). Read-only; "
+            "unknown ref falls back. Params: window, windows_only, "
+            "include_other_windows."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "window": {
                     "type": "string",
-                    "description": "window ref to focus and observe",
+                    "description": "wN; omitted = current",
                 },
-                "windows_only": {
-                    "type": "boolean",
-                    "description": "window list only, no control tree",
-                },
-                "include_other_windows": {
-                    "type": "boolean",
-                    "description": "also list the rest of the desktop",
-                },
+                "windows_only": {"type": "boolean"},
+                "include_other_windows": {"type": "boolean"},
             },
         },
     },
     {
         "name": "find",
         "description": (
-            "Search the current window, including inside folded lists. Returns "
-            "whole entity lines with their capabilities."
+            "Search current window incl folded lists; returns entity lines. "
+            "Use for a name; observe for layout. FOUND N (50 lines max, then "
+            "`… +N more`) or 0; timeout s waits, expiry ERR TARGET_NOT_FOUND "
+            "after=Ns. Params: query, timeout."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": 'keyword, or FIND syntax: product "Big Mac" [in ref]',
-                },
+                "query": {"type": "string"},
                 "timeout": {
                     "type": "number",
                     "minimum": 0,
-                    "description": (
-                        "seconds to wait for a match before answering; "
-                        "omit = answer immediately"
-                    ),
+                    "description": "s; omitted = once",
                 },
             },
             "required": ["query"],
@@ -80,14 +71,15 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "inspect",
         "description": (
-            "One node in full (L1/L2): attributes, capability params, relations. "
-            "Use it when a call's caps look wrong."
+            "Full node: attrs, caps, params, relations. Use when caps/args look "
+            "wrong. Returns @rev + node or TEXT range=A:B; a viewport miss "
+            "retries one full read. Params: ref, depth, start/end."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "ref": {"type": "string"},
-                "depth": {"type": "integer", "description": "subtree depth"},
+                "depth": {"type": "integer"},
                 "start": {"type": "integer", "description": "text range start"},
                 "end": {"type": "integer", "description": "text range end"},
             },
@@ -97,24 +89,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "call",
         "description": (
-            "Invoke a capability printed on a node: CALL p1.add(). It belongs to "
-            "that node, not its container. Returns OK/ERR plus a delta (trust it "
-            "over the status word). Critical caps (!) run directly. Several "
-            "CALL lines run in order in one call: every step is validated "
-            "before the first runs, with one settle and one delta for the batch. "
-            "Steps must name elements that exist when the batch starts."
+            "Invoke caps; ≤20 CALL lines, one trip. Use for independent; run "
+            "for opened. Returns OK/ERR + delta, or BATCH OK|OK_UNVERIFIED|"
+            "PARTIAL steps=N/M rev=R (PARTIAL adds failed-at|stopped-at=K). "
+            "Steps must exist at start; wN.focus() and context_menu refused."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {
-                    "type": "string",
-                    "description": (
-                        "CALL ref.cap(args), or several of them one per line "
-                        "(max 20) to run as a batch"
-                    ),
-                },
-                "rev": {"type": "integer", "description": "the rev you saw"},
+                "action": {"type": "string"},
+                "rev": {"type": "integer"},
             },
             "required": ["action"],
         },
@@ -122,27 +106,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "run",
         "description": (
-            "Run a whole flow in one call: CALL steps, plus AWAIT "
-            '[TYPE] "name" [in ref] [timeout=s], which binds $it to the '
-            "element an earlier step opened (CALL $it.cap()). A failure stops "
-            "there and reports what ran. Critical (!) steps run directly."
+            "CALL/AWAIT script. Use for opened; call for independent. Returns "
+            "RUN OK|PARTIAL steps=N/M + step lines + delta; AWAIT settles, "
+            "first failure stops. ≤40 steps; AWAIT [TYPE] \"name\" [in ref] "
+            "[timeout=2] binds $it."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "script": {
-                    "type": "string",
-                    "description": (
-                        "one step per line, max 40: CALL ref.cap(args), or "
-                        'AWAIT [TYPE] "name" [in ref] [timeout=s] (2s default) '
-                        "which binds $it; with no AWAIT, every step is validated "
-                        "before the first runs"
-                    ),
-                },
-                "window": {
-                    "type": "string",
-                    "description": "window ref to focus before the first step",
-                },
+                "script": {"type": "string"},
+                "window": {"type": "string", "description": "wN; focus first"},
             },
             "required": ["script"],
         },
@@ -150,9 +123,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "switch",
         "description": (
-            "Move between the user's desktop (main) and a separate session "
-            "(child). One at a time: a switch discards every ref. Use `open` "
-            "when work must not disturb the user."
+            "Switch main/child. open stays off the user. main; child must be "
+            "open; open starts/moves in; close returns; detach keeps running. "
+            "Returns OK + windows; close/detach OK. ERR PERMISSION_DENIED if "
+            "missing."
         ),
         "inputSchema": {
             "type": "object",
@@ -160,11 +134,6 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "target": {
                     "type": "string",
                     "enum": ["main", "child", "open", "close", "detach"],
-                    "description": (
-                        "main = user's desktop; child = the separate session; "
-                        "open = start it and move in; close = end it, back to "
-                        "main; detach = keep it after this process exits"
-                    ),
                 }
             },
             "required": ["target"],
@@ -173,21 +142,37 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "configure",
         "description": (
-            "Tune later calls: settle_quiet_ms (40; smaller is faster but can "
-            "read mid-animation), settle_poll_ms (10), settle_timeout_s (3.0), "
-            "post_action_enum (on; off saves ~100ms/call and can hide a window "
-            "the action opened). persist=true writes the global config; "
-            "reset=true restores startup values."
+            "Tune settle timing; use when calls read mid-animation or slow. "
+            "Params: settle_*, post_action_enum, persist, reset. Returns "
+            "SETTINGS; bad value: ERR INVALID_ARGUMENT, nothing changed."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "settle_quiet_ms": {"type": "integer", "minimum": 10, "maximum": 1000},
-                "settle_poll_ms": {"type": "integer", "minimum": 1, "maximum": 100},
-                "settle_timeout_s": {"type": "number", "minimum": 0.5, "maximum": 30},
-                "post_action_enum": {"type": "boolean"},
-                "persist": {"type": "boolean"},
-                "reset": {"type": "boolean"},
+                "settle_quiet_ms": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 1000,
+                    "description": "ms, 40",
+                },
+                "settle_poll_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "ms, 10",
+                },
+                "settle_timeout_s": {
+                    "type": "number",
+                    "minimum": 0.5,
+                    "maximum": 30,
+                    "description": "s, 3.0",
+                },
+                "post_action_enum": {
+                    "type": "boolean",
+                    "description": "on = report opened",
+                },
+                "persist": {"type": "boolean", "description": "write config"},
+                "reset": {"type": "boolean", "description": "startup values"},
             },
         },
     },
