@@ -102,6 +102,23 @@ _VIEWPORT_MOVING_PRIMITIVES = frozenset(
 #: is ~0ms - cannot spin a core for the whole timeout.
 _FIND_POLL_FLOOR_MS = 20
 
+#: A wait first polls the viewport capture. When that capture is a partial tree
+#: (a popup/pane is not in the viewport's layer) and still fits a full read, the
+#: wait may spend one full read before the deadline. These gates keep that from
+#: turning into a second, unbounded read strategy:
+#:
+#: * the capture must be *untruncated* - a long list's full read is the 3-4s
+#:   case this deliberately refuses;
+#: * the captured tree must be small enough that a full read is plausibly cheap;
+#: * a few polls must already have missed (the element had a chance to appear);
+#: * the read may start only in the first half of the deadline, and its
+#:   conservative cost estimate must fit in the time that is left.
+_FIND_ESCALATE_AFTER_POLLS = 3
+_FIND_ESCALATE_MAX_NODES = 200
+_FIND_ESCALATE_MS_PER_NODE = 3.0
+_FIND_ESCALATE_START_FRACTION = 0.40
+_FIND_ESCALATE_DEADLINE_FRACTION = 0.50
+
 #: A complete capture (nothing truncated) up to this many nodes is read with
 #: one full subtree request instead of the viewport walker. The walker pays a
 #: cache round trip per node, so it only earns that back when it can *cut*
@@ -111,6 +128,19 @@ _FIND_POLL_FLOOR_MS = 20
 #: only guards a pathologically large untruncated window; both paths grow with
 #: the node count and full keeps a single request.
 _SMALL_WINDOW_NODES = 500
+
+#: Observation shaping for the same small-window shape. L0's default budget
+#: (depth 3, 40 nodes, 300 tokens, auto-collapse at 8 homogeneous children)
+#: renders a UWP app as "title bar + two anonymous groups": the calculator's
+#: digit pad lives at depth 5 and its ten buttons collapse as one group. A
+#: window whose *partial* capture was untruncated and this small gets enough
+#: depth/nodes/tokens to show its controls, still bounded so a single
+#: observation stays cheap. Larger or truncated windows keep the L0 budget.
+_SMALL_OBSERVE_NODES = 120
+_SMALL_OBSERVE_MAX_DEPTH = 10
+_SMALL_OBSERVE_MAX_NODES = 80
+_SMALL_OBSERVE_MAX_TOKENS = 700
+_SMALL_OBSERVE_AUTO_COLLAPSE = 1000
 
 #: Default wait for a script's ``AWAIT`` when the step gives no ``timeout=``.
 #: Menus and dialogs in the suite settle well inside this; the cap keeps a
@@ -299,6 +329,11 @@ class Session:
         #: tree node by node for a probe.
         self._last_capture_nodes: int | None = None
         self._last_capture_truncated: bool = False
+        #: The window whose viewport capture was small and untruncated. Its
+        #: observation uses the adaptive budget below, even after a later read
+        #: switched to the full snapshot (the flag is about the window's size,
+        #: not about which read path produced this frame).
+        self._small_observe_window: str | None = None
         #: Which window that capture described. A small window's size says
         #: nothing about another window, so a switch must forget it - otherwise
         #: the first observation of a long-list window would be read in full.
@@ -708,7 +743,10 @@ class Session:
         )
 
     def _snapshot_viewport(
-        self, expanded_paths: set[tuple[int, ...]] | None = None
+        self,
+        expanded_paths: set[tuple[int, ...]] | None = None,
+        *,
+        prefer_full: bool = True,
     ) -> tuple[RawTree, bool]:
         """The ``observe`` snapshot, and whether it is viewport-scoped.
 
@@ -727,7 +765,10 @@ class Session:
         # read with one subtree request. The first capture of a session still
         # uses the walker - there is no evidence yet that the tree is small,
         # and guessing "full" on a long list costs seconds instead of ~50ms.
-        if self._capture_prefers_full():
+        #
+        # ``prefer_full=False`` is the waiting path: it wants viewport polls
+        # and at most one deliberate escalation, not a full read on every poll.
+        if prefer_full and self._capture_prefers_full():
             return self._snapshot(), False
         capture = getattr(self.provider, "snapshot_viewport", None)
         if capture is None:
@@ -1252,6 +1293,18 @@ class Session:
         expand_paths = self._expand_paths(expanded)
         tree, partial = self._snapshot_viewport(expand_paths)
         self._note_capture(tree, partial)
+        # A small, untruncated *viewport* capture is the shape whose controls
+        # sit below L0's depth/nodes/token caps (a UWP app's groups at depth 4,
+        # their buttons at 5-6). Remember that about the window itself: later
+        # full reads of the same window keep the adaptive budget.
+        if partial:
+            small = (
+                (self._last_capture_nodes or 0) <= _SMALL_OBSERVE_NODES
+                and not self._last_capture_truncated
+            )
+            self._small_observe_window = self.target_window if small else None
+        elif self._small_observe_window != self.target_window:
+            self._small_observe_window = None
         # The tree may not describe the window: a refused raise (or an empty
         # capture) is a fact about the *capture*, not about the application.
         # Both would otherwise read as "this window has no controls".
@@ -1283,6 +1336,20 @@ class Session:
         # cap instead of max_tokens + header (found live: Steam L0 came out at
         # 365 tokens against a 300 cap because the 74-token header was extra).
         budget = self.budget.for_level(level)
+        small_observe = (
+            not full and self._small_observe_window == self.target_window
+        )
+        if small_observe:
+            # Depth is the primary fix (L0 stops at 3; UWP buttons are at 5-6).
+            # The token/node floor is what lets those lines survive, and the
+            # raised auto-collapse threshold keeps a 10-button pad from folding
+            # into one `+10 more` group. All three are capped, not removed.
+            budget = ObservationBudget(
+                max_nodes=max(budget.max_nodes, _SMALL_OBSERVE_MAX_NODES),
+                max_depth=max(budget.max_depth, _SMALL_OBSERVE_MAX_DEPTH),
+                max_tokens=max(budget.max_tokens, _SMALL_OBSERVE_MAX_TOKENS),
+                hard_tokens=max(budget.hard_tokens, _SMALL_OBSERVE_MAX_TOKENS),
+            )
         header_tokens = count_tokens("\n".join(header)) if header else 0
         # +6 reserves room for the ``@rev N`` line the renderer prepends.
         body_budget = ObservationBudget(
@@ -1291,7 +1358,13 @@ class Session:
             max_tokens=max(100, budget.max_tokens - header_tokens - 6),
             hard_tokens=budget.hard_tokens,
         )
-        engine = ProjectionEngine(body_budget, l0=(level == 0))
+        engine = ProjectionEngine(
+            body_budget,
+            auto_collapse_threshold=(
+                _SMALL_OBSERVE_AUTO_COLLAPSE if small_observe else 8
+            ),
+            l0=(level == 0),
+        )
         projection = apply_projection(result.root, self._pack_projection())
         # `expanded` may be node ids (a caller that already holds this result)
         # or refs (the text path, which is the only stable handle before this
@@ -1573,7 +1646,13 @@ class Session:
         A miss on a viewport-truncated collection is **not** retried with a full
         read while waiting: that read costs seconds and would push the timeout
         far past its deadline. The timeout reply says which rows were not
-        searched, so the agent can widen the view with ``OBSERVE``.
+        searched, so the agent can widen the view with ``OBSERVE full``.
+
+        A partial capture that did **not** cut rows (a popup or pane outside the
+        captured layer) can afford one full read: after a few zero-hit viewport
+        polls, while still in the first half of the deadline, the wait escalates
+        exactly once. A hit from that read is marked ``(full read)`` so the
+        caller sees why it arrived after the viewport polls came back empty.
         """
         if not isinstance(action, Action):
             action = Action(kind="find", query=str(action), scope=window)
@@ -1598,11 +1677,13 @@ class Session:
         self, action: Action, timeout_s: float, started: float, limit: int
     ) -> str:
         """Re-read the viewport until a match appears or ``timeout_s`` passes."""
-        hits, polls = self._find_wait_hits(action, timeout_s, started)
+        hits, polls, escalated = self._find_wait_hits(action, timeout_s, started)
         if hits:
-            return self._render_find_hits(hits, limit)
+            return self._render_find_hits(hits, limit, full_read=escalated)
         waited = time.monotonic() - started
         message = f"0 matches in {polls} viewport reads"
+        if escalated:
+            message += " (+1 full read)"
         # Only say "not searched" when the capture actually cut something: a
         # viewport read that kept every row (a small window) searched the whole
         # window, and the note would send the agent on a pointless OBSERVE.
@@ -1610,7 +1691,10 @@ class Session:
             bool(node.attrs.get("items_truncated"))
             for node in (self.result.root.walk() if self.result else ())
         ):
-            message += "; rows outside the captured viewport were not searched"
+            message += (
+                "; rows outside the captured viewport were not searched "
+                "(use OBSERVE expand/full for a full read)"
+            )
         # ``ref`` is the slot the error line prints right after the code; the
         # contract for a timed-out wait is ``ERR TARGET_NOT_FOUND after=<s>``.
         return SomnusError(
@@ -1622,18 +1706,25 @@ class Session:
 
     def _find_wait_hits(
         self, action: Action, timeout_s: float, started: float
-    ) -> tuple[list[SemanticNode], int]:
-        """The waiting search, returning the hits and how many reads ran.
+    ) -> tuple[list[SemanticNode], int, bool]:
+        """The waiting search: hits, number of reads, and whether a full read ran.
 
         Shared by ``find(timeout=)`` and a script's ``AWAIT`` so the two wait
         the same way - one implementation, one set of caveats about viewport
         reads. An empty list means the deadline passed without a match.
+
+        One escalation rule, not a strategy: after a few zero-hit viewport
+        polls, a **partial but untruncated** capture of a plausibly-small tree
+        may spend exactly one full read. Truncated collections never escalate -
+        their full read is the multi-second case a short timeout cannot hold -
+        and the deadline gate keeps the one read inside the caller's budget.
         """
         deadline = started + timeout_s
         polls = 0
+        escalated = False
         while time.monotonic() < deadline:
             poll_started = time.monotonic()
-            tree, partial = self._snapshot_viewport()
+            tree, partial = self._snapshot_viewport(prefer_full=False)
             self._note_capture(tree, partial)
             result = self._recompile_with(tree, remember=not partial)
             self._apply_viewport_meta(result)
@@ -1643,7 +1734,22 @@ class Session:
             polls += 1
             hits = self._find_hits(action)
             if hits:
-                return hits, polls
+                return hits, polls, escalated
+
+            if not escalated and self._find_escalation_ready(
+                partial=partial, polls=polls, started=started, timeout_s=timeout_s
+            ):
+                tree = self._snapshot()
+                self._note_capture(tree, False)
+                result = self._recompile_with(tree, remember=True)
+                self._apply_viewport_meta(result)
+                self._watch_natives = []
+                polls += 1
+                escalated = True
+                hits = self._find_hits(action)
+                if hits:
+                    return hits, polls, True
+
             spent_ms = (time.monotonic() - poll_started) * 1000
             if spent_ms < _FIND_POLL_FLOOR_MS:
                 time.sleep(
@@ -1652,7 +1758,36 @@ class Session:
                         max(0.0, deadline - time.monotonic()),
                     )
                 )
-        return [], polls
+        return [], polls, escalated
+
+    def _find_escalation_ready(
+        self, *, partial: bool, polls: int, started: float, timeout_s: float
+    ) -> bool:
+        """Whether this wait may spend its one full read now.
+
+        The gates are deliberately conservative: a truncated capture (a long
+        list) is never eligible, the tree must be small, the element must have
+        been given a few polls to show up, the read must start in the first half
+        of the deadline, and its conservative cost estimate must fit in the time
+        that is left.
+        """
+        if not partial or self._last_capture_truncated:
+            return False
+        if self._last_capture_nodes is None:
+            return False
+        if self._last_capture_nodes > _FIND_ESCALATE_MAX_NODES:
+            return False
+        if polls < _FIND_ESCALATE_AFTER_POLLS:
+            return False
+        elapsed = time.monotonic() - started
+        if elapsed < timeout_s * _FIND_ESCALATE_START_FRACTION:
+            return False
+        if elapsed >= timeout_s * _FIND_ESCALATE_DEADLINE_FRACTION:
+            return False
+        estimate_s = (
+            0.05 + _FIND_ESCALATE_MS_PER_NODE * self._last_capture_nodes / 1000.0
+        )
+        return estimate_s <= timeout_s - elapsed
 
     def await_element(self, action: Action) -> SemanticNode:
         """The element a script's ``AWAIT`` step names, or a timeout error.
@@ -1676,7 +1811,9 @@ class Session:
             self._recompile()
             hits = self._find_hits(action)
         if not hits and timeout_s > 0:
-            hits, polls = self._find_wait_hits(action, timeout_s, started)
+            hits, _polls, _escalated = self._find_wait_hits(
+                action, timeout_s, started
+            )
         waited = time.monotonic() - started
         if hits:
             return hits[0]
@@ -1763,8 +1900,10 @@ class Session:
                 parent_fps.add(node.fingerprint)
         return [m for m in matches if m.fingerprint not in parent_fps]
 
-    def _render_find_hits(self, matches: list[SemanticNode], limit: int) -> str:
-        out = [f"FOUND {len(matches)}"]
+    def _render_find_hits(
+        self, matches: list[SemanticNode], limit: int, *, full_read: bool = False
+    ) -> str:
+        out = [f"FOUND {len(matches)}" + (" (full read)" if full_read else "")]
         # Full capability line: with default caps omitted (the grammars' implicit
         # table), a bare `+context_menu`-only line made the agent believe
         # activate was unavailable (found live: the Steam game row showed only
@@ -1844,24 +1983,40 @@ class Session:
             return self.focus_window(action.ref or "")
 
         # Stale check: the ref must still resolve in the current compilation.
+        # Retry order is deliberately fixed and each step runs at most once:
+        #   1. one recompile (the element may simply be in a newer frame);
+        #   2. one structural relocation by the ref's last-seen locator (a
+        #      mode switch re-parents a button and changes its fingerprint);
+        #   3. the route chain, then one twin retry for "does not answer";
+        #   4. one EFFECT_NOT_CONFIRMED route retry after settle.
+        # There is no loop: a relocation that still fails reports STALE_TARGET.
+        stale_heal_note: str | None = None
         if self.result.find(action.ref or "") is None:
             self._recompile()
             assert self.result is not None
             if self.result.find(action.ref or "") is None:
-                # Tell the agent what the ref *was*, so it can decide whether
-                # the element moved (find again) or is gone (give up).
-                record = self.registry.records.get(action.ref or "")
-                if record is not None:
-                    raise SomnusError(
-                        ErrorCode.STALE_TARGET,
-                        ref=action.ref,
-                        message=(
-                            f"was {record.role} "
-                            + (f"{record.name!r} " if record.name else "")
-                            + "; refind by name (FIND) or observe"
-                        ),
+                relocated = self.registry.relocate(action.ref or "", self.result)
+                if relocated is not None:
+                    new_ref, evidence = relocated
+                    stale_heal_note = (
+                        f"~ healed {action.ref}\u2192{new_ref} (via {evidence})"
                     )
-                raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
+                    action = replace(action, ref=new_ref)
+                else:
+                    # Tell the agent what the ref *was*, so it can decide whether
+                    # the element moved (find again) or is gone (give up).
+                    record = self.registry.records.get(action.ref or "")
+                    if record is not None:
+                        raise SomnusError(
+                            ErrorCode.STALE_TARGET,
+                            ref=action.ref,
+                            message=(
+                                f"was {record.role} "
+                                + (f"{record.name!r} " if record.name else "")
+                                + "; refind by name (FIND) or observe"
+                            ),
+                        )
+                    raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
 
         # Ambiguity is *deferred*, not fatal: a ref that shares a fingerprint
         # with another node still names exactly one node in this compilation,
@@ -2007,6 +2162,11 @@ class Session:
         if written is not None:
             echo = f"~ {effective_ref} text={_q(str(written))}"
             body = f"{body}\n{echo}" if body else echo
+        if stale_heal_note:
+            # A stale ref was relocated and the action then really ran: name
+            # both refs and the evidence, so the agent's next CALL uses one
+            # that resolves in this layout.
+            body = f"{body}\n{stale_heal_note}" if body else stale_heal_note
         if healed:
             # The ref the caller named had no usable twin answer; the same
             # element (same fingerprint) did. Say which one acted, so the agent's
@@ -3469,6 +3629,7 @@ class Session:
         self._watch_natives = []
         self._last_capture_nodes = None
         self._last_capture_truncated = False
+        self._small_observe_window = None
         self._last_capture_window = None
         self._prev_structured = None
         self.rev = 0

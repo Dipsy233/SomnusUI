@@ -34,7 +34,9 @@ pytestmark = pytest.mark.windows
 #: A live application's first paint plus UIA registration is not instant.
 _WINDOW_TIMEOUT = 25.0
 
-_CALC_IMAGES = ["CalculatorApp.exe", "calc.exe"]
+#: ``calc.exe`` is only the activation launcher; the UWP window belongs to
+#: ``CalculatorApp.exe``, which is what UIA reports as the window process.
+_CALC_IMAGES = ["CalculatorApp.exe"]
 _NOTEPAD_IMAGES = ["Notepad.exe", "notepad.exe"]
 _PAINT_IMAGES = ["mspaint.exe"]
 _CHARMAP_IMAGES = ["charmap.exe"]
@@ -88,7 +90,7 @@ def _kill_pids(pids: set[int]) -> None:
 
 
 @pytest.fixture
-def apps():
+def apps(wait_for_window):
     """Launch live applications and guarantee only those are cleaned up.
 
     Modelled on the scenario fixture in ``test_windows_scenarios.py``: each
@@ -128,29 +130,18 @@ def apps():
         proc = subprocess.Popen([exe])
         procs.append(proc)
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            session.refresh_windows()
-            match = next(
-                (
-                    w
-                    for w in session.windows
-                    if w.process.lower() == process.lower()
-                    and (title is None or title in (w.title or ""))
-                ),
-                None,
-            )
-            if match is not None:
-                break
-            time.sleep(0.4)
-        else:
-            raise AssertionError(
-                f"{exe}: window for process {process!r} did not appear "
-                f"(launcher_returncode={proc.poll()}, pids_now={sorted(_image_pids(images))}); "
-                f"windows={[(w.window_id, w.title, w.process) for w in session.windows]}"
-            )
+        # UIA publishes the window after the HWND exists and after it is shown;
+        # the shared wait polls for an allow-listed, visible window and fails
+        # with desktop diagnostics instead of hiding the race behind a sleep.
+        window = wait_for_window(
+            session,
+            process=process,
+            title=title,
+            timeout=timeout,
+            proc=proc,
+        )
         session.observe()
-        return session, match
+        return session, window
 
     try:
         yield SimpleNamespace(launch=launch)
@@ -368,17 +359,20 @@ def test_calculator_does_7_times_8_with_a_real_key_sequence(apps):
 
 
 def test_calculator_switches_to_scientific_and_reports_ref_changes(apps):
-    """Standard -> Scientific: new buttons appear, changed refs go STALE.
+    """Standard -> Scientific: new buttons appear, and moved refs are healed.
 
     Observed facts on this build (asserted below):
 
     * the mode item is a LISTITEM whose ``activate`` is refused by UIA
       (``ACTION_NOT_SUPPORTED``); ``select`` is the route that works;
-    * buttons that only exist in standard mode (the digit pad) are re-created
-      by the switch, so their old ref is reported ``STALE_TARGET`` - it is
-      not silently relocated to the same-looking new button;
+    * the digit pad is re-parented by the switch, so its old fingerprint no
+      longer matches. The registry relocates the same ``七`` by its last-seen
+      role/name/index evidence and the call returns ``OK`` with a ``~ healed``
+      note naming the new ref - it does not dead-end at STALE_TARGET;
     * an element that survives the switch (the result display, automation id
-      ``CalculatorResults``) keeps its old ref and still resolves.
+      ``CalculatorResults``) keeps its old ref and still resolves;
+    * a scientific-only button with no standard-mode counterpart has nowhere
+      to relocate to, so the switch back keeps the honest STALE_TARGET error.
     """
     session, _ = apps.launch(
         "calc.exe",
@@ -413,26 +407,32 @@ def test_calculator_switches_to_scientific_and_reports_ref_changes(apps):
     science_only_ref = _first_ref(obs.text, role="BUTTON", name="三角学")
     assert science_only_ref, f"scientific-only button missing from observation:\n{obs.text}"
 
-    # The re-created digit pad: its old ref is stale, and the runtime says so
-    # instead of re-finding by name.
-    stale = session.dispatch(f"CALL {old_seven}.activate()")
-    assert stale.startswith("ERR STALE_TARGET"), stale
-    assert "hint=" in stale, stale
-    fresh_seven = _node(session, name="七", role="button")
-    assert fresh_seven is not None and fresh_seven.ref != old_seven, (
-        f"the switch reused {old_seven} for a different element; fresh={getattr(fresh_seven, 'ref', None)}"
-    )
+    # The re-parented digit: the old ref no longer resolves by fingerprint, but
+    # the last-seen locator finds the same 七 and the call really runs.
+    healed = session.dispatch(f"CALL {old_seven}.activate()")
+    assert healed.startswith(("OK", "OK_UNVERIFIED")), healed
+    assert "~ healed " in healed and "(via " in healed, healed
+    match = re.search(r"~ healed (\S+)\u2192(\S+)", healed)
+    assert match is not None, healed
+    assert match.group(1) == old_seven, healed
+    new_seven = match.group(2)
+    assert new_seven != old_seven, healed
+
+    # The healed ref must be a real, currently addressable element.
+    session.observe()
+    assert session.result.find(new_seven) is not None, healed
 
     # A ref whose native element survived the switch remains usable.
     survived = session.dispatch(f"CALL {old_display}.focus()")
     assert survived.startswith("OK"), survived
     print(
-        f"\n[switch] seven {old_seven} -> {stale.splitlines()[0]}; "
-        f"display {old_display} -> {survived.splitlines()[0]}; "
+        f"\n[switch] seven {old_seven} -> {healed.splitlines()[0]} "
+        f"[{match.group(0)}]; display {old_display} -> {survived.splitlines()[0]}; "
         f"full_observe={obs.tokens} tok, new ref {science_only_ref}"
     )
 
-    # Switching back: the scientific-only button goes stale, standard returns.
+    # Switching back: the scientific-only button has no standard-mode
+    # counterpart to relocate to, so this is the honest STALE failure branch.
     _select_mode(session, "标准 计算器")
     session.observe()
     assert "标准" in _calc_header(session), _calc_header(session)

@@ -38,6 +38,25 @@ from somnus.compiler.compile import CompileResult, RefAllocator
 from somnus.ir.node import SemanticNode
 
 
+@dataclass(frozen=True, slots=True)
+class RefLocator:
+    """Where a ref's element sat when it was last seen.
+
+    A fingerprint is a hash and cannot be searched for in a new tree. This is
+    the small, human-readable evidence needed to relocate the same element
+    after a layout change (a calculator switching from standard to scientific
+    re-parents its digit buttons, so their fingerprints change): role + name,
+    the position among same-role siblings, depth, and the ancestor shape.
+    """
+
+    role: str
+    name_key: str
+    entity: str | None
+    depth: int
+    role_index: int
+    ancestor_key: tuple[tuple[str, str], ...] = ()
+
+
 @dataclass(slots=True)
 class RefRecord:
     """Everything the registry remembers about one session ref."""
@@ -54,6 +73,8 @@ class RefRecord:
     seen: int = 1
     #: Last reconcile pass in which this record matched a live node.
     last_seen: int = 0
+    #: The relocation evidence from that pass (see :meth:`SessionRegistry.relocate`).
+    locator: RefLocator | None = None
 
 
 @dataclass(slots=True)
@@ -109,6 +130,10 @@ class SessionRegistry:
         # How many nodes in the *current* tree carry each fingerprint. Only a
         # fingerprint with >1 live node is genuinely ambiguous.
         fp_counts = Counter(node.fingerprint for node in result.root.walk())
+        #: id(node) -> relocation evidence. One extra walk over an already
+        #: compiled tree (microseconds), and it is the only way a stale ref can
+        #: be found again after a re-parenting changed its fingerprint.
+        locators = _locator_map(result.root)
         rewritten: dict[str, str] = {}
         #: refs already claimed during *this* reconcile pass. A fingerprint may
         #: legitimately repeat (anonymous panes), so a ref can be reused by only
@@ -134,6 +159,7 @@ class SessionRegistry:
                         record.seen += 1
                         record.name = node.name
                         record.last_seen = self._reconcile_counter
+                        record.locator = locators.get(id(node))
                         claimed.add(ref)
                         report.kept.append(ref)
                         self.by_fingerprint[key] = [ref]
@@ -148,6 +174,7 @@ class SessionRegistry:
                     record.seen += 1
                     record.name = node.name
                     record.last_seen = self._reconcile_counter
+                    record.locator = locators.get(id(node))
                     claimed.add(ref)
                     report.kept.append(ref)
                     if ref != old_ref:
@@ -176,6 +203,7 @@ class SessionRegistry:
                 name=node.name,
                 window_id=window_id,
                 last_seen=self._reconcile_counter,
+                locator=locators.get(id(node)),
             )
             self.by_fingerprint.setdefault(key, []).append(new_ref)
             report.new.append(new_ref)
@@ -250,6 +278,107 @@ class SessionRegistry:
             if fp == fingerprint:
                 out.extend(refs)
         return out
+
+    def relocate(self, ref: str, result: CompileResult) -> tuple[str, str] | None:
+        """Find the node a stale ref used to name, in the current tree.
+
+        Only called from the STALE_TARGET path, after one recompile. The
+        fingerprint hash cannot be searched for, so the last-seen locator is
+        matched instead: same role, same (normalized) name or entity, then the
+        best structural evidence (same role-index, depth, ancestor chain).
+
+        Returns ``(new_ref, evidence)`` when exactly one candidate wins. A
+        missing record, a different window, or a tie all return ``None`` - the
+        caller then keeps the original STALE_TARGET error rather than silently
+        acting on a lookalike.
+        """
+        record = self.records.get(ref)
+        old = record.locator if record is not None else None
+        if record is None or old is None:
+            return None
+        window_id = _window_of(result)
+        if record.window_id and record.window_id != window_id:
+            return None
+        # A role-only match is too weak to be called a relocation.
+        if not old.name_key and not old.entity:
+            return None
+
+        locators = _locator_map(result.root)
+        scored: list[tuple[int, str, RefLocator]] = []
+        for node in result.root.walk():
+            locator = locators.get(id(node))
+            if locator is None or locator.role != old.role:
+                continue
+            if old.name_key:
+                if locator.name_key != old.name_key:
+                    continue
+            elif old.entity and locator.entity != old.entity:
+                continue
+            scored.append((_locator_score(old, locator), node.ref, locator))
+        if not scored:
+            return None
+        best = max(score for score, _ref, _locator in scored)
+        winners = [item for item in scored if item[0] == best]
+        if len(winners) != 1:
+            return None
+        _score, new_ref, locator = winners[0]
+        if new_ref == ref:
+            return None
+
+        evidence = [f"role={locator.role}"]
+        if record.name:
+            evidence.append(f"name={record.name!r}")
+        evidence.append(f"index={locator.role_index}")
+        if locator.depth == old.depth:
+            evidence.append(f"depth={locator.depth}")
+        return new_ref, " ".join(evidence)
+
+
+def _name_key(name: str | None) -> str:
+    return " ".join((name or "").split()).casefold()
+
+
+def _locator_map(root: SemanticNode) -> dict[int, RefLocator]:
+    """Relocation evidence for every node in one compiled tree."""
+    out: dict[int, RefLocator] = {}
+
+    def walk(
+        node: SemanticNode,
+        depth: int,
+        ancestors: tuple[tuple[str, str], ...],
+        role_index: int,
+    ) -> None:
+        out[id(node)] = RefLocator(
+            role=node.role,
+            name_key=_name_key(node.name),
+            entity=node.entity,
+            depth=depth,
+            role_index=role_index,
+            ancestor_key=ancestors[-4:],
+        )
+        child_ancestors = ancestors + ((node.role, _name_key(node.name)),)
+        counts: dict[str, int] = {}
+        for child in node.children:
+            index = counts.get(child.role, 0)
+            counts[child.role] = index + 1
+            walk(child, depth + 1, child_ancestors, index)
+
+    walk(root, 0, (), 0)
+    return out
+
+
+def _locator_score(old: RefLocator, new: RefLocator) -> int:
+    score = 0
+    if old.role_index == new.role_index:
+        score += 2
+    if old.depth == new.depth:
+        score += 1
+    common = 0
+    for a, b in zip(reversed(old.ancestor_key), reversed(new.ancestor_key)):
+        if a != b:
+            break
+        common += 1
+    return score + common
 
 
 def _window_of(result: object) -> str:

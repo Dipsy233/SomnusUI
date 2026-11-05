@@ -20,7 +20,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -79,7 +78,7 @@ def _automation_refs(session) -> dict[str, str]:
     }
 
 
-def test_the_send_button_flip_is_caught_by_the_layered_probe(sendgate_app):
+def test_the_send_button_flip_is_caught_by_the_layered_probe(sendgate_app, wait_for_window):
     from somnus.providers.base import get_provider
     from somnus.runtime.policy import Policy
     from somnus.runtime.session import Session
@@ -91,14 +90,14 @@ def test_the_send_button_flip_is_caught_by_the_layered_probe(sendgate_app):
         provider, policy=Policy(allow_clipboard=True), settler=settler, allow_packs=False
     )
     try:
-        deadline = time.monotonic() + _WINDOW_TIMEOUT
-        while time.monotonic() < deadline:
-            session.refresh_windows()
-            if any("Send Gate" in (w.title or "") for w in session.windows):
-                break
-            time.sleep(0.4)
-        else:
-            raise AssertionError("send gate window did not appear")
+        wait_for_window(
+            session,
+            process="sendgate.exe",
+            title="Send Gate",
+            timeout=_WINDOW_TIMEOUT,
+            proc=proc,
+            fail_if_exited=True,
+        )
 
         session.observe()
         # The viewport capture must have established the watched set; without

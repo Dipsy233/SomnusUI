@@ -19,7 +19,6 @@ host is safe; constructing :class:`UiaProvider` will raise ``RuntimeError``.
 
 from __future__ import annotations
 
-import functools
 import logging
 import os
 import sys
@@ -168,6 +167,15 @@ _ROW_ROLES = frozenset({"listitem", "treeitem", "dataitem", "row", "griditem"})
 #: How deep the structural skeleton is read before a non-collection node is
 #: taken as-is. The visible/structural part of a normal window is 2-3 levels.
 _VIEWPORT_MAX_DEPTH = 4
+
+#: A first capture whose whole tree is this small is re-walked deeper in the
+#: same request. UWP applications wrap every actionable control in 3-4 levels of
+#: landing-target/NavView/group containers: the depth-4 skeleton reaches the
+#: groups but not their buttons (a calculator at 38 nodes rendered only the
+#: title bar). The re-walk is bounded to small *and untruncated* trees, so a
+#: long list keeps the cheap viewport walk and never pays a deeper read.
+_VIEWPORT_DEEP_NODES = 120
+_VIEWPORT_DEEP_MAX_DEPTH = 10
 #: A node with at least this many same-typed row children is treated as a
 #: collection even when its role does not say so.
 _VIEWPORT_MIN_ROWS = 8
@@ -676,6 +684,22 @@ class UiaProvider:
             self._element_cache.clear()
             root = self._viewport_node(el, 0, max_depth, (), window_rect, expanded_paths)
             self.last_viewport_partial = True
+            # Small, untruncated window: the depth-4 skeleton is the title bar
+            # plus the top of the content (UWP controls live two containers
+            # deeper). Re-walk it deeper in the same call so a default observe
+            # carries the actionable controls; a long/truncated list never gets
+            # here, so its cheap viewport walk is unchanged.
+            if self._viewport_should_deepen(root):
+                self._element_cache.clear()
+                self.viewport_meta = {}
+                root = self._viewport_node(
+                    el,
+                    0,
+                    _VIEWPORT_DEEP_MAX_DEPTH,
+                    (),
+                    window_rect,
+                    expanded_paths,
+                )
         except Exception as exc:  # noqa: BLE001 - fall back to the full read
             # A provider that cannot answer a shallow cache (or an element that
             # dies mid-capture) must not leave observe with a partial tree: the
@@ -690,6 +714,27 @@ class UiaProvider:
             if self.timing is not None:
                 _add_timing(self.timing, "viewport_ms", started)
         return RawTree(window=win_info, root=root, raw_revision=0)
+
+    def _viewport_should_deepen(self, root: RawNode) -> bool:
+        """Whether the just-taken skeleton is small enough to read deeper.
+
+        A truncated collection means the first walk already cut rows; reading
+        deeper would multiply the expensive part (the rows) instead of just
+        adding the two or three structural levels a UWP app hides its controls
+        under. The node count is the cheap, already-in-hand evidence.
+        """
+        nodes = 0
+        for node in root.walk():
+            nodes += 1
+            if node.truncated:
+                return False
+        if nodes > _VIEWPORT_DEEP_NODES:
+            return False
+        for containers in self.viewport_meta.values():
+            for meta in containers.values():
+                if meta.get("items_truncated"):
+                    return False
+        return True
 
     def _viewport_node(
         self,
@@ -1788,17 +1833,16 @@ def _add_timing(sink: dict[str, float], name: str, started: float) -> None:
     sink[name] = sink.get(name, 0.0) + (time.perf_counter() - started) * 1000
 
 
-@functools.lru_cache(maxsize=256)
 def _process_name(pid: int) -> str:
-    """The image name for a pid, cached for the provider's lifetime.
+    """The image name for a pid, read live.
 
-    One ``OpenProcess`` + ``QueryFullProcessImageName`` per window per
-    enumeration is pure overhead when the same desktop is enumerated on every
-    call (and again after every action, see ``post_action_enum``). A pid's image
-    cannot change while the process lives, and while pid numbers are reused, a
-    stale name would only mislabel a window it no longer describes for the rest
-    of that process's own lifetime - the window ids already key on the hwnd,
-    not on this string.
+    Deliberately *not* cached. Windows reuses pid numbers, and a cache keyed by
+    pid outlives the process it described: in one full E2E run a freshly
+    launched app inherited a pid that had belonged to another app, so every
+    enumeration saw the old image name and the allow-list filtered the real
+    window out - the fixture's wait then reported "window did not appear" while
+    the process was plainly running. The read itself is ~8us, so caching bought
+    almost nothing and cost correctness.
     """
     try:
         import ctypes
