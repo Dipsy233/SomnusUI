@@ -77,6 +77,10 @@ class WindowInfo:
     #: stable - raising a window for rendering can reorder the walk. The hwnd
     #: is what makes a window id keep naming the same window across both.
     hwnd: int = 0
+    #: True when this entry is a UWP ``ApplicationFrameWindow`` whose content
+    #: belongs to another process. The reply marks the pair so the model does
+    #: not have to guess which row is the content window.
+    frame: bool = False
 
 
 # ---------------------------------------------------------------------------

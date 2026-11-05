@@ -576,11 +576,13 @@ class UiaProvider:
         # A UWP app is hosted by ApplicationFrameHost.exe; the real application
         # (e.g. SystemSettings.exe) owns the content inside the frame. Report the
         # real process so packs match the app, not the host.
+        is_frame = False
         if proc.lower() == "applicationframehost.exe":
             real_pid = self._uwp_content_pid(el)
             if real_pid:
                 pid = real_pid
                 proc = _process_name(pid)
+                is_frame = True
         if self.allow_list and proc.lower() not in self.allow_list:
             return
         # The same native window must not be listed twice. Windows with a
@@ -634,6 +636,7 @@ class UiaProvider:
                 pid=pid,
                 active=bool(el.CurrentHasKeyboardFocus),
                 hwnd=hwnd,
+                frame=is_frame,
             )
         )
 

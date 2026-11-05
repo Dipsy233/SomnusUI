@@ -67,6 +67,7 @@ def window_to_dict(window: WindowInfo) -> dict[str, Any]:
         "visible": window.visible,
         "rect": list(window.rect) if window.rect else None,
         "hwnd": window.hwnd,
+        "frame": window.frame,
     }
 
 
@@ -81,6 +82,7 @@ def window_from_dict(data: dict[str, Any]) -> WindowInfo:
         visible=data.get("visible", True),
         rect=tuple(rect) if rect else None,
         hwnd=int(data.get("hwnd") or 0),
+        frame=bool(data.get("frame", False)),
     )
 
 

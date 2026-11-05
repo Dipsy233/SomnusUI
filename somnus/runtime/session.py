@@ -14,6 +14,7 @@ Everything returned here is SUI-Text. Native identity never leaves the session.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import subprocess
@@ -361,7 +362,29 @@ class Session:
 
     def refresh_windows(self) -> list[WindowInfo]:
         with _timed(self.timing, "enum"):
-            self.windows = self.provider.list_windows()
+            listed = self.provider.list_windows()
+        self._adopt_windows(listed)
+        return self.windows
+
+    def _adopt_windows(self, listed: list[WindowInfo]) -> None:
+        """Take one enumeration as the desktop, one ref per native window."""
+        # One native top-level window gets one ref. A UWP host can report the
+        # same HWND twice (frame + content); keeping both created two window
+        # refs for one element, and only one of them resolved in the tree.
+        unique: list[WindowInfo] = []
+        seen: dict[int, int] = {}
+        for window in listed:
+            if not window.hwnd:
+                unique.append(window)
+                continue
+            if window.hwnd in seen:
+                index = seen[window.hwnd]
+                if window.window_id == self.target_window:
+                    unique[index] = window
+                continue
+            seen[window.hwnd] = len(unique)
+            unique.append(window)
+        self.windows = unique
         # Record what the desktop looked like *when this list was taken*, so a
         # later post-action comparison can tell "nothing appeared/closed/renamed"
         # without paying for another UIA walk. An unknown signature (no provider
@@ -369,7 +392,6 @@ class Session:
         self._top_level_sig = self._read_top_level_signature()
         if self.target_window is None and self.windows:
             self.target_window = self._default_window()
-        return self.windows
 
     def _read_top_level_signature(self) -> object | None:
         """The provider's cheap desktop signature, or None when unavailable."""
@@ -1505,13 +1527,25 @@ class Session:
         """
         lines = [f"WINDOWS count={len(self.windows)}"]
         active_id = self._single_active_window_id()
+        refs = self._sync_window_refs(self.result) if self.result is not None else {}
+        frame_titles = {w.title for w in self.windows if w.frame}
+        mixed_titles = {
+            title
+            for title in frame_titles
+            if any(w.title == title and not w.frame for w in self.windows)
+        }
         for w in self.windows:
-            ref = self._header_window_ref(w.window_id)
+            ref = refs.get(w.window_id) or self._header_window_ref(w.window_id)
             flags = []
             if w.window_id == self.target_window:
                 flags.append("obs")
             if w.window_id == active_id:
                 flags.append("active")
+            if w.title in mixed_titles:
+                # Only a listed frame/content pair is labelled: two separate
+                # instances of one UWP app are both frames, and calling either
+                # "content" would invent a row that does not exist.
+                flags.append("frame" if w.frame else "content")
             suffix = (" " + " ".join(flags)) if flags else ""
             lines.append(f"  WINDOW {ref} {_q(w.title)}{suffix}")
         return "\n".join(lines)
@@ -1723,6 +1757,7 @@ class Session:
         args: Any = None,
         cwd: Any = None,
         window: Any = None,
+        wait_s: Any = 3.0,
     ) -> str:
         """Start a program on the current desktop or the child desktop."""
         try:
@@ -1747,6 +1782,18 @@ class Session:
                         ErrorCode.INVALID_ARGUMENT,
                         message=f"cwd is not a directory: {cwd!r}",
                     )
+            if isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)):
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    message=f"wait_s expected number >= 0 got={wait_s!r}",
+                )
+            if not math.isfinite(float(wait_s)) or float(wait_s) < 0:
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    message=f"wait_s expected number >= 0 got={wait_s!r}",
+                )
+            wait_s = float(wait_s)
+
             use_peer = self.session_label == "child"
             if window is not None:
                 if not isinstance(window, str) or not window.strip():
@@ -1772,9 +1819,51 @@ class Session:
                         ErrorCode.INVALID_ARGUMENT,
                         message=f"unknown window {selected!r}; use wN or child",
                     )
-            if use_peer:
-                return self._launch_on_peer(command, args, cwd)
-            return self._launch_locally(command, args, cwd)
+
+            # Whether the program lands on the desktop the refs currently name.
+            # `window=child` from main starts it on the other desktop: its
+            # windows can be counted there, but the refs that come back are not
+            # valid here, so the reply says so instead of minting names.
+            on_current = not use_peer or self.session_label == "child"
+
+            peer = None
+            owns_peer = False
+            if use_peer and on_current:
+                peer = self.provider
+            elif use_peer:
+                peer = self._connect_launch_peer()
+                owns_peer = True
+            if not use_peer:
+                self.policy.check_process(os.path.basename(command))
+
+            try:
+                baseline_windows = (
+                    self.refresh_windows() if on_current else peer.list_windows()
+                )
+                baseline = {w.window_id for w in baseline_windows}
+                sig_before = None if on_current else self._peer_signature(peer)
+
+                if use_peer:
+                    pid = self._launch_on_peer_pid(peer, command, args, cwd)
+                else:
+                    pid = self._launch_local_pid(command, args, cwd)
+
+                if on_current:
+                    new = self._wait_for_launch_window(baseline, wait_s)
+                else:
+                    new = self._wait_for_peer_launch_window(
+                        peer, baseline, sig_before, wait_s
+                    )
+                return self._launch_reply(
+                    pid,
+                    new,
+                    wait_s,
+                    refs=on_current,
+                    desktop=None if on_current else "child",
+                )
+            finally:
+                if owns_peer:
+                    peer.close()
         except SomnusError as err:
             return err.render()
         except Exception as err:  # noqa: BLE001 - reported, never raised
@@ -1782,8 +1871,29 @@ class Session:
                 ErrorCode.NATIVE_EXECUTION_FAILED, message=str(err)
             ).render()
 
-    def _launch_locally(self, command: str, args: list[str], cwd: str | None) -> str:
-        self.policy.check_process(os.path.basename(command))
+    @staticmethod
+    def _connect_launch_peer():
+        from somnus.session.peerprovider import PeerProvider
+
+        provider = PeerProvider()
+        if not provider.connect():
+            raise SomnusError(
+                ErrorCode.ACTION_NOT_SUPPORTED,
+                message="no peer is running in the child session",
+            )
+        return provider
+
+    @staticmethod
+    def _peer_signature(peer) -> object | None:
+        signature = getattr(peer, "top_level_signature", None)
+        if signature is None:
+            return None
+        try:
+            return signature()
+        except Exception:  # noqa: BLE001 - a hint must never break the call
+            return None
+
+    def _launch_local_pid(self, command: str, args: list[str], cwd: str | None) -> int:
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         proc = subprocess.Popen(
             [command, *args],
@@ -1794,23 +1904,97 @@ class Session:
             close_fds=True,
             creationflags=creationflags,
         )
-        return f"OK pid={proc.pid}\n~ observe windows to see it"
+        return proc.pid
 
-    def _launch_on_peer(
-        self, command: str, args: list[str], cwd: str | None
+    def _launch_reply(
+        self,
+        pid: int,
+        new: list[WindowInfo],
+        wait_s: float,
+        *,
+        refs: bool,
+        desktop: str | None = None,
     ) -> str:
-        from somnus.session.peerprovider import PeerProcessError, PeerProvider
+        lines = [f"OK pid={pid}"]
+        if new:
+            for window in new[:6]:
+                if refs:
+                    ref = self._header_window_ref(window.window_id)
+                    lines.append(f"+ WINDOW {ref} {_q(window.title)}")
+                else:
+                    lines.append(f"+ WINDOW {_q(window.title)}")
+            if len(new) > 6:
+                lines.append(f"+ {len(new) - 6} more")
+            if len(new) > 1:
+                lines.append(f"~ {len(new)} windows from one launch")
+            if desktop is not None:
+                lines.append(f"~ on {desktop}; switch {desktop} to address them")
+        elif desktop is not None:
+            lines.append(f"~ no window in {wait_s:g}s on {desktop}")
+        else:
+            lines.append(f"~ no window in {wait_s:g}s")
+        return "\n".join(lines)
 
-        provider = self.provider
-        created = False
-        if not hasattr(provider, "start_process"):
-            provider = PeerProvider()
-            if not provider.connect():
-                raise SomnusError(
-                    ErrorCode.ACTION_NOT_SUPPORTED,
-                    message="no peer is running in the child session",
-                )
-            created = True
+    def _wait_for_launch_window(
+        self, baseline: set[str], wait_s: float
+    ) -> list[WindowInfo]:
+        """Poll the cheap desktop signature, then enumerate once when it moves."""
+        deadline = time.monotonic() + wait_s
+        while True:
+            if self._desktop_changed() is not False:
+                self.refresh_windows()
+                new = self._launch_windows(baseline, self.windows)
+                if new:
+                    return new
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        self.refresh_windows()
+        return self._launch_windows(baseline, self.windows)
+
+    def _wait_for_peer_launch_window(
+        self,
+        peer,
+        baseline: set[str],
+        sig_before: object | None,
+        wait_s: float,
+    ) -> list[WindowInfo]:
+        """The same bounded wait against another desktop's provider.
+
+        The signature is the only polling cost; a provider without one is
+        enumerated once at the deadline rather than on every tick.
+        """
+        deadline = time.monotonic() + wait_s
+        while True:
+            sig = self._peer_signature(peer)
+            if sig is not None and sig_before is not None and sig != sig_before:
+                windows = peer.list_windows()
+                sig_before = sig
+                new = self._launch_windows(baseline, windows)
+                if new:
+                    return new
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        return self._launch_windows(baseline, peer.list_windows())
+
+    @staticmethod
+    def _launch_windows(
+        baseline: set[str], windows: list[WindowInfo]
+    ) -> list[WindowInfo]:
+        """Windows that were not on the desktop when the program started.
+
+        This is a baseline diff rather than a pid filter: a launcher such as
+        ``calc.exe`` hands the window to another process and exits, so the
+        window a launch produced does not always carry the pid it returned.
+        """
+        return [w for w in windows if w.window_id not in baseline]
+
+    def _launch_on_peer_pid(
+        self, provider, command: str, args: list[str], cwd: str | None
+    ) -> int:
+        from somnus.session.peerprovider import PeerProcessError
+
         try:
             pid = provider.start_process(
                 command,
@@ -1821,10 +2005,7 @@ class Session:
             )
         except PeerProcessError as err:
             raise SomnusError(err.code, message=err.message) from err
-        finally:
-            if created:
-                provider.close()
-        return f"OK pid={pid}\n~ observe windows to see it"
+        return pid
 
     def find(
         self,
@@ -2152,6 +2333,18 @@ class Session:
             self._recompile()
         assert self.result is not None
         node = self.result.find(action.ref or "")
+        if node is None and self._window_by_ref(action.ref or "") is not None:
+            # A window ref from the list names a top-level window, not necessarily
+            # the tree root printed by the last observe. Focus that window and
+            # inspect its root, so every listed wN resolves.
+            window = self._window_by_ref(action.ref or "")
+            self.observe(action.ref or "")
+            assert self.result is not None
+            if self.target_window != window.window_id:
+                # The window vanished between the list and the call; observe
+                # fell back to another one, and its root is not this ref.
+                raise target_not_found(action.ref or "")
+            node = self.result.root
         if node is None and self._viewport_limited:
             # The ref may name a row that is not on screen; the viewport capture
             # never read it. One full read before reporting "no such target".
@@ -2189,6 +2382,15 @@ class Session:
         win = self._window_by_ref(action.ref or "")
         if win is not None and action.capability == "focus":
             return self.focus_window(action.ref or "")
+        if win is not None and self.result.find(action.ref or "") is None:
+            # A listed window ref may differ from the root ref the last observe
+            # printed. Focus and compile that window, then act on its root.
+            self.observe(action.ref or "")
+            assert self.result is not None
+            if self.target_window != win.window_id:
+                raise target_not_found(action.ref or "")
+            if self.result.root.ref != action.ref:
+                action = replace(action, ref=self.result.root.ref)
 
         # Stale check: the ref must still resolve in the current compilation.
         # Retry order is deliberately fixed and each step runs at most once:
@@ -2736,13 +2938,98 @@ class Session:
         try:
             return self._execute_chain(action, resolution), resolution, None
         except SomnusError as err:
+            route_failed = err.code in (
+                ErrorCode.ACTION_NOT_SUPPORTED,
+                ErrorCode.NATIVE_EXECUTION_FAILED,
+            )
+            if action.capability == "set_text" and route_failed:
+                nested = self._nested_text_ref(action.ref or "")
+                if nested is not None:
+                    nested_action = replace(action, ref=nested)
+                    try:
+                        nested_resolution = self._resolve_with_hint(
+                            resolver, nested_action
+                        )
+                        chain = self._execute_chain(nested_action, nested_resolution)
+                        return chain, nested_resolution, nested
+                    except SomnusError:
+                        err.message = (
+                            f"{err.message}; try {nested} (INPUT inside COMBOBOX)"
+                            if err.message
+                            else f"try {nested} (INPUT inside COMBOBOX)"
+                        )
             twin = self._retryable_twin(action, err)
             if twin is None:
+                if action.capability == "set_text" and route_failed:
+                    hint = self._text_failure_hint(action.ref or "")
+                    if hint:
+                        err.message = (
+                            f"{err.message}; {hint}" if err.message else hint
+                        )
                 raise
             twin_action = replace(action, ref=twin)
             twin_resolution = self._resolve_with_hint(resolver, twin_action)
             chain = self._execute_chain(twin_action, twin_resolution)
             return chain, twin_resolution, twin
+
+    def _nested_text_ref(self, ref: str) -> str | None:
+        """A writable INPUT inside a container such as a save-dialog COMBOBOX."""
+        if self.result is None:
+            return None
+        node = self.result.find(ref)
+        if node is None:
+            return None
+        for child in node.walk():
+            if child.ref == ref or child.role != "input":
+                continue
+            if "set_text" in child.cap_names():
+                return child.ref
+        return None
+
+    def _parent_of_ref(self, ref: str):
+        if self.result is None:
+            return None
+        chain = _ref_path(self.result.root, ref)
+        return chain[-2] if len(chain) > 1 else None
+
+    def _combo_text_holders(self, ref: str, *, limit: int = 2) -> list[str]:
+        """Real text fields: INPUTs nested inside a SELECT (a combo box).
+
+        A save dialog lists its folder contents as rows whose cells are also
+        named ``名称`` and also advertise ``set_text``. Those are table cells,
+        not fields: the filename is the INPUT inside the ``文件名`` combo.
+        When a write is aimed at the wrong one, naming the combo's field is
+        the only candidate that is evidence rather than a guess.
+        """
+        if self.result is None:
+            return []
+        out: list[str] = []
+        for node in self.result.root.walk():
+            if node.ref == ref or node.role != "input":
+                continue
+            parent = self._parent_of_ref(node.ref)
+            if parent is None or parent.role != "select":
+                continue
+            if "set_text" not in node.cap_names():
+                continue
+            label = f'{node.ref} (INPUT inside COMBOBOX {parent.name!r})'
+            out.append(label)
+            if len(out) >= limit:
+                break
+        return out
+
+    def _text_failure_hint(self, ref: str) -> str:
+        """A truthful candidate for a failed text write on a non-field node."""
+        node = self.result.find(ref) if self.result is not None else None
+        if node is None:
+            return ""
+        parent = self._parent_of_ref(ref)
+        if node.role == "input" and parent is not None and parent.role == "select":
+            # The target already is the combo's own field; retrying the nested
+            # input is the right move, and naming another ref would be a guess.
+            return ""
+        holders = self._combo_text_holders(ref)
+        return f"try {holders[0]}" if holders else ""
 
     def _execute_chain(
         self, action: Action, resolution, *, steps: list | None = None
@@ -3420,6 +3707,14 @@ class Session:
             return resolver.resolve(action)
         except SomnusError as err:
             if err.code == _E.CAPABILITY_NOT_FOUND and action.capability:
+                if action.capability == "set_text":
+                    combo = self._combo_text_holders(action.ref or "")
+                    if combo:
+                        err.message = (
+                            f"{action.ref} has no set_text (not a text field); "
+                            f"try {combo[0]}"
+                        )
+                        raise
                 holders = self._capability_holders(action.capability)
                 if holders:
                     err.message = (
@@ -3756,26 +4051,40 @@ class Session:
         if not want_child and target not in ("main", "local", "host", "primary"):
             return (
                 f'ERR INVALID_ARGUMENT hint=inspect msg="unknown session '
-                f'{target!r}; use \'main\' or \'child\'"'
+                f'{target!r}; use \'main\' or \'child\'; still on '
+                f'{self.session_label}"'
             )
 
-        here = childsession.current_session_id()
         if childsession.inside_child_session():
-            # Running inside the child session there is nothing to switch to:
-            # this process cannot see the main desktop either.
+            # This process already runs inside the child session. There is no
+            # second desktop to reach, so asking for child is a no-op and
+            # asking for main is an honest refusal. Either way the refs it
+            # already holds keep naming the same desktop.
+            if want_child:
+                self._session_label = "child"
+                return "OK session=child (already here)"
             return (
                 "ERR PERMISSION_DENIED hint=report-user msg=\"this agent is "
                 "running inside the child session, where the main desktop is "
-                "not reachable\""
+                "not reachable; still on child\""
             )
 
         if want_child:
+            if self.session_label == "child":
+                # Already driving the child desktop: connecting a second peer
+                # would fail for a reason that is not about the desktop. Do not
+                # rebuild anything - the refs in hand stay valid.
+                return "OK session=child (already here)"
             if peer_factory is None:
                 from somnus.session.peerprovider import make_peer_provider
 
                 peer_factory = make_peer_provider
             provider = peer_factory()
             if not provider.connect():
+                try:
+                    provider.close()
+                except Exception:  # noqa: BLE001 - teardown
+                    pass
                 child_id = childsession.child_session_id()
                 detail = (
                     f"child session {child_id}"
@@ -3786,30 +4095,55 @@ class Session:
                     f"ERR PERMISSION_DENIED hint=report-user msg=\"cannot reach "
                     f"{detail}: start it with `somnus child-session start`, and "
                     f"run the peer inside it with `somnus child-session peer` "
-                    f"(or register it with `somnus child-session peer-setup`)\""
+                    f"(or register it with `somnus child-session peer-setup`); "
+                    f"still on {self.session_label}\""
                 )
+            try:
+                listed = provider.list_windows()
+            except Exception as err:  # noqa: BLE001 - keep the old desktop intact
+                provider.close()
+                return SomnusError(
+                    ErrorCode.NATIVE_EXECUTION_FAILED,
+                    message=(
+                        f"could not read the child desktop ({err}); still on "
+                        f"{self.session_label}"
+                    ),
+                ).render()
             self._swap_provider(provider)
             self._session_label = "child"
-            windows = self.refresh_windows()
+            self._adopt_windows(listed)
             return (
-                f"OK session=child windows={len(windows)}\n"
+                f"OK session=child windows={len(self.windows)}\n"
                 + self._render_window_list()
             )
 
         # Back to this desktop: rebuild the local provider rather than keeping
         # a second one alive, so there is only ever one provider holding UIA
         # state.
+        if self.session_label == "main":
+            return "OK session=main (already here)"
         if getattr(self, "_local_provider_factory", None) is None:
             return (
                 "ERR ACTION_NOT_SUPPORTED hint=report-user msg=\"this session "
-                "has no local desktop to return to\""
+                "has no local desktop to return to; still on child\""
             )
         provider = self._local_provider_factory()
+        try:
+            listed = provider.list_windows()
+        except Exception as err:  # noqa: BLE001 - keep the child desktop intact
+            provider.close()
+            return SomnusError(
+                ErrorCode.NATIVE_EXECUTION_FAILED,
+                message=(
+                    f"could not read the local desktop ({err}); still on "
+                    f"{self.session_label}"
+                ),
+            ).render()
         self._swap_provider(provider)
         self._session_label = "main"
-        windows = self.refresh_windows()
+        self._adopt_windows(listed)
         return (
-            f"OK session=main windows={len(windows)}\n" + self._render_window_list()
+            f"OK session=main windows={len(self.windows)}\n" + self._render_window_list()
         )
 
     def _swap_provider(self, provider) -> None:
@@ -3864,6 +4198,11 @@ class Session:
     def session_label(self) -> str:
         """Which desktop the refs currently name: ``main`` or ``child``."""
         return getattr(self, "_session_label", "main")
+
+    @property
+    def desktop(self) -> str:
+        """The desktop the current refs name (alias of ``session_label``)."""
+        return self.session_label
 
     def close(self) -> None:
         """Release the provider.

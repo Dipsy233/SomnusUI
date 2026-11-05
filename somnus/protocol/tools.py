@@ -139,8 +139,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "launch",
         "description": (
-            "Start a program; pid. Args: command, args, cwd, window (wN/child; "
-            "current default)."
+            "Start a program; pid + its windows (waits wait_s=3). "
+            "Args: command, args, cwd, window (wN/child)."
         ),
         "inputSchema": {
             "type": "object",
@@ -149,6 +149,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "args": {"type": "array", "items": {"type": "string"}},
                 "cwd": {"type": "string"},
                 "window": {"type": "string"},
+                "wait_s": {"type": "number", "minimum": 0, "default": 3},
             },
             "required": ["command"],
         },
@@ -282,6 +283,7 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
                 args=args.get("args"),
                 cwd=args.get("cwd"),
                 window=args.get("window"),
+                wait_s=args.get("wait_s", 3.0),
             )
         if name == "configure":
             return _configure(session, args)

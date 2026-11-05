@@ -609,6 +609,11 @@ class PeerServer:
                 }
             }
 
+        if method == "provider.top_level_signature":
+            signature = getattr(provider, "top_level_signature", None)
+            value = signature() if signature is not None else None
+            return {"result": {"signature": value}}
+
         if method == "provider.execute":
             result = provider.execute(
                 wire.native_ref_from_dict(params["ref"]),

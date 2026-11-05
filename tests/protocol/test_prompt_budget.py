@@ -1,11 +1,11 @@
 """The model-facing surface stays small and complete.
 
-The system prompt and the five tool descriptions are resent on every turn, so
-their size is a per-turn cost, not a one-off. They are also the only place the
-model learns the protocol: a section dropped to save tokens is a task the model
-can no longer complete. These tests pin both directions - a budget that fails
-loud when the text grows back, and a checklist of the clauses that must survive
-any future compression.
+The system prompt and the tool descriptions are resent on every turn, so their
+size is a per-turn cost, not a one-off. They are also the only place the model
+learns the protocol: a section dropped to save tokens is a task the model can no
+longer complete. These tests pin both directions - a budget that fails loud when
+the text grows back, and a checklist of the clauses that must survive any
+future compression.
 """
 
 from __future__ import annotations
@@ -18,10 +18,11 @@ from somnus.protocol.tools import TOOL_SPECS
 
 PROMPT = Path(__file__).resolve().parents[2] / "somnus" / "protocol" / "system_prompt.md"
 
-#: Ceiling for the prompt + tool descriptions, in estimated tokens. The
-#: compressed text measures ~2300; the headroom absorbs a new clause, not a
-#: re-expansion back to prose.
-MAX_TOKENS = 2700
+#: Ceiling for the prompt + tool descriptions, in estimated tokens. 2646 before
+#: `launch` learned to report its windows; the 20-token allowance for that
+#: clause is the whole headroom, so anything new has to be paid for by
+#: compressing what is already there.
+MAX_TOKENS = 2666
 
 
 def prompt() -> str:

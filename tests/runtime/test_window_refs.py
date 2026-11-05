@@ -13,6 +13,8 @@ These run on the mock provider, so they hold on any platform.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from somnus.providers.mock import MockProvider
@@ -81,3 +83,78 @@ def test_the_allocator_stays_ahead_of_a_pinned_ref():
     registry = SessionRegistry()
     registry.allocator.observe_existing("w7")
     assert registry.allocator.next("w") == "w8"
+
+
+class _DuplicateHandleProvider(MockProvider):
+    """A UWP-shaped enumeration: one HWND reported twice."""
+
+    def list_windows(self):
+        base = super().list_windows()
+        first = replace(base[0], hwnd=0x1234)
+        return [first, replace(first, window_id="w99", title="Notepad")]
+
+
+def test_one_native_window_gets_one_ref():
+    session = Session(_DuplicateHandleProvider(fixtures=[restaurant_demo_tree()]))
+    session.observe(windows_only=True)
+
+    assert len(session.windows) == 1, session.windows
+    lines = [ln for ln in session.observe(windows_only=True).text.splitlines() if "WINDOW w" in ln]
+    assert len(lines) == 1, lines
+    assert "w99" not in "\n".join(lines)
+
+
+def test_every_listed_ref_can_be_inspected_and_focused():
+    first = restaurant_demo_tree()
+    second = _second_window(wid="w2", title="Notepad")
+    session = Session(MockProvider(fixtures=[first, second]))
+
+    text = session.observe(windows_only=True).text
+    refs = [ln.split()[1] for ln in text.splitlines() if ln.startswith("  WINDOW ")]
+    assert len(refs) == 2, text
+
+    for ref in refs:
+        inspected = session.inspect_direct(ref)
+        assert inspected.startswith("@rev"), (ref, inspected)
+        assert session.result is not None and session.result.find(ref) is not None
+        out = session.dispatch(f"CALL {ref}.focus()")
+        assert out.startswith("OK"), (ref, out)
+
+
+def test_a_uwp_frame_and_content_are_labelled():
+    first = restaurant_demo_tree()
+    second = _second_window(wid="w2", title=first.window.title)
+    second.window = replace(second.window, frame=True)
+    session = Session(MockProvider(fixtures=[first, second]))
+
+    text = session.observe(windows_only=True).text
+    lines = [ln for ln in text.splitlines() if ln.startswith("  WINDOW ")]
+    assert any("frame" in ln for ln in lines), lines
+    assert any("content" in ln for ln in lines), lines
+
+    refs = [ln.split()[1] for ln in lines]
+    for ref in refs:
+        session.inspect_direct(ref)
+
+
+def test_a_lone_uwp_frame_is_not_labelled():
+    tree = restaurant_demo_tree()
+    tree.window = replace(tree.window, frame=True)
+    session = Session(MockProvider(fixtures=[tree]))
+
+    text = session.observe(windows_only=True).text
+    line = next(ln for ln in text.splitlines() if ln.startswith("  WINDOW "))
+    assert "frame" not in line and "content" not in line, line
+
+
+def test_two_uwp_instances_are_not_a_frame_content_pair():
+    first = restaurant_demo_tree()
+    first.window = replace(first.window, frame=True)
+    second = _second_window(wid="w2", title=first.window.title)
+    second.window = replace(second.window, frame=True)
+    session = Session(MockProvider(fixtures=[first, second]))
+
+    text = session.observe(windows_only=True).text
+    lines = [ln for ln in text.splitlines() if ln.startswith("  WINDOW ")]
+    assert len(lines) == 2, lines
+    assert all("frame" not in ln and "content" not in ln for ln in lines), lines

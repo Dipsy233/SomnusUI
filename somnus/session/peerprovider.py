@@ -149,6 +149,11 @@ class PeerProvider:
             raise PeerUnavailable(f"snapshot failed: {error.get('message')}")
         return wire.raw_tree_from_dict(tree)
 
+    def top_level_signature(self):
+        """The far session's cheap desktop signature, for launch wait loops."""
+        response = self.ensure().request({"method": "provider.top_level_signature"})
+        return (response.get("result") or {}).get("signature")
+
     def snapshot_viewport(
         self,
         window_id: str,
