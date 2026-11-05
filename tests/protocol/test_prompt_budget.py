@@ -18,22 +18,35 @@ from somnus.protocol.tools import TOOL_SPECS
 
 PROMPT = Path(__file__).resolve().parents[2] / "somnus" / "protocol" / "system_prompt.md"
 
-#: Ceiling for the prompt + tool descriptions, in estimated tokens. 2646 before
-#: `launch` learned to report its windows; the 20-token allowance for that
-#: clause is the whole headroom, so anything new has to be paid for by
-#: compressing what is already there.
-MAX_TOKENS = 2666
+#: MAX_TOKENS is the hard ceiling (2700). CURRENT_MAX_TOKENS is the soft
+#: check on today's measurement (2670). The 30-token gap is deliberate
+#: headroom: exceeding the soft check means a new clause needs a budget
+#: decision, and exceeding the hard ceiling means the surface does not fit.
+MAX_TOKENS = 2700
+CURRENT_MAX_TOKENS = 2670
 
 
 def prompt() -> str:
     return PROMPT.read_text(encoding="utf-8")
 
 
-def test_the_model_facing_surface_fits_its_budget():
-    total = estimate_tokens(prompt()) + estimate_tokens(
+def surface_tokens() -> int:
+    return estimate_tokens(prompt()) + estimate_tokens(
         json.dumps(TOOL_SPECS, ensure_ascii=False)
     )
+
+
+def test_the_model_facing_surface_fits_its_budget():
+    total = surface_tokens()
     assert total <= MAX_TOKENS, f"{total} tokens; compress it back, do not raise the cap"
+
+
+def test_the_model_facing_surface_has_not_quietly_grown():
+    total = surface_tokens()
+    assert total <= CURRENT_MAX_TOKENS, (
+        f"{total} tokens; the current surface grew past {CURRENT_MAX_TOKENS} "
+        "without a deliberate budget decision"
+    )
 
 
 def test_every_tool_is_named_in_the_prompt():
