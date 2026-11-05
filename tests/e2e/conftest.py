@@ -153,3 +153,148 @@ def _wait_for_window(
 def wait_for_window():
     """The shared wait, as a fixture so module-scoped fixtures can use it."""
     return _wait_for_window
+
+
+# ---------------------------------------------------------------------------
+# Notepad hygiene: close politely, never leave unsaved state in its cache
+# ---------------------------------------------------------------------------
+
+#: How long a polite close may take before the test falls back to taskkill.
+POLITE_CLOSE_TIMEOUT_S = 5.0
+#: Buttons that discard the unsaved buffer. Never "保存"/"Save"/"取消".
+DONT_SAVE_NAMES = ("不保存", "Don't save", "Don't Save", "否")
+
+
+def _is_notepad(window) -> bool:
+    return (window.process or "").casefold() == "notepad.exe"
+
+
+def _post_wm_close(hwnd: int) -> bool:
+    """Ask the window to close through the normal message, not a kill."""
+    if not hwnd:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32")
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    user32.PostMessageW.restype = wintypes.BOOL
+    return bool(user32.PostMessageW(wintypes.HWND(hwnd), 0x0010, 0, 0))
+
+
+def _taskkill_pid(pid: int) -> None:
+    subprocess.run(
+        ["taskkill", "/F", "/PID", str(pid)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+    )
+
+
+def _find_dont_save(session):
+    """The discard button on a save prompt, found through UIA only."""
+    if session.result is None:
+        return None
+    for node in session.result.root.walk():
+        if (node.name or "") not in DONT_SAVE_NAMES:
+            continue
+        if node.role not in ("button", "menuitem", "listitem"):
+            continue
+        if "activate" in node.cap_names():
+            return node
+    return None
+
+
+def close_notepad_windows(
+    session,
+    *,
+    timeout_s: float = POLITE_CLOSE_TIMEOUT_S,
+    poll_interval: float = 0.2,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    post_close=_post_wm_close,
+    taskkill=_taskkill_pid,
+    log=print,
+) -> list[int]:
+    """Close every Notepad window in *session* through WM_CLOSE.
+
+    A forced kill leaves the unsaved buffers in Notepad's session cache, which
+    the next launch restores as extra windows. The polite path sends WM_CLOSE,
+    waits for the save prompt to appear, activates "不保存"/"Don't save"/"否"
+    through UIA, and polls until the window is gone.
+
+    Returns the pids that survived the deadline. Those were force-killed and
+    the log says so; an empty list means the polite path completed.
+    """
+    session.refresh_windows()
+    targets = [w for w in session.windows if _is_notepad(w)]
+    if not targets:
+        return []
+
+    pids = {w.pid for w in targets if w.pid}
+    for window in targets:
+        if not post_close(window.hwnd):
+            log(f"notepad polite close: WM_CLOSE failed for {window.title!r}")
+
+    deadline = clock() + timeout_s
+    while True:
+        session.refresh_windows()
+        remaining = [w for w in session.windows if _is_notepad(w) and (not pids or w.pid in pids)]
+        if not remaining:
+            return []
+        for window in remaining:
+            try:
+                session.observe(window.window_id)
+            except Exception:  # noqa: BLE001 - the window may be closing
+                continue
+            button = _find_dont_save(session)
+            if button is not None:
+                out = session.dispatch(f"CALL {button.ref}.activate()")
+                if not out.startswith("ERR"):
+                    log(f"notepad polite close: chose {button.name!r}")
+
+        if clock() >= deadline:
+            left = sorted({w.pid for w in remaining if w.pid})
+            for pid in left:
+                log(
+                    f"notepad polite close: fell back to taskkill pid={pid} "
+                    f"after {timeout_s:g}s"
+                )
+                taskkill(pid)
+            return left
+        sleep(min(poll_interval, max(0.0, deadline - clock())))
+
+
+def clean_notepad_state(*, timeout_s: float = POLITE_CLOSE_TIMEOUT_S) -> list[int]:
+    """Close every Notepad window on this desktop before a measurement round.
+
+    Use it in the child session. In the user's session it would close their
+    windows, so the E2E suite only calls it where the desktop is disposable.
+    Returns leftover pids that needed the taskkill fallback.
+    """
+    from somnus.providers.base import get_provider
+    from somnus.runtime.session import Session
+
+    provider = get_provider("uia", allow_list=["notepad.exe", "Notepad.exe"])
+    session = Session(provider, allow_packs=False)
+    try:
+        return close_notepad_windows(session, timeout_s=timeout_s)
+    finally:
+        session.close()
+
+
+def assert_clean_notepad_launch(reply: str, *, expected: int = 1) -> None:
+    """Fail the round as DIRTY_BASELINE when launch restored extra windows."""
+    lines = [ln for ln in reply.splitlines() if ln.startswith("+ WINDOW")]
+    if len(lines) != expected or "windows from one launch" in reply:
+        raise AssertionError(
+            f"DIRTY_BASELINE: launch produced {len(lines)} window line(s), "
+            f"expected {expected}; reply={reply!r}"
+        )

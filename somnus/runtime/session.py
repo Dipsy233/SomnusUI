@@ -390,7 +390,14 @@ class Session:
         # without paying for another UIA walk. An unknown signature (no provider
         # support, or a read failure) disables the shortcut, never the refresh.
         self._top_level_sig = self._read_top_level_signature()
-        if self.target_window is None and self.windows:
+        if not self.windows:
+            # The previous target may have just been closed (the polite-close
+            # path closes every Notepad window). Keeping its id would make the
+            # next observation snapshot a window that no longer exists.
+            self.target_window = None
+        elif self.target_window is None or not any(
+            w.window_id == self.target_window for w in self.windows
+        ):
             self.target_window = self._default_window()
 
     def _read_top_level_signature(self) -> object | None:

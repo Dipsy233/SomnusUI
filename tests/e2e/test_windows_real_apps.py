@@ -29,6 +29,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.e2e.conftest import (
+    assert_clean_notepad_launch,
+    clean_notepad_state,
+    close_notepad_windows,
+)
+
 pytestmark = pytest.mark.windows
 
 #: A live application's first paint plus UIA registration is not instant.
@@ -107,7 +113,7 @@ def apps(wait_for_window):
     from somnus.runtime.session import Session
 
     sessions: list[Session] = []
-    procs: list[subprocess.Popen] = []
+    procs: list[tuple[subprocess.Popen, list[str]]] = []
     own_pids: list[tuple[list[str], set[int]]] = []
 
     def launch(
@@ -132,7 +138,7 @@ def apps(wait_for_window):
             session = Session(provider, allow_packs=False)
             sessions.append(session)
         proc = subprocess.Popen([exe])
-        procs.append(proc)
+        procs.append((proc, images))
 
         # UIA publishes the window after the HWND exists and after it is shown;
         # the shared wait polls for an allow-listed, visible window and fails
@@ -150,12 +156,28 @@ def apps(wait_for_window):
     try:
         yield SimpleNamespace(launch=launch)
     finally:
+        # Notepad first: the polite close needs the UIA session still open.
+        # A force-kill here leaves unsaved buffers in Notepad's session cache,
+        # which the next launch restores as extra windows.
+        for session in sessions:
+            try:
+                close_notepad_windows(session)
+            except Exception as exc:  # noqa: BLE001 - teardown
+                print(f"notepad polite close failed: {exc}")
         for session in sessions:
             try:
                 session.close()
             except Exception:  # noqa: BLE001 - teardown
                 pass
-        for proc in procs:
+        for proc, images in procs:
+            if any("notepad" in image.casefold() for image in images):
+                # Already closed through WM_CLOSE (or killed by the explicit
+                # fallback). Never terminate it as part of cleanup.
+                try:
+                    proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001 - teardown
+                    pass
+                continue
             try:
                 proc.terminate()
                 proc.wait(timeout=5)
@@ -165,6 +187,8 @@ def apps(wait_for_window):
                 except Exception:  # noqa: BLE001 - teardown
                     pass
         for images, before in own_pids:
+            if any("notepad" in image.casefold() for image in images):
+                continue
             _kill_pids(_image_pids(images) - before)
 
 
@@ -686,3 +710,76 @@ def test_find_waits_for_the_display_to_change_after_a_late_key_press(apps):
     print(f"\n[find] elapsed={elapsed:.2f}s deadline=1.5s -> {out.splitlines()[0]}")
     session.observe()
     assert _calc_display(session) == "显示为 7", _calc_display(session)
+
+
+# ---------------------------------------------------------------------------
+# 7. Notepad hygiene: polite close keeps the session cache out of measurement
+# ---------------------------------------------------------------------------
+
+
+def _launch_single_notepad(session, rounds: int = 3) -> str:
+    """Launch Notepad and require one window, draining cached buffers first."""
+    for attempt in range(rounds):
+        reply = session.launch("notepad.exe", wait_s=5)
+        if "no window in" in reply:
+            # Not a dirty baseline: the app did not publish a window in time.
+            print(f"\n[no-window {attempt + 1}]\n{reply}")
+            continue
+        try:
+            assert_clean_notepad_launch(reply)
+            return reply
+        except AssertionError:
+            print(f"\n[drain {attempt + 1}] DIRTY_BASELINE\n{reply}")
+            leftovers = close_notepad_windows(session)
+            assert leftovers == [], f"drain left pids {leftovers}"
+    raise AssertionError(f"Notepad did not produce exactly one window after {rounds} launches")
+
+
+@pytest.mark.windows
+def test_notepad_polite_close_keeps_the_fourth_launch_at_one_window():
+    """Three launch/write/polite-close rounds, then one window on the fourth.
+
+    A forced kill leaves unsaved buffers in Notepad's session cache; the next
+    launch restores them as extra windows. This test closes through WM_CLOSE and
+    discards with "不保存", then measures the fourth launch. Any extra window is
+    reported as DIRTY_BASELINE rather than silently included.
+    """
+    _require_windows()
+    from somnus.providers.base import get_provider
+    from somnus.runtime.session import Session
+
+    leftovers = clean_notepad_state()
+    assert leftovers == [], f"leftover Notepad pids before the test: {leftovers}"
+
+    provider = get_provider("uia", allow_list=_NOTEPAD_IMAGES)
+    session = Session(provider, allow_packs=False)
+    replies: list[str] = []
+    try:
+        reply = _launch_single_notepad(session)
+        for round_no in range(1, 4):
+            if round_no > 1:
+                reply = _launch_single_notepad(session)
+            replies.append(reply)
+            session.observe()
+            editor = _node(session, name="文本编辑器", role="input")
+            if editor is None:
+                editor = _node(session, name="Text Editor", role="input")
+            assert editor is not None, session.observe().text
+            out = session.dispatch(
+                f'CALL {editor.ref}.set_text("polite close round {round_no}")'
+            )
+            assert not out.startswith("ERR"), out
+            leftovers = close_notepad_windows(session)
+            assert leftovers == [], f"round {round_no} left pids {leftovers}"
+
+        fourth = _launch_single_notepad(session)
+        assert_clean_notepad_launch(fourth)
+        for index, text in enumerate((*replies, fourth), start=1):
+            print(f"\n[polite-close launch {index}]\n{text}")
+        assert "+ WINDOW" in fourth and "windows from one launch" not in fourth, fourth
+    finally:
+        try:
+            close_notepad_windows(session)
+        except Exception as exc:  # noqa: BLE001 - teardown
+            print(f"notepad polite close failed: {exc}")
+        session.close()

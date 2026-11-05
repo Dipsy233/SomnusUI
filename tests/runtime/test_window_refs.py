@@ -158,3 +158,21 @@ def test_two_uwp_instances_are_not_a_frame_content_pair():
     lines = [ln for ln in text.splitlines() if ln.startswith("  WINDOW ")]
     assert len(lines) == 2, lines
     assert all("frame" not in ln and "content" not in ln for ln in lines), lines
+
+
+def test_refresh_moves_the_target_when_it_closed():
+    first = restaurant_demo_tree()
+    second = _second_window(wid="w2", title="Notepad")
+    provider = MockProvider(fixtures=[first, second])
+    session = Session(provider)
+
+    session.observe("w2")
+    assert session.target_window == "w2"
+
+    del provider._trees["w2"]
+    session.refresh_windows()
+    assert session.target_window == "w1"
+
+    del provider._trees["w1"]
+    session.refresh_windows()
+    assert session.target_window is None
