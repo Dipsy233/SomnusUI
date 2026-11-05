@@ -41,15 +41,21 @@ WINDOW w1 "Demo" active
 
 ## Implicit capabilities
 
-True of the role, so not printed:
+Omitted because the node's role or patterns guarantee them:
 
-- any node: `focus`, `read`
-- any operable control: `context_menu`
-- `BUTTON`/`LINK`/`MENUITEM`: `activate` — except a **menu bar entry** that
-  prints `+expand`: open it with `expand` first, its items do not exist yet
-- `CHECKBOX`/`SWITCH`: `toggle`
-- `LISTITEM`/`TAB`/`RADIO`: `select`
-- `LIST`/`TREE`/`TABLE`/`PANE`: `scroll(to=up|down|top|bottom)`
+- any node: `focus`
+- readable nodes (`Value`/`Text` pattern or a named `TEXT`/`STATUSBAR`/
+  `HEADING`/`PARAGRAPH`): `read`
+- controls exposing one of `Invoke`/`LegacyIAccessible`/`Toggle`/`SelectionItem`/
+  `GridItem`/`Value`/`RangeValue`/`ExpandCollapse`, except `MENU`/`MENUITEM`:
+  `context_menu`
+- `LINK`/`MENUITEM`, or any node whose `Invoke`/`LegacyIAccessible` pattern
+  exists: `activate`; a **menu bar entry** printing `+expand` opens with
+  `expand` first, its items do not exist yet
+- `CHECKBOX`/`SWITCH`, or a `Toggle` pattern: `toggle`
+- `SELECT` (combo)/`LISTITEM`/`TAB`/`RADIO`/`ROW`/`TREEITEM`, or
+  `SelectionItem`/`GridItem`: `select`
+- `LIST`/`TREE`/`TABLE`/`PANE`, or `Scroll`/`ScrollItem`: `scroll(to=up|down|top|bottom)`
 
 `set_text` is **never** implicit; it answers "is this writable":
 
@@ -100,8 +106,9 @@ CALL mi5.activate()
 
 If `activate` only highlights a row, its command is under `context_menu`.
 `context_menu` cannot be checked up front; `OK` means a menu appeared,
-`OK_UNVERIFIED` means the body names the real gesture. It moves no pointer,
-needs no keystroke or foreground, and closes by itself.
+`OK_UNVERIFIED` means it produced no menu and names a direct capability when
+one exists. It moves no pointer, needs no keystroke or foreground, and closes
+by itself.
 
 ## Two desktops, one at a time
 

@@ -26,14 +26,20 @@ INDENT  := 2 spaces per level
 ### Rules
 
 1. **Capabilities live on the node line.**
-2. **Implicit capabilities are omitted** - `focus`/`read` everywhere;
-   `context_menu` on any control; `activate` on `BUTTON`, `toggle` on
-   `CHECKBOX`, `select` on `LISTITEM`, `scroll` on containers. The system prompt
-   carries this table. They are always available to the resolver regardless of
-   printing.
+2. **Implicit capabilities are omitted** - any node gets `focus`; readable
+   nodes (`Value`/`Text` pattern, or a named `TEXT`/`STATUSBAR`/`HEADING`/
+   `PARAGRAPH`) get `read`; controls exposing one of `Invoke`/`LegacyIAccessible`/
+   `Toggle`/`SelectionItem`/`GridItem`/`Value`/`RangeValue`/`ExpandCollapse`,
+   except `MENU`/`MENUITEM`, get `context_menu`; `LINK`/`MENUITEM` and any node
+   with `Invoke`/`LegacyIAccessible` get `activate`; `CHECKBOX`/`SWITCH` or a
+   `Toggle` pattern gets `toggle`; `SELECT`/`LISTITEM`/`TAB`/`RADIO`/`ROW`/
+   `TREEITEM` or `SelectionItem`/`GridItem` gets `select`; `LIST`/`TREE`/
+   `TABLE`/`PANE` or `Scroll`/`ScrollItem` gets `scroll(to=up|down|top|bottom)`.
+   The system prompt carries this table. They are always available to the
+   resolver regardless of printing.
 
-   A capability is only implicit when it is unconditionally true of its role, so
-   the omitted set and the always-present set are the same thing. `set_text` is
+   An implicit capability is one the node's role or patterns guarantee, so the
+   omitted set and the always-present set are the same thing. `set_text` is
    therefore **never** implicit: a field is an `INPUT` whether or not it accepts
    text, so hiding the capability would render a writable field and a read-only
    one identically. It is printed on every input that has it, and its absence on
@@ -62,9 +68,9 @@ accessibility layer itself activates them.
 `context_menu` is the one capability that cannot be proven up front: UIA exposes
 no "has a context menu" query, and `ShowContextMenu` is callable on any element
 while silently doing nothing when the application registered no menu. It is
-therefore an **offer**, and the runtime reports the outcome honestly instead -
-a call that produced no menu is `OK_UNVERIFIED` with a body naming the gesture
-that does exist, not a plain `OK`. A menu counts as produced only when it was
+therefore an **offer**, and the runtime reports the outcome honestly instead:
+a call that produced no menu is `OK_UNVERIFIED`, naming a direct capability
+when one exists. A menu counts as produced only when it was
 not in the tree before the call, so a window with a permanent `MENU` node (File
 Explorer's system menu, Notepad's `MENU "File"`) does not make every
 `context_menu` look successful.
