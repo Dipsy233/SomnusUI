@@ -324,6 +324,9 @@ class Session:
         #: giving up, instead of reporting "not found" for a ref that merely
         #: was not captured.
         self._viewport_limited: bool = False
+        #: One-line note when a peer fell back to a full snapshot because it has
+        #: no viewport capture. Rendered under the observation header once.
+        self._viewport_note: str = ""
         #: Identity keys (runtime id, else ids+path) of the nodes the last
         #: viewport capture actually read. Settle compares only these plus the
         #: call's own target and its ancestors; an empty list means "no captured
@@ -837,6 +840,10 @@ class Session:
             return self._snapshot(), False
         capture = getattr(self.provider, "snapshot_viewport", None)
         if capture is None:
+            if getattr(self.provider, "name", "") == "peer":
+                self._viewport_note = (
+                    "peer has no viewport capture; full snapshot budget applies"
+                )
             return self._snapshot(), False
         try:
             with _timed(self.timing, "snapshot"):
@@ -852,10 +859,14 @@ class Session:
             raise
         except Exception as exc:  # noqa: BLE001 - the full read is the fallback
             log.debug("viewport capture failed (%s); using the full snapshot", exc)
+            self._viewport_note = getattr(
+                self.provider, "viewport_fallback_note", ""
+            ) or self._viewport_note
             return self._snapshot(), False
         # A provider that fell back internally must say so; the default is the
         # honest one for anyone implementing the method: it is viewport-scoped.
         partial = bool(getattr(self.provider, "last_viewport_partial", True))
+        self._viewport_note = getattr(self.provider, "viewport_fallback_note", "")
         return tree, partial
 
     def _expand_paths(self, expanded: set[int] | set[str] | None) -> set[tuple[int, ...]]:
@@ -1392,6 +1403,8 @@ class Session:
         # changes what the agent can act on, so it must still be reported even
         # in single-window mode.
         header: list[str] = list(warnings)
+        if self._viewport_note:
+            header.append(f"~ {self._viewport_note}")
         if include_other_windows:
             header.extend(self._window_header(result))
         if window_delta:
@@ -3725,6 +3738,7 @@ class Session:
         self._last_raw_sig = None
         self._last_raw_map = {}
         self._viewport_limited = False
+        self._viewport_note = ""
         self._watch_natives = []
         self._last_capture_nodes = None
         self._last_capture_truncated = False

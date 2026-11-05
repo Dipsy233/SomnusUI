@@ -61,6 +61,15 @@ class PeerProvider:
 
     name: str = "peer"
 
+    #: Container viewport metadata from the last ``snapshot_viewport``, keyed
+    #: by window and native path exactly as :class:`UiaProvider` exposes it.
+    viewport_meta: dict = field(default_factory=dict, repr=False)
+    #: Whether the last viewport read was viewport-scoped. False means the
+    #: peer fell back to a full snapshot, so the session hides its probe.
+    last_viewport_partial: bool = field(default=False, repr=False)
+    #: One-shot note for ``observe`` when the peer has no viewport capture.
+    viewport_fallback_note: str = field(default="", repr=False)
+
     _bridge: PeerBridge | None = field(default=None, repr=False)
     _connected: bool = field(default=False, repr=False)
 
@@ -138,6 +147,50 @@ class PeerProvider:
         if tree is None:
             error = result.get("error") or {}
             raise PeerUnavailable(f"snapshot failed: {error.get('message')}")
+        return wire.raw_tree_from_dict(tree)
+
+    def snapshot_viewport(
+        self,
+        window_id: str,
+        max_depth: int = 20,
+        expanded_paths: set[tuple[int, ...]] | None = None,
+    ) -> RawTree:
+        """Forward the viewport capture, keeping its metadata on this side.
+
+        The peer's raw tree and ``viewport_meta`` are separate payload fields;
+        the session copies the metadata onto compiled container attributes and
+        uses ``last_viewport_partial`` to decide whether a probe is safe.
+        """
+        self.viewport_meta = {}
+        self.last_viewport_partial = False
+        self.viewport_fallback_note = ""
+        payload = {
+            "method": "snapshot.viewport",
+            "params": {
+                "window_id": window_id,
+                "max_depth": max_depth,
+                "expanded_paths": [list(path) for path in (expanded_paths or ())],
+            },
+        }
+        result = self.ensure().request(payload)
+        error = result.get("error") or {}
+        if error:
+            if error.get("code") == "ACTION_NOT_SUPPORTED":
+                self.viewport_fallback_note = (
+                    "peer has no viewport capture; full snapshot budget applies"
+                )
+                return self.snapshot(window_id, max_depth=max_depth)
+            raise PeerUnavailable(f"viewport snapshot failed: {error.get('message')}")
+        payload = result.get("result") or {}
+        tree = payload.get("tree")
+        if tree is None:
+            raise PeerUnavailable("viewport snapshot failed: no tree")
+        self.viewport_meta = wire.viewport_meta_from_dict(
+            payload.get("viewport_meta")
+        )
+        self.last_viewport_partial = bool(
+            payload.get("last_viewport_partial", True)
+        )
         return wire.raw_tree_from_dict(tree)
 
     def execute(

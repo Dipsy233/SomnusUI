@@ -390,6 +390,8 @@ class PeerServer:
                 return {"result": {"pong": True}}
             if method.startswith("process."):
                 return self._handle_process(method, params)
+            if method == "snapshot.viewport":
+                return self._handle_provider("provider.snapshot.viewport", params)
             if method.startswith("provider."):
                 return self._handle_provider(method, params)
             return {"error": {"code": -32601, "message": f"unknown method {method}"}}
@@ -575,6 +577,37 @@ class PeerServer:
                 max_depth=int(params.get("max_depth", 20)),
             )
             return {"result": {"tree": wire.raw_tree_to_dict(tree)}}
+
+        if method == "provider.snapshot.viewport":
+            capture = getattr(provider, "snapshot_viewport", None)
+            if capture is None:
+                return {
+                    "error": {
+                        "code": "ACTION_NOT_SUPPORTED",
+                        "message": "viewport capture is not supported by this provider",
+                    }
+                }
+            expanded = {
+                tuple(int(part) for part in path)
+                for path in (params.get("expanded_paths") or ())
+            }
+            tree = capture(
+                params["window_id"],
+                max_depth=int(params.get("max_depth", 20)),
+                expanded_paths=expanded,
+            )
+            return {
+                "result": {
+                    "tree": wire.raw_tree_to_dict(tree),
+                    "viewport_meta": wire.viewport_meta_to_dict(
+                        getattr(provider, "viewport_meta", None)
+                    ),
+                    "last_viewport_partial": bool(
+                        getattr(provider, "last_viewport_partial", True)
+                    ),
+                    "truncated": any(node.truncated for node in tree.walk()),
+                }
+            }
 
         if method == "provider.execute":
             result = provider.execute(
