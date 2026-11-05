@@ -318,12 +318,16 @@ Delta line kinds:
 | `STALE_TARGET` | ref invalidated | `find` |
 | `CAPABILITY_NOT_FOUND` | target lacks capability | `inspect` |
 | `INVALID_ARGUMENT` | bad/missing argument | `inspect` |
-| `ACTION_NOT_SUPPORTED` | no native pattern | `report-user` |
+| `ACTION_NOT_SUPPORTED` | no native pattern | `report-user`; `try select` after a failed `activate` when the node exposes `select` |
 | `TARGET_DISABLED` | target disabled | `inspect` |
 | `PERMISSION_DENIED` | allow-list / UIPI | `report-user` |
 | `NATIVE_EXECUTION_FAILED` | pattern raised | `retry-once` |
 | `TIMEOUT` | exec/settle timed out | `observe` |
 | `EFFECT_NOT_CONFIRMED` | declared effect absent | `observe` |
 | `UNKNOWN_CONTENT` | needs vision | `report-unknown` |
+
+When `activate` ends in `ACTION_NOT_SUPPORTED` and the node still exposes
+`select`, the error line carries `hint=try select`. The runtime reports the
+failure and does not switch to `select` automatically.
 
 Errors are one line: `ERR CODE ref hint=...`; stack traces go to the log only.

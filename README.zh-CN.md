@@ -218,7 +218,11 @@ CALL tx1.set_text("Hello SomnusUI")
 ERR TARGET_DISABLED b5 hint=inspect
 ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
 ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
+ERR ACTION_NOT_SUPPORTED b1 hint=try select
 ```
+
+`activate` 以 `ACTION_NOT_SUPPORTED` 最终失败、且节点仍暴露 `select` 时，同一行
+追加 `hint=try select`。运行时不会自动改调 `select`。
 
 **`read`**：隐式内容能力。
 
@@ -231,9 +235,12 @@ CALL q1.read()
 载荷为 `value="…" len=N`。`len=` 通常精确；触发 provider 的 4096 字符读取
 上限时，变为 `len>=4097`，行尾追加
 `truncated=true; use INSPECT with range=0:2000 for more`。内联最多返回 200
-字符（超长时为 199 个字符加 `…`）。读取先试 UIA Text 模式，再试 Value 属性；
-两者都没有的标签读取其 accessible Name。`read` 是隐式的：L0 不打印 `+read`，
-`INSPECT` 在节点发布可读接口时列出它。
+字符（超长时为 199 个字符加 `…`）。读取先试 UIA Text 模式，再试 Value 属性。
+UIA Text 控件（control type 50020）的两个表面都返回空时，读取其 accessible
+Name；计算器显示区返回 `value="显示为 46" len=6`。空 `Edit`（50004）保持
+`value=""`，其 Name 不作为内容。Text 与 Value 都不可读的元素也回退到
+accessible Name。`read` 是隐式的：L0 不打印 `+read`，`INSPECT` 在节点发布
+可读接口时列出它。
 
 SUI-Text 中所有带引号的字符串（包括 `value=`）转义 `\\`、`\"`、`\r`、`\n`、
 `\t`，一个节点只占一行。预览用于阅读；解析器只解码 `\\` 与 `\"`。`observe`
@@ -556,7 +563,7 @@ pytest -m windows           # 真实窗口，仅 Windows
 同一批界面。`MockProvider` 回放录制的 `RawTree` 固件并执行脚本化变更，包括通过
 具名回调实现的逐行行为。
 
-本机实测：可移植套件 784 passed。`pytest -m windows` 同样通过；最近一次记录在
+本机实测：可移植套件 788 passed。`pytest -m windows` 同样通过；最近一次记录在
 子会话内运行约 62–66 秒，没有出现 `window ... did not appear` 超时。UWP 计算器在该子桌面
 能启动并读取，`OBSERVE full` 读到 34 个按钮。
 

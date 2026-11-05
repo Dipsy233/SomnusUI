@@ -107,7 +107,9 @@ CALL b2.click()        # 原语动词，禁止
 → ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 ```
 
-每种错误都带 `hint=`，告诉 LLM 该怎么恢复。
+每种错误都带 `hint=`，告诉 LLM 该怎么恢复。`activate` 以
+`ACTION_NOT_SUPPORTED` 失败、且节点仍暴露 `select` 时，同一行写
+`hint=try select`；运行时不会自动改调 `select`。
 
 ### 成功的操作会产生 delta
 

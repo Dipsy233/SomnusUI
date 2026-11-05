@@ -35,7 +35,7 @@
 | 桌面签名 vs 枚举（`326d2ec`） | — | `top_level_signature` **p50 0.31–0.52ms / max ≤2.15ms**；`list_windows` p50 **70–78ms** |
 | 写入路径（标题不变 / 变化，`326d2ec`） | — | 标题不变：总 **81–104ms** / enum **0.6–0.9ms**；标题变化：enum **78–104ms** / 总 **154–238ms** |
 | `observe()` 的 enum | — | **78–102ms**（全量；观察本身不做签名短路） |
-| 真机回归 | — | 非 GUI **784 passed**；`-m windows` 也通过（最近记录 38 passed，子桌面，约 **62–66s**，零 `window ... did not appear`） |
+| 真机回归 | — | 非 GUI **788 passed**；`-m windows` 也通过（最近记录 38 passed，子桌面，约 **62–66s**，零 `window ... did not appear`） |
 
 ### 未实现 / 未达（含原因）
 

@@ -245,7 +245,12 @@ Failures are one line with a recovery hint:
 ERR TARGET_DISABLED b5 hint=inspect
 ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
 ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
+ERR ACTION_NOT_SUPPORTED b1 hint=try select
 ```
+
+When `activate` ends in `ACTION_NOT_SUPPORTED` and the node still exposes
+`select`, the same error line carries `hint=try select`. The runtime does not
+switch to `select` automatically.
 
 **`read`**: the implicit content capability.
 
@@ -259,9 +264,13 @@ The payload is `value="…" len=N`. `len=` is exact unless the provider's
 4096-character read cap was hit; in that case it is `len>=4097` and the line
 ends with `truncated=true; use INSPECT with range=0:2000 for more`. At most
 200 characters are returned inline (199 plus `…` when cut). The UIA Text
-pattern is tried first, then the Value property; a label with neither is read
-from its accessible Name. `read` is implicit: L0 does not print `+read`, and
-`INSPECT` lists it when the node publishes a readable surface.
+pattern is tried first, then the Value property. A UIA Text control (control
+type 50020) whose two surfaces answer empty is read from its accessible Name;
+a calculator display returns `value="显示为 46" len=6`. An empty Edit (50004)
+keeps `value=""`, and its Name is not used as content. An element with no Text
+or Value surface also falls back to its accessible Name. `read` is implicit:
+L0 does not print `+read`, and `INSPECT` lists it when the node publishes a
+readable surface.
 
 Every quoted SUI-Text string, including `value=`, escapes `\\`, `\"`, `\r`,
 `\n` and `\t`, so a node occupies exactly one line. Previews are for reading;
@@ -618,7 +627,7 @@ real UIA provider. `MockProvider` replays recorded `RawTree` fixtures and
 applies scripted mutations, including per-row behaviour through a named
 callback.
 
-Measured on this machine: 784 passed in the portable suite. The real-window
+Measured on this machine: 788 passed in the portable suite. The real-window
 suite (`pytest -m windows`) also passes; the last recorded run took about
 62–66 s inside the child session, with no `window ... did not appear` timeout. A UWP app (Calculator) started and was
 read in that child desktop; `OBSERVE full` reported 34 buttons.

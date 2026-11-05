@@ -184,6 +184,9 @@ sui> CALL mi2.activate()        ← 声明了，但执行时被拒
 ERR ACTION_NOT_SUPPORTED mi2 hint=report-user
 ```
 
+`activate` 以 `ACTION_NOT_SUPPORTED` 最终失败、且节点仍暴露 `select` 时，同一行
+追加 `hint=try select`。运行时不会自动改调 `select`。
+
 里面真正的**命令项**才用 `activate`。"声明了"不等于"能执行"。UIA 里这两件
 事是分开的，因此以打印出的能力和返回值为准。
 
