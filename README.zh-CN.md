@@ -6,8 +6,8 @@ SomnusUI 把原生 GUI 编译为文本接口。运行时读取 Windows 无障碍
 SUI-Text（节点、能力与属性），再通过 UI Automation 执行能力调用；文本输入可选
 剪贴板与键盘通道。模型收到 SUI-Text，不收到截图、坐标或原生标识符。
 
-输入是七种工具调用之一：`observe`、`find`、`inspect`、`call`、`run`、`switch`、
-`configure`。输出是 SUI-Text：一次观察、一份命中列表、一行带增量的 `OK`/`ERR`，
+输入是八种工具调用之一：`observe`、`find`、`inspect`、`call`、`run`、`switch`、
+`launch`、`configure`。输出是 SUI-Text：一次观察、一份命中列表、一行带增量的 `OK`/`ERR`，
 或一行设置结果。
 
 ## 概述
@@ -70,7 +70,7 @@ ref（`p1`、`w1`、`q1` …）只在一个会话内有效。`somnus observe` �
 }
 ```
 
-服务器暴露下列七个工具。provider 自动选择：安装 `[windows]` 扩展时使用
+服务器暴露下列八个工具。provider 自动选择：安装 `[windows]` 扩展时使用
 UI Automation，否则回放录制的固件。服务器启动时在 `instructions` 中写明当前
 生效的 settle 值：`settle_quiet_ms=40`、`settle_poll_ms=10`、
 `settle_timeout_s=3.0`、`post_action_enum=on`。
@@ -85,6 +85,7 @@ UI Automation，否则回放录制的固件。服务器启动时在 `instruction
 | `call` | `CALL ref.cap(args)`；多行作为一次批处理执行 | `OK`/`ERR` 与增量 |
 | `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL`、每步一行、合并增量 |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` 与窗口清单 |
+| `launch` | 在当前桌面启动程序 | `launch(command, args, cwd, window)` |
 | `configure` | 调整 `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
 
 `configure` 是节奏控制工具，不授予或拒绝能力。

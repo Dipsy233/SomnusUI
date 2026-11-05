@@ -8,8 +8,8 @@ attributes), and executes capability calls through UI Automation, with optional
 clipboard and keyboard channels for text input. The model receives SUI-Text; it
 receives no screenshots, coordinates or native identifiers.
 
-Input is one of seven tool calls: `observe`, `find`, `inspect`, `call`, `run`,
-`switch` or `configure`. Output is SUI-Text: an observation, a match list, an
+Input is one of eight tool calls: `observe`, `find`, `inspect`, `call`, `run`,
+`switch`, `launch` or `configure`. Output is SUI-Text: an observation, a match list, an
 `OK`/`ERR` line with a delta, or a settings line.
 
 ## Overview
@@ -83,7 +83,7 @@ one-shot rule.
 }
 ```
 
-The server exposes the seven tools listed below. The provider is selected
+The server exposes the eight tools listed below. The provider is selected
 automatically: UI Automation when the `[windows]` extra is installed, recorded
 fixtures otherwise. The server's `instructions` field states the effective
 settle values at startup: `settle_quiet_ms=40`, `settle_poll_ms=10`,
@@ -99,6 +99,7 @@ settle values at startup: `settle_quiet_ms=40`, `settle_poll_ms=10`,
 | `call` | `CALL ref.cap(args)`; several lines run as one batch | `OK`/`ERR` plus a delta |
 | `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL`, per-step lines and a merged delta |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` plus a window list |
+| `launch` | start a program on the current desktop | `launch(command, args, cwd, window)` |
 | `configure` | tune `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
 
 `configure` is a pacing control. It does not grant or deny capabilities.

@@ -36,12 +36,14 @@ def session():
 # ---------------------------------------------------------------------------
 
 
-def test_the_six_tools_are_advertised():
+def test_the_eight_tools_are_advertised():
     # The four perception/action tools, plus ``switch`` (moves the agent between
-    # the two Windows sessions), ``configure`` (tunes call timing) and ``run``
-    # (a CALL/AWAIT script in one round trip).
+    # the two Windows sessions), ``configure`` (tunes call timing), ``run``
+    # (a CALL/AWAIT script in one round trip) and ``launch`` (starts a program).
     names = {spec["name"] for spec in TOOL_SPECS}
-    assert names == {"observe", "find", "inspect", "call", "run", "switch", "configure"}
+    assert names == {
+        "observe", "find", "inspect", "call", "run", "switch", "launch", "configure"
+    }
 
 
 @pytest.mark.parametrize("spec", TOOL_SPECS, ids=lambda s: s["name"])
@@ -65,6 +67,7 @@ def test_only_find_and_call_require_an_argument():
     assert required["inspect"] == ["ref"]
     assert required["call"] == ["action"]
     assert required["run"] == ["script"]
+    assert required["launch"] == ["command"]
 
 
 def test_no_tool_advertises_a_confirmation_switch():

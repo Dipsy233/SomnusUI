@@ -88,10 +88,10 @@ Two switches decide who may start what:
   which is the same list that decides which processes may be *operated*. A
   program that could not be operated is not allowed to be spawned either.
 
-`run` is CLI-only. There is no `SESSION run` in SUI-Text: the model-facing
-tool surface is unchanged (seven tools, none of which starts a process), and a
-model should not be given an arbitrary process launcher without an explicit
-user decision.
+`run` is CLI-only. The model-facing surface has eight tools; `launch` starts a
+program on the current desktop (local `CreateProcess` on main, the peer's
+`process.start` on child) under the existing `allow_processes` list only. There
+is no `SESSION run` command in SUI-Text.
 
 
 ## Architecture

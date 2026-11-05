@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -1715,6 +1716,115 @@ class Session:
         return rules
 
     # ------------------------------------------------------------------ find
+
+    def launch(
+        self,
+        command: Any,
+        args: Any = None,
+        cwd: Any = None,
+        window: Any = None,
+    ) -> str:
+        """Start a program on the current desktop or the child desktop."""
+        try:
+            if not isinstance(command, str) or not command.strip():
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    message="command must be a non-empty string",
+                )
+            command = command.strip()
+            if args is None:
+                args = []
+            if not isinstance(args, list) or any(
+                not isinstance(arg, str) for arg in args
+            ):
+                raise SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    message="args must be a list of strings",
+                )
+            if cwd is not None:
+                if not isinstance(cwd, str) or not os.path.isdir(cwd):
+                    raise SomnusError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        message=f"cwd is not a directory: {cwd!r}",
+                    )
+            use_peer = self.session_label == "child"
+            if window is not None:
+                if not isinstance(window, str) or not window.strip():
+                    raise SomnusError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        message="window must be a ref, 'child' or 'main'",
+                    )
+                selected = window.strip()
+                if selected.lower() == "child":
+                    use_peer = True
+                elif selected.lower() == "main":
+                    if self.session_label == "child":
+                        raise SomnusError(
+                            ErrorCode.ACTION_NOT_SUPPORTED,
+                            message="switch to main before launching there",
+                        )
+                    use_peer = False
+                elif re.fullmatch(r"[a-z]{1,3}[0-9]+", selected):
+                    if self._window_by_ref(selected) is None:
+                        raise target_not_found(selected)
+                else:
+                    raise SomnusError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        message=f"unknown window {selected!r}; use wN or child",
+                    )
+            if use_peer:
+                return self._launch_on_peer(command, args, cwd)
+            return self._launch_locally(command, args, cwd)
+        except SomnusError as err:
+            return err.render()
+        except Exception as err:  # noqa: BLE001 - reported, never raised
+            return SomnusError(
+                ErrorCode.NATIVE_EXECUTION_FAILED, message=str(err)
+            ).render()
+
+    def _launch_locally(self, command: str, args: list[str], cwd: str | None) -> str:
+        self.policy.check_process(os.path.basename(command))
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        proc = subprocess.Popen(
+            [command, *args],
+            cwd=cwd or None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+        return f"OK pid={proc.pid}\n~ observe windows to see it"
+
+    def _launch_on_peer(
+        self, command: str, args: list[str], cwd: str | None
+    ) -> str:
+        from somnus.session.peerprovider import PeerProcessError, PeerProvider
+
+        provider = self.provider
+        created = False
+        if not hasattr(provider, "start_process"):
+            provider = PeerProvider()
+            if not provider.connect():
+                raise SomnusError(
+                    ErrorCode.ACTION_NOT_SUPPORTED,
+                    message="no peer is running in the child session",
+                )
+            created = True
+        try:
+            pid = provider.start_process(
+                command,
+                args,
+                cwd=cwd,
+                stdout_path=os.devnull,
+                stderr_path=os.devnull,
+            )
+        except PeerProcessError as err:
+            raise SomnusError(err.code, message=err.message) from err
+        finally:
+            if created:
+                provider.close()
+        return f"OK pid={pid}\n~ observe windows to see it"
 
     def find(
         self,

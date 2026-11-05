@@ -27,7 +27,8 @@ def test_agent_importable_without_model():
     tools = openai_tools()
     # ``switch`` moves the agent between the two Windows sessions (and opens or
     # closes the child one); ``configure`` tunes call timing; ``run`` executes a
-    # CALL/AWAIT script in one round trip. All are part of the tool surface.
+    # CALL/AWAIT script in one round trip; ``launch`` starts a program. All are
+    # part of the tool surface.
     assert {t["function"]["name"] for t in tools} == {
         "observe",
         "find",
@@ -35,6 +36,7 @@ def test_agent_importable_without_model():
         "call",
         "run",
         "switch",
+        "launch",
         "configure",
     }
 

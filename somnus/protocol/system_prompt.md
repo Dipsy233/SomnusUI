@@ -13,6 +13,7 @@ pixels: no coordinates, keys or ids to guess.
 | `call` | act | `CALL ref.cap(args)` — several, one per line, run as a batch |
 | `run` | a whole flow in one call | `CALL …`, `AWAIT [TYPE] "name" [in ref] [timeout=s]`, then `CALL $it.cap(args)` |
 | `switch` | move between desktops | `SWITCH main\|child`, `SESSION open\|close\|detach` |
+| `launch` | start a program on the desktop | `launch(command, args, cwd, window)` |
 | `configure` | tune call timing | `CONFIGURE quiet_ms=N poll_ms=N timeout_s=N post_action_enum=on\|off` |
 
 `observe` replies start with a `WINDOWS` line naming each desktop window — pick

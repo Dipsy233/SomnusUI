@@ -31,9 +31,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "observe",
         "description": (
             "L0 overview; assigns refs. Use first/after switch; find for a "
-            "name. Returns @rev, WINDOWS, tree (`?` unreadable). Read-only; "
-            "unknown ref falls back. Params: window, windows_only, "
-            "include_other_windows."
+            "name. Returns @rev, WINDOWS, tree (`?` unreadable). Read-only."
         ),
         "inputSchema": {
             "type": "object",
@@ -51,9 +49,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "find",
         "description": (
             "Search current window incl folded lists; returns entity lines. "
-            "Use for a name; observe for layout. FOUND N (50 lines max, then "
-            "`… +N more`) or 0; timeout s waits, expiry ERR TARGET_NOT_FOUND "
-            "after=Ns. Params: query, timeout."
+            "Use for a name; observe for layout. FOUND N or 0; timeout s waits, "
+            "expiry ERR TARGET_NOT_FOUND after=Ns."
         ),
         "inputSchema": {
             "type": "object",
@@ -73,7 +70,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Full node: attrs, caps, params, relations. Use when caps/args look "
             "wrong. Returns @rev + node or TEXT range=A:B; a viewport miss "
-            "retries one full read. Params: ref, depth, start/end."
+            "retries one full read."
         ),
         "inputSchema": {
             "type": "object",
@@ -90,9 +87,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "call",
         "description": (
             "Invoke caps; ≤20 CALL lines, one trip. Use for independent; run "
-            "for opened. Returns OK/ERR + delta, or BATCH OK|OK_UNVERIFIED|"
-            "PARTIAL steps=N/M rev=R (PARTIAL adds failed-at|stopped-at=K). "
-            "Steps must exist at start; wN.focus() and context_menu refused."
+            "for opened. Returns OK/ERR + delta, or BATCH status steps=N/M "
+            "rev=R (PARTIAL adds failed-at|stopped-at=K). Steps must exist at "
+            "start; wN.focus() and context_menu refused."
         ),
         "inputSchema": {
             "type": "object",
@@ -140,11 +137,27 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "launch",
+        "description": (
+            "Start a program; pid. Args: command, args, cwd, window (wN/child; "
+            "current default)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "cwd": {"type": "string"},
+                "window": {"type": "string"},
+            },
+            "required": ["command"],
+        },
+    },
+    {
         "name": "configure",
         "description": (
             "Tune settle timing; use when calls read mid-animation or slow. "
-            "Params: settle_*, post_action_enum, persist, reset. Returns "
-            "SETTINGS; bad value: ERR INVALID_ARGUMENT, nothing changed."
+            "Returns SETTINGS; bad value: ERR INVALID_ARGUMENT, nothing changed."
         ),
         "inputSchema": {
             "type": "object",
@@ -263,6 +276,13 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             if target == "detach":
                 return session.detach_child_session()
             return session.switch_session(target)
+        if name == "launch":
+            return session.launch(
+                args.get("command"),
+                args=args.get("args"),
+                cwd=args.get("cwd"),
+                window=args.get("window"),
+            )
         if name == "configure":
             return _configure(session, args)
         return SomnusError(ErrorCode.PARSE_ERROR, message=f"unknown tool {name}").render()
