@@ -111,8 +111,8 @@ OK session=main windows=11      ← 回到用户的桌面
 | `SESSION close` | 结束子会话并回到 main |
 | `SESSION detach` | 本进程退出后仍保留它 |
 
-**切换会丢弃全部 ref。** 切换后窗口列表不同，`w1` 不是"过期"，而是变成了
-新桌面上的另一个窗口——先重新 `OBSERVE` 再操作。
+**切换会丢弃全部 ref。** 切换后窗口列表不同，`w1` 指向新桌面上的另一个窗口。
+操作前重新 `OBSERVE`。
 
 系统级配置（需管理员，只需一次）：
 
@@ -126,7 +126,7 @@ somnus child-session close
 
 ## 手势
 
-`select`、`activate`、`context_menu` 是三个不同的能力，运行时不替你选择：
+`select`、`activate`、`context_menu` 是三个不同的能力，运行时不做选择：
 
 | 能力 | 含义 | 人类对应 |
 | --- | --- | --- |
@@ -134,8 +134,8 @@ somnus child-session close
 | `activate` | 执行元素的**默认动作** | 双击 |
 | `context_menu` | 打开上下文菜单 | 右键 |
 
-`activate` 不是“点一下”：对按钮是按下，对文件或列表行是**打开**。
-某些应用对 `activate` 只做高亮（如聊天列表的会话行），它既不打开也不报错——
+`activate` 的含义由元素类型决定：对按钮是按下，对文件或列表行是**打开**。
+某些应用对 `activate` 只做高亮（如聊天列表的会话行），它既不打开也不报错。
 此时用 `context_menu` 打开菜单，再对菜单项 `activate`：
 
 ```text
@@ -158,14 +158,14 @@ OK_UNVERIFIED rev=5
 - 应用把菜单交给系统（Win32 Shell，窗口类 `#32768`）时，运行时同样把它
   取回来挂在原节点下。
 
-菜单消失（被点了、被别处焦点顶掉）后挂载自动解除。
+菜单消失（被点击、被其他焦点顶掉）后挂载自动解除。
 以返回的 delta 为准，它比状态字更可信。
 
-### 两个实测的平台坑（WPF）
+### 两个实测的 WPF 平台问题
 
-**菜单栏顶层项要用 `expand`，不是 `activate`。** WPF 的 `MenuItem` **声称**
-支持 `activate`（它继承了 `ButtonBase` 的 Invoke pattern），但菜单栏顶层的项
-不实现这个行为——调用会被如实拒绝：
+**菜单栏顶层项使用 `expand`。** WPF 的 `MenuItem` **声明**支持 `activate`
+（它继承了 `ButtonBase` 的 Invoke pattern），但菜单栏顶层的项不实现这个行为；
+调用会被如实拒绝：
 
 ```text
 sui> CALL mi2.expand()          ← 菜单栏项：expand 才打开子菜单
@@ -176,11 +176,11 @@ sui> CALL mi2.activate()        ← 声明了，但执行时被拒
 ERR ACTION_NOT_SUPPORTED mi2 hint=report-user
 ```
 
-里面真正的**命令项**才用 `activate`。"声明了"不等于"能执行"——UIA 里这两件
-事是分开的，所以以打印出的能力和返回值为准，不靠猜。
+里面真正的**命令项**才用 `activate`。"声明了"不等于"能执行"。UIA 里这两件
+事是分开的，因此以打印出的能力和返回值为准。
 
 **XAML `ContextMenu` 触发不了 `context_menu`。** WPF 在 XAML 里挂的
-`ContextMenu` 是框架层的东西，UIA 的 `ShowContextMenu`（系统层的动词）够不着它。
+`ContextMenu` 是框架层的机制，UIA 的 `ShowContextMenu`（系统层的动词）无法触达它。
 运行时检测到没弹出菜单就**如实报**，并给出该元素真正有的能力：
 
 ```text
@@ -191,15 +191,15 @@ OK_UNVERIFIED rev=2
 ```
 
 能触发 `context_menu` 的是走真正 Win32 菜单循环的控件（托盘图标、Shell 菜单，
-窗口类 `#32768`）；自绘控件里由应用自己响应 `ShowContextMenu` 的也行。这不是
-运行时的缺陷，是平台的边界，运行时的处理（报实情 + 给替代）就是为它准备的。
+窗口类 `#32768`）；自绘控件里由应用自己响应 `ShowContextMenu` 的也可以触达。
+这是平台边界；运行时通过报告实情和提供替代能力来处理。
 
 ## 使用前先把窗口提到前台
 
-agent 读或操作一个窗口时，会**先把该窗口提到前台**。这不是副作用，是前提：
+agent 读或操作一个窗口时，会**先把该窗口提到前台**。该行为是前提条件：
 被遮挡或最小化的窗口并不可靠地渲染。普通 Win32/WPF/UWP 应用通常仍有完整树，
 但自绘界面（Chromium/Electron/Qt Quick：QQ、豆包、Steam）在被真正显示前什么都
-不渲染——无障碍树萎缩到壳，agent 会以为这个应用没有控件。最小化是最极端的情况：
+不渲染。无障碍树萎缩到壳，agent 会认为这个应用没有控件。最小化是最极端的情况：
 CEF 应用完全不布局。
 
 因此运行时在做任何事之前先提窗口：

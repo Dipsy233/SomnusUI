@@ -75,7 +75,7 @@ SCREEN s4 "用户必须具有此计算机的用户帐户和密码，才能访问
 LINK lnk1 "网络和共享中心"
 ```
 
-返回的是**完整实体行**，不是只给 ref —— 省掉一次 `inspect`。
+返回的是**完整实体行**，不只给 ref，可省掉一次 `inspect`。
 
 ---
 
@@ -137,11 +137,11 @@ CALL tx1.set_text("Hello SomnusUI")
   - b1
 ```
 
-**delta 是最有价值的部分**：LLM 不用重新 `observe` 就知道发生了什么。
+**delta 是本响应中信息量最大的部分**：LLM 不重新 `observe` 也能知道发生了什么。
 `~` 改了、`+` 新增、`-` 消失。
 
-`OK_UNVERIFIED` 表示"动作执行了，但应用没声明可验证的效果"——
-对比 `OK`（effects 全部满足）和 `EFFECT_NOT_CONFIRMED`（声明了但没满足）。
+`OK_UNVERIFIED` 表示"动作执行了，但应用没声明可验证的效果"。对比 `OK`
+（effects 全部满足）和 `EFFECT_NOT_CONFIRMED`（声明了但没满足）。
 
 ---
 
