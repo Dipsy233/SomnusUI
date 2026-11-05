@@ -2303,13 +2303,19 @@ class Session:
             seen_fingerprints.add(node.fingerprint)
             matches.append(node)
         # Drop nodes whose parent is also a match: the row line already carries
-        # the name, so reporting both is noise, not information.
+        # the name, so reporting both is noise, not information. The exception
+        # is a child that exposes an action the parent line does not: a combo
+        # box and its editable INPUT share the label "文件名:", and hiding the
+        # INPUT made FIND answer with a container that cannot take the write.
         by_fp = {n.fingerprint: n for n in nodes}
         parent_fps: set[str] = set()
+        generic = {"read", "focus", "context_menu", "find"}
         for node in matches:
             parent = _find_parent(result_root(self), node)
             if parent is not None and parent.fingerprint in seen_fingerprints:
-                parent_fps.add(node.fingerprint)
+                extra = (set(node.cap_names()) - set(parent.cap_names())) - generic
+                if not extra:
+                    parent_fps.add(node.fingerprint)
         return [m for m in matches if m.fingerprint not in parent_fps]
 
     def _render_find_hits(

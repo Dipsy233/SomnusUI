@@ -235,6 +235,35 @@ def test_find_without_type_hides_entity_children():
     assert "TEXT" not in out
 
 
+def test_find_keeps_a_child_with_an_action_the_parent_lacks():
+    """A combo and its editable INPUT share a name; both are useful hits."""
+    field = _n(
+        "w1",
+        (0, 0),
+        "input",
+        name="文件名:",
+        value="",
+        patterns=frozenset({"value", "text"}),
+    )
+    combo = _n("w1", (0,), "select", name="文件名:", children=[field])
+    root = _n("w1", (), "dialog", name="另存为", children=[combo])
+    tree = RawTree(
+        window=WindowInfo(
+            window_id="w1", title="另存为", process="notepad.exe", pid=1
+        ),
+        root=root,
+        raw_revision=1,
+    )
+    session = Session(MockProvider(fixtures=[tree]))
+    session.observe()
+
+    out = session.find("文件名:")
+
+    assert out.startswith("FOUND 2"), out
+    assert "SELECT sel1" in out, out
+    assert "INPUT q1" in out and "+set_text" in out, out
+
+
 def test_observe_unknown_window_falls_back():
     """An unknown window ref must not dead-end a read-only observation."""
     session = Session(
