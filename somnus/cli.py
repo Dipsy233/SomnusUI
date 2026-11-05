@@ -1040,7 +1040,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "run a command on the child desktop through the peer, then print "
             "its exit code and full stdout/stderr (output files are kept under "
-            "%TEMP%\\somnusui-child-run)"
+            "%%TEMP%%\\somnusui-child-run)"
         ),
     )
     run_parser.add_argument(

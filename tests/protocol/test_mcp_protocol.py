@@ -20,7 +20,7 @@ from somnus.providers.mock import MockProvider
 from somnus.protocol.jsonrpc import JsonRpcServer
 from somnus.protocol.tools import TOOL_SPECS, call_tool
 from somnus.runtime.session import Session
-from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
+from tests.fixtures.builders import demo_scripts, notepad_tree, restaurant_demo_tree
 
 
 @pytest.fixture
@@ -155,6 +155,29 @@ def test_a_null_arguments_object_is_tolerated(session):
     # not a crash.
     text = call_tool(session, "observe", None)
     assert "WINDOW w1" in text
+
+
+def test_a_100kb_write_reply_stays_bounded():
+    """The write echo and delta share one 80-character value limit.
+
+    Without it the reply carried the full 100 KB twice: once as the delta's
+    old/new value and once as the `~ ref text=` echo.
+    """
+    from somnus.projection.budget import estimate_tokens
+
+    session = Session(MockProvider(fixtures=[notepad_tree("")]))
+    text = call_tool(session, "observe")
+    ref = next(
+        line.split()[1] for line in text.splitlines() if "INPUT" in line
+    )
+    big = "A" * 100_000
+    out = call_tool(session, "call", {"action": f'CALL {ref}.set_text("{big}")'})
+    assert out.startswith("OK"), out
+    assert "…" in out
+    assert "len=100000" in out
+    assert len(out) < 400, len(out)
+    assert estimate_tokens(out) < 100, estimate_tokens(out)
+    session.close()
 
 
 # ---------------------------------------------------------------------------

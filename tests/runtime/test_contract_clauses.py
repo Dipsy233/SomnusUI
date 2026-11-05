@@ -12,7 +12,7 @@ from somnus.ir.node import NativeRef, RawNode, RawTree, SemanticNode, WindowInfo
 from somnus.packs import get_pack
 from somnus.providers.mock import MockProvider
 from somnus.runtime.session import Session
-from somnus.sui.serialize import RenderOptions, render_node_line
+from somnus.sui.serialize import RenderOptions, render_delta, render_node_line
 from tests.fixtures.builders import demo_scripts, notepad_tree, restaurant_demo_tree
 
 
@@ -67,6 +67,13 @@ def test_long_text_uses_len_and_preview():
 def test_short_text_is_unchanged():
     node = SemanticNode(ref="t1", role="text", value="hello")
     assert render_node_line(node).strip() == "TEXT t1"
+
+
+def test_delta_clips_a_long_changed_value():
+    """A 100 KB value must not reprint in full inside a `~` delta line."""
+    line = render_delta([("q1", "value", "", "A" * 100_000)])
+    assert "…" in line
+    assert len(line) < 300, len(line)
 
 
 # -------------------------------------------------------------- relations

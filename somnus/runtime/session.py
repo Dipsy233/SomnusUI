@@ -2245,7 +2245,7 @@ class Session:
         # became the literal text. This is data, so it is quoted, like every
         # other string the runtime reports.
         if written is not None:
-            echo = f"~ {effective_ref} text={_q(str(written))}"
+            echo = _write_echo(effective_ref, written)
             body = f"{body}\n{echo}" if body else echo
         # A `read` call is an answer, not a side effect: its payload (the
         # value, its length and whether it was truncated) is carried on the
@@ -3022,7 +3022,7 @@ class Session:
         for ref, value in writes:
             if not ref:
                 continue
-            echo = f"~ {ref} text={_q(str(value))}"
+            echo = _write_echo(ref, value)
             body = f"{body}\n{echo}" if body else echo
 
         settled_tag = "" if settle_result.settled else " settled=false"
@@ -4048,6 +4048,19 @@ def _q(text: str | None) -> str:
     if text is None:
         return '""'
     return f'"{escape_text(text)}"'
+
+
+def _write_echo(ref: str, value: Any) -> str:
+    """The `~ ref text=...` line, with the node-string limit applied.
+
+    A write echo confirms what landed. It uses the same 80-character limit as
+    a node line, so a 100 KB write cannot double the reply by carrying both the
+    delta value and the echo in full; `len=` makes the truncation explicit.
+    """
+    text = str(value)
+    if len(text) <= 80:
+        return f"~ {ref} text={_q(text)}"
+    return f"~ {ref} text={_q(text[:79] + '…')} len={len(text)}"
 
 
 def _esc(text: str) -> str:

@@ -216,7 +216,10 @@ def render_delta(
     options = options or RenderOptions()
     out: list[str] = []
     for ref, field_name, old, new in changed:
-        out.append(f"~ {ref} {field_name} {_brief(old)}→{_brief(new)}")
+        out.append(
+            f"~ {ref} {field_name} "
+            f"{_brief(old, options.max_string)}→{_brief(new, options.max_string)}"
+        )
     for node in added:
         out.append("+ " + render_node_line(node, options))
     for ref in removed:
@@ -372,16 +375,16 @@ def _is_implicit(node: SemanticNode, cap: Any) -> bool:
     return DEFAULT_CAP.get(node.role) == cap.name
 
 
-def _brief(value: Any) -> str:
+def _brief(value: Any, limit: int = 80) -> str:
     if value is None:
         return "?"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    # A delta carries the old/new value verbatim today (numbers and bare
-    # strings). Escape control characters so a value that came from a Windows
-    # text surface cannot break the one-line delta format.
-    if isinstance(value, str):
-        return escape_text(value)
-    return escape_text(str(value))
+    # Delta values follow the same one-line string limit as node lines. A
+    # 100 KB text field otherwise reprints in full on every change.
+    text = value if isinstance(value, str) else str(value)
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return escape_text(text)

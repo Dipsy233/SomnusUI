@@ -209,6 +209,19 @@ def test_an_unknown_provider_is_rejected():
         parser.parse_args(["--provider", "telepathy", "observe"])
 
 
+def test_child_session_help_lists_its_subcommands():
+    """`child-session --help` must render, not raise on `%TEMP%` in a help text."""
+    from somnus.cli import build_parser
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["child-session", "--help"])
+    assert exc.value.code == 0
+    text = out.getvalue()
+    assert "run" in text and "peer" in text and "status" in text, text
+    assert "Traceback" not in text
+
+
 # ---------------------------------------------------------------------------
 # repl and rpc
 # ---------------------------------------------------------------------------
