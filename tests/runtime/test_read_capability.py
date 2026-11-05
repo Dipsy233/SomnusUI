@@ -105,6 +105,48 @@ class _NameOnly:
         return self._name
 
 
+class _TextDisplay:
+    """A text control whose Value is empty and whose Name is the content."""
+
+    CurrentControlType = 50020
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def GetCurrentPattern(self, _pid):
+        raise KeyError(_pid)
+
+    def GetCurrentPropertyValue(self, prop):
+        if prop != 30045:
+            raise KeyError(prop)
+        return ""
+
+    @property
+    def CurrentName(self):
+        return self._name
+
+
+class _EmptyEditWithLabel:
+    """An empty input: its Name is a label, not content, so it must stay empty."""
+
+    CurrentControlType = 50004
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def GetCurrentPattern(self, _pid):
+        raise KeyError(_pid)
+
+    def GetCurrentPropertyValue(self, prop):
+        if prop != 30045:
+            raise KeyError(prop)
+        return ""
+
+    @property
+    def CurrentName(self):
+        return self._name
+
+
 def test_a_short_value_is_returned_with_its_length():
     assert _read_payload(_ValueOnly("hello")) == 'value="hello" len=5'
 
@@ -141,6 +183,15 @@ def test_an_unreadable_element_returns_none():
 
 def test_a_text_label_falls_back_to_its_accessibility_name():
     assert _read_payload(_NameOnly("标签")) == 'value="标签" len=2'
+
+
+def test_an_empty_value_on_a_text_display_reads_its_name():
+    payload = _read_payload(_TextDisplay("显示为 464"))
+    assert payload == 'value="显示为 464" len=7'
+
+
+def test_an_empty_input_does_not_read_its_label():
+    assert _read_payload(_EmptyEditWithLabel("Search")) == 'value="" len=0'
 
 
 def test_run_primitive_read_carries_the_payload():

@@ -391,6 +391,17 @@ _READ_TEXT_CAP = 4096
 #: short note and bounded enough that a reply never becomes a document dump.
 _READ_PREVIEW_CHARS = 200
 
+#: UIA_TextControlTypeId. A text *display* carries its content in the accessible
+#: Name; its Value surface may answer an empty string, which is not "no content".
+_UIA_TEXT_CONTROL_TYPE = 50020
+
+
+def _safe_property(element: Any, name: str) -> Any:
+    try:
+        return getattr(element, name)
+    except Exception:  # noqa: BLE001 - an unreadable property is absent
+        return None
+
 
 def _read_text_bounded(element: Any, max_chars: int) -> tuple[str | None, bool]:
     """Read the element's text with a hard cap, and whether the cap was hit.
@@ -451,13 +462,17 @@ def _read_payload(element: Any) -> str | None:
     avoid.
     """
     text, capped = _read_text_bounded(element, _READ_TEXT_CAP + 1)
+    if text == "" and _safe_property(element, "CurrentControlType") == _UIA_TEXT_CONTROL_TYPE:
+        # A text display's content is its accessible Name. Some providers also
+        # answer Value with an empty string; treating that as the content made
+        # `read` answer `value=""` while the delta showed the changed Name.
+        name = _safe_property(element, "CurrentName")
+        if isinstance(name, str) and name:
+            text, capped = name, False
     if text is None:
         # A pure text label's content is its accessible Name (that is already
         # the whole "read" answer for it).
-        try:
-            name = element.CurrentName
-        except Exception:  # noqa: BLE001 - unreadable element
-            name = None
+        name = _safe_property(element, "CurrentName")
         if isinstance(name, str) and name:
             text, capped = name, False
     if text is None:
