@@ -7,18 +7,19 @@ leaves the desktop, provider and ref map untouched; success replaces all three.
 
 from __future__ import annotations
 
-from somnus.ir.node import WindowInfo
+from somnus.ir.node import RawTree, WindowInfo
 from somnus.providers.mock import MockProvider
 from somnus.runtime.session import Session
 from somnus.session import childsession  # noqa: F401 - patched below
-from tests.fixtures.builders import restaurant_demo_tree
+from tests.fixtures.builders import _n, notepad_tree, restaurant_demo_tree
 
 
-class _Peer:
-    """A minimal connected peer: enough for a switch and its window list."""
+class _Peer(MockProvider):
+    """A connected peer desktop; ``windows`` overrides the fixture list."""
 
-    def __init__(self, windows=None, *, connect=True, fail_list=False):
-        self.windows = list(windows or [])
+    def __init__(self, windows=None, *, fixtures=None, connect=True, fail_list=False):
+        super().__init__(fixtures=fixtures or [])
+        self._windows = list(windows or [])
         self._connect = connect
         self.fail_list = fail_list
         self.closed = False
@@ -29,13 +30,14 @@ class _Peer:
     def list_windows(self):
         if self.fail_list:
             raise RuntimeError("desktop read failed")
-        return list(self.windows)
+        return list(self._windows) if self._windows else super().list_windows()
 
     def top_level_signature(self):
-        return ("peer", len(self.windows))
+        return ("peer", len(self._windows))
 
     def close(self):
         self.closed = True
+        super().close()
 
 
 def _window(window_id: str, title: str) -> WindowInfo:
@@ -45,6 +47,28 @@ def _window(window_id: str, title: str) -> WindowInfo:
         process="Peer.exe",
         pid=88,
         hwnd=0x88,
+    )
+
+
+def _child_tree() -> RawTree:
+    """The peer desktop: its first input is also minted as ``q1``."""
+    wid = "w1"
+    label = _n(wid, (0,), "text", name="Child label", patterns=frozenset({"text"}))
+    field = _n(
+        wid,
+        (1,),
+        "input",
+        name="Child Field",
+        value="child",
+        patterns=frozenset({"value", "text"}),
+    )
+    root = _n(wid, (), "pane", name="Child", children=[label, field])
+    return RawTree(
+        window=WindowInfo(
+            window_id=wid, title="Child", process="Peer.exe", pid=88, hwnd=0x88
+        ),
+        root=root,
+        raw_revision=1,
     )
 
 
@@ -118,20 +142,50 @@ def test_a_bad_target_keeps_the_desktop(monkeypatch):
 
 def test_a_successful_switch_drops_the_old_refs(monkeypatch):
     monkeypatch.setattr("somnus.session.childsession.inside_child_session", lambda: False)
-    session = _main_session()
-    ref = _observe_a_ref(session)
+    session = Session(MockProvider(fixtures=[notepad_tree("main")]))
+    session.observe()
+    assert session.result is not None
+    old_q = next(n.ref for n in session.result.root.walk() if n.role == "input")
+    old_w = session._window_refs_by_id[session.target_window]
     old_records = dict(session.registry.records)
 
-    out = session.switch_session("child", peer_factory=lambda: _Peer([_window("w1", "Peer")]))
+    out = session.switch_session(
+        "child", peer_factory=lambda: _Peer(fixtures=[_child_tree()])
+    )
 
     assert out.startswith("OK session=child"), out
+    assert "desktop changed; observe again" in out, out
     assert session.desktop == "child"
     assert session.result is None
     assert session.registry.records == {}
     assert old_records and all(
         session.registry.records.get(name) is None for name in old_records
     )
-    assert session._window_refs.get(ref) is None
+    assert session._window_refs.get(old_w) is None
+    assert session._window_refs == {}
+    assert session._refs_need_observe
+
+    # The new desktop would mint the same names, but nothing has printed the
+    # new namespace yet: both an old node ref and an old window ref are stale.
+    node_out = session.dispatch(f"CALL {old_q}.read()")
+    assert node_out.startswith("ERR STALE_TARGET"), node_out
+    assert "desktop changed; observe again" in node_out, node_out
+    inspect_out = session.dispatch(f"INSPECT {old_q}")
+    assert inspect_out.startswith("ERR STALE_TARGET"), inspect_out
+    window_out = session.dispatch(f"CALL {old_w}.focus()")
+    assert window_out.startswith("ERR STALE_TARGET"), window_out
+    assert "desktop changed; observe again" in window_out, window_out
+
+    # A fresh OBSERVE prints the new namespace; the same name is now new.
+    session.observe()
+    assert not session._refs_need_observe
+    new_node = session.result.find("q1")
+    assert new_node is not None and new_node.name == "Child Field"
+    new_window = next(
+        n.ref for n in session.result.root.walk() if n.role == "window"
+    )
+    assert session.dispatch(f"CALL {new_node.ref}.read()").startswith("OK")
+    assert session.dispatch(f"CALL {new_window}.focus()").startswith("OK")
 
 
 def test_switching_to_the_desktop_you_are_on_is_a_noop(monkeypatch):

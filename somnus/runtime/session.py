@@ -357,6 +357,12 @@ class Session:
         #: "unknown" - the provider offers no cheap signature, it failed to
         #: read, or nothing has been enumerated yet - and always means "enumerate".
         self._top_level_sig: object | None = None
+        #: Set by a successful desktop switch. Ref names are bare strings, so a
+        #: fresh compilation on the new desktop could mint ``q1``/``w3`` again;
+        #: until an OBSERVE has printed the new namespace, any ref carried over
+        #: from the old desktop must be refused rather than resolve to a new
+        #: element with the same name.
+        self._refs_need_observe = False
 
     # ------------------------------------------------------------------ windows
 
@@ -1380,6 +1386,7 @@ class Session:
                 text = f"@rev {self.rev}\n{window_delta}\n" + self._render_window_list()
             else:
                 text = f"@rev {self.rev}\n" + self._render_window_list()
+            self._refs_need_observe = False
             return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
 
         # Raise the target before reading it (and before the header reports its
@@ -1505,6 +1512,7 @@ class Session:
         )
 
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
+        self._refs_need_observe = False
         return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
 
     def _single_active_window_id(self) -> str | None:
@@ -1865,8 +1873,13 @@ class Session:
                     pid,
                     new,
                     wait_s,
-                    refs=on_current,
+                    refs=on_current and not self._refs_need_observe,
                     desktop=None if on_current else "child",
+                    note=(
+                        "desktop changed; observe again"
+                        if self._refs_need_observe
+                        else ""
+                    ),
                 )
             finally:
                 if owns_peer:
@@ -1921,6 +1934,7 @@ class Session:
         *,
         refs: bool,
         desktop: str | None = None,
+        note: str = "",
     ) -> str:
         lines = [f"OK pid={pid}"]
         if new:
@@ -1940,6 +1954,8 @@ class Session:
             lines.append(f"~ no window in {wait_s:g}s on {desktop}")
         else:
             lines.append(f"~ no window in {wait_s:g}s")
+        if note:
+            lines.append(f"~ {note}")
         return "\n".join(lines)
 
     def _wait_for_launch_window(
@@ -2336,6 +2352,13 @@ class Session:
         return self.inspect(Action(kind="inspect", ref=ref, depth=depth)).text
 
     def inspect(self, action: Action) -> Observation:
+        if self._refs_need_observe:
+            raise SomnusError(
+                ErrorCode.STALE_TARGET,
+                ref=action.ref,
+                hint="observe",
+                message="desktop changed; observe again",
+            )
         if self.result is None:
             self._recompile()
         assert self.result is not None
@@ -2381,6 +2404,13 @@ class Session:
     # ------------------------------------------------------------------ call
 
     def call(self, action: Action) -> CallOutcome:
+        if self._refs_need_observe:
+            raise SomnusError(
+                ErrorCode.STALE_TARGET,
+                ref=action.ref,
+                hint="observe",
+                message="desktop changed; observe again",
+            )
         if self.result is None:
             self._recompile()
         assert self.result is not None
@@ -4119,9 +4149,10 @@ class Session:
             self._swap_provider(provider)
             self._session_label = "child"
             self._adopt_windows(listed)
+            self._refs_need_observe = True
             return (
                 f"OK session=child windows={len(self.windows)}\n"
-                + self._render_window_list()
+                "desktop changed; observe again"
             )
 
         # Back to this desktop: rebuild the local provider rather than keeping
@@ -4149,8 +4180,10 @@ class Session:
         self._swap_provider(provider)
         self._session_label = "main"
         self._adopt_windows(listed)
+        self._refs_need_observe = True
         return (
-            f"OK session=main windows={len(self.windows)}\n" + self._render_window_list()
+            f"OK session=main windows={len(self.windows)}\n"
+            "desktop changed; observe again"
         )
 
     def _swap_provider(self, provider) -> None:
@@ -4199,6 +4232,7 @@ class Session:
         # answer "unchanged" for the new one.
         self._top_level_sig = None
         self._prev_structured = None
+        self._refs_need_observe = False
         self.rev = 0
 
     @property
