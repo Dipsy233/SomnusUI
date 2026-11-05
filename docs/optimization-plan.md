@@ -113,6 +113,34 @@
 | **ComboBox 真机成功率** | 已实现 `+select` / `SelectionItem` 首路由 / 回读 / `activate` 升级，但**没有真机成功率数字** | "0%→90%+"仍是旧目标，未以数字确认 |
 | **observe 594ms vs 360ms** | −82.5% 达成，360ms 未达；没有做分段拆分 | 未拆清"骨架 / 窥视 / 可见行 / 编译"的占比前，不确定是否值得再动 |
 
+### 提示词预算余量（后续风险）
+
+| 项目 | 当前值 | 口径 |
+|---|---:|---|
+| `system_prompt.md` + 工具面 | **2669** | `test_prompt_budget.surface_tokens()`：`estimate_tokens(system_prompt.md) + estimate_tokens(TOOL_SPECS)`（prompt 1780 + tools 889） |
+| 软检查上限 | **2670** | `CURRENT_MAX_TOKENS`；余量 **1 token** |
+| 硬上限 | **2700** | `MAX_TOKENS`；余量 **31 token** |
+| `instructions`（`settings_brief`） | **798** | initialize 时发送一次；不参与 `test_prompt_budget` |
+
+软检查与硬上限的用途：
+
+- `CURRENT_MAX_TOKENS=2670` 是当前测量值的回归阈值。超过它表示工具面在没有预算决策的情况下增长；`test_the_model_facing_surface_has_not_quietly_grown` 失败。
+- `MAX_TOKENS=2700` 是绝对上限。超过它表示新增内容无法放入当前工具面；`test_the_model_facing_surface_fits_its_budget` 失败。2700 保持不变，调大该值不作为选项。
+- 两者之间的 30 token 是预留余量，用于区分"需要预算决策"与"无法放入"。
+
+两笔独立预算：
+
+- `instructions` 由 `settings_brief(session)` 在 MCP `initialize` 时发送一次，当前 **798** token；它携带一次性的共享规则与时序值，不参与每轮预算。
+- `system_prompt + 工具面` 是每轮模型可见的固定文本，由 `tests/protocol/test_prompt_budget.py` 的 `surface_tokens()` 测量，当前 **2669**。
+- 修改任一账目后分别复测：`instructions` 使用 `tests/test_settings.py` 的 `settings_brief` 测试；工具面运行 `pytest tests/protocol/test_prompt_budget.py`。
+
+扩展工具面的操作顺序（每次只做一步，并复跑预算测试）：
+
+1. 删除 `system_prompt.md` 中与 `TOOL_SPECS` schema 重复的参数列表。参数名与默认值已由工具 schema 携带；保留工具名、语义与约束。复跑 `test_every_tool_is_named_in_the_prompt` 与预算测试。
+2. 压缩枚举与示例。合并同义枚举、删除重复示例，保留每个能力的行为差异。复跑预算测试。
+3. 前两步仍不足时，才删除事实性句子。每次删除后运行 `pytest tests/protocol/test_prompt_budget.py`，并确认 `tests/test_settings.py` 的 `settings_brief` 断言通过。
+4. 新增语义按"先删除等量旧内容"执行，保持或降低 2669；不调大 `MAX_TOKENS`。
+
 ---
 
 ## 0. 结论先行：三条真实瓶颈
