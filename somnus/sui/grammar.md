@@ -84,7 +84,7 @@ CALL li11.select()    → highlights the file (selection only)
 CALL li11.activate()  → opens the file in its associated application
 ```
 
-A control whose Invoke is a decoration rather than an action (a chat list row
+A control whose Invoke is a decoration and not an action (a chat list row
 that answers Invoke by highlighting and nothing else) is reached through
 `context_menu`: the menu it exposes carries the real command, and the menu items
 are ordinary UIA items whose `activate` works. `context_menu` is a semantic UIA
@@ -160,10 +160,11 @@ can tell what the collection holds without paying one line per row. Use
 `OBSERVE w5 expand REF` to unfold a specific node, or `FIND` to search inside
 it.
 
-FIND is a full-text search over every *named* node in the window (all roles),
-deduplicated to one hit per element with the parent row preferred. Results are
-rendered with their full capability line, so the actionable gesture is always
-visible.
+FIND is a full-text search over every *named* node in the window (all roles).
+It deduplicates to one hit per element and prefers the parent row. A child that
+exposes an action the parent lacks (for example `+set_text`) stays as a
+separate hit with its own line. Results are rendered with their full capability
+line, so the actionable gesture is always visible.
 
 The resolver maps `p1.add` to the entity's `product.add` rule using the ref's
 entity type; the LLM never writes `product.add(target=p1)`.

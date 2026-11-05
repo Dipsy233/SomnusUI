@@ -22,7 +22,7 @@
 | P0-0 仪表 | ✅ | `tests/runtime/test_settle_frames.py`（512 行）+ `bench/run.py` 墙钟 + `SOMNUS_PROFILE` 分段 | — | 达成 |
 | P0-1 cache 瘦身 | ⚠️ 未证实 | 六档 `full/lean/sig/peek/rect/probe` 已实现；**lean/sig 效果与噪声同量级**；默认仍 `full` | 大树 −30%+ | **收益未证实** |
 | P1-1 签名探测 settle | ✅ | 无变化 0 全量；有变化 1 全量 + 探测（见上两行） | 1 全量+1 探测 | 达成 |
-| P1-2 设置项 + 提示 + `configure` | ✅ | `settle_quiet_ms=40 / settle_poll_ms=10 / settle_timeout_s=3.0 / post_action_enum=true`；优先级 内置<文件<env<运行时；MCP `instructions` + 工具名 | 默认 40/10、可调、加载可见 | 达成；提示预算 **2639/2700**（确认门控文案移除后；`run` 刚进 prompt 时是 2695） |
+| P1-2 设置项 + 提示 + `configure` | ✅ | `settle_quiet_ms=40 / settle_poll_ms=10 / settle_timeout_s=3.0 / post_action_enum=true`；优先级 内置<文件<env<运行时；MCP `instructions` + 工具名 | 默认 40/10、可调、加载可见 | 达成；`system_prompt` + 工具面 **2669/2700**（软检查 2670；`instructions` 为 initialize 快照，另计） |
 | P1-3 动作后枚举 | ✅ | **默认开启**，`configure` 可关 | 默认开启、可关 | 达成 |
 | P2-1 下拉选择链 | ✅ 实现 | `+select` + `SelectionItem` 首路由 + 选中值回读 + `activate` 升级（单测 `test_select_capability.py` / `test_executor_select_readback.py`） | 0%→90%+ | **本轮未给真机成功率，旧目标未以数字确认** |
 | P2-2 孪生 | ✅ | 可证明同元素才折叠，否则标 `twin=true`；失败原地重试孪生 | 一次 CALL 命中 | 达成 |
@@ -31,7 +31,7 @@
 | P2-5 投影去噪 | ✅ | 带子节点的 pane/group 不再发 `set_text`（`caps.py`） | — | 达成 |
 | P2-6 registry 按窗口隔离 | ✅ | 指纹键为 `(window_id, fingerprint)`（`test_registry_window_scope.py`） | — | 达成 |
 | P2-7 原地重试 | ✅ | `EFFECT_NOT_CONFIRMED` 时同目标换下一条未试 route 重试**一次**；成功 `OK ~ retried via <primitive>`，仍失败抛原错；真机未触发（首条路由都生效），由构造用例保证 | 换 route 再试一次 | 达成（`test_effect_retry.py`） |
-| 确认门控移除 | ✅ | `call`/`call_batch`/`run` 直接执行 `!` 能力；`CONFIRMATION_REQUIRED`、`--confirmed`、`policy.check_action`、`CRITICAL_NAMES` 全删；保留进程 allow-list、权限校验、通道开关、路由链、效果校验、批处理预校验 | 项目取向：不做安全机制 | 达成（提示预算降到 2639） |
+| 确认门控移除 | ✅ | `call`/`call_batch`/`run` 直接执行 `!` 能力；`CONFIRMATION_REQUIRED`、`--confirmed`、`policy.check_action`、`CRITICAL_NAMES` 全删；保留进程 allow-list、权限校验、通道开关、路由链、效果校验、批处理预校验 | 项目取向：不做安全机制 | 达成（`system_prompt` + 工具面降到 2669） |
 | `BoundingRectangle` 进缓存 | ✅ | 30001 已加；full **+6.2%**、sig **+11.6%**（视口测量） | 需要 | 达成（代价已测） |
 | P3-1 FIND 等待 | ✅ | 异步菜单 **140–172ms** 命中；`timeout=1.0` 约 **1010ms** 返回；大树 `timeout=3.0` 约 **3.1s** | 省 1 回合 | 达成（运行时按 timeout 线性） |
 | P3-2 桌面摘要 | ⚠️ 部分 | `WINDOWS` 行默认出现；成本 **0.002ms**、tokens **+3**；**`ops` 未实现** | 带 `ops` | 部分 |
@@ -44,8 +44,8 @@
 | 唯一 active 窗口 | ✅ | 多个 claimant 只输出一个 `active`，目标优先（`326d2ec`，`test_active_window.py`） | — | 达成 |
 | settle 后窗口刷新 | ✅ | 标题可能在 settle 后才出现，刷新移到 settle 之后；桌面签名不变则跳过枚举，**任何差异都全量枚举**（`326d2ec`） | — | 达成 |
 | CR/TAB 转义 | ✅ | `escape_text` 转义 `\\` `"` `\r` `\n` `\t`，保证一节点一行（`326d2ec`；见 `sui/grammar.md`） | — | 达成 |
-| 子桌面启动进程 | ✅ | peer 的 `process.start/status/kill` + CLI `child-session run`；`child_allow_spawn` + `allow_processes` 双开关；SUI-Text 不暴露（`94b6c77`，`test_peer_process.py`） | — | 达成（CLI-only） |
-| 测试 | ✅ | 非 GUI **733 passed**；真机 `-m windows` **38 passed**（子桌面，约 62–66s，零 `window ... did not appear`） | — | 达成 |
+| 子桌面启动进程 | ✅ | peer 的 `process.start/status/kill` + CLI `child-session run`；模型面由 `launch` 启动（peer 路径需 `child_allow_spawn`），`SESSION` 无 `run`（`94b6c77`/`d59f663`，`test_peer_process.py`/`test_launch.py`） | — | 达成 |
+| 测试 | ✅ | 非 GUI **784 passed**；真机 `-m windows` 也通过（最近记录 38 passed，子桌面，约 62–66s，零 `window ... did not appear`） | — | 达成 |
 
 ### 关键裁决（本轮定案）
 
@@ -55,7 +55,7 @@
 | **不做坐标 / OCR / 截图** | 全库无截图、坐标、DPI 路径；三个真实失败（下拉、孪生、空壳）均在 UIA 内解决。`BoundingRectangle` 只作为视口信号进缓存，不是坐标点击（[viewport-capture-proposal.md](viewport-capture-proposal.md) §1.1） |
 | 刷新在 **settle 之后**判定，**任何差异都全量枚举** | `Session._refresh_after_action` 在 settle 后比较 `provider.top_level_signature()`；`False`（签名完全一致）才跳过枚举，`True`/`None` 一律 `refresh_windows()`（`326d2ec`；`session.py` 的 `_desktop_changed` / `_refresh_after_action`） |
 | `escape_text` 保证**一节点一行** | `sui/serialize.py` 的 `escape_text` 转义 `\\`、`"`、CR、LF、TAB；Windows 文本面的换行是裸 CR，只转义 `\n` 会把一行拆成两行。`executor._escape_read_text` 对 `read` 载荷用同一套规则 |
-| SUI-Text **面不暴露进程启动** | peer 的 `process.start/status/kill` 只由 `child-session run` 驱动；`SESSION` 只解析 `open/close/detach`，七个工具里没有进程启动（`94b6c77`） |
+| **`launch` 是模型面唯一进程启动入口** | `launch` 在本地或 peer 上启动程序；`SESSION` 只解析 `open/close/detach`，没有 `SESSION run`；CLI `child-session run` 保留（`94b6c77`/`d59f663`） |
 
 ### 后续三笔的实测数字
 
@@ -317,10 +317,10 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
     `SETTINGS quiet_ms=40 poll_ms=10 timeout_s=3.0 post_action_enum=on scope=session`
     （`persist=true` 时追加 `persisted=<config path>`）。`call_tool` 里一个分支，调用 `Session.apply_settings(...)`；写盘用 `config.load()→改字段→config.save()`。`examples/agent.py` 与 MCP 都经由 `TOOL_SPECS`/`call_tool`，因此一处实现全部宿主可用。
 - **预期**：[算] 小窗口有变化 3 帧→2 帧，再省 ~180ms；大树无影响（2 帧已是最小）。**必须和 P1-1 一起上**，单独改只是把睡眠从 100ms 降到 40ms。
-- **本轮结果**：✅ 已实现。四个键 + 优先级 + `configure` + MCP `instructions`；提示预算收尾后 **2639/2700**（`run` 刚进 prompt 时 2695，确认门控文案移除后降到 2639）。`persist=true` 走 `Session._persist_settings → config.persist_session_settings`；`tools._configure` 保留 `NotImplementedError` 回退。
-- **偏差**：计划里的 `tests/protocol/test_configure_tool.py` 实际落在 **`tests/test_settings.py`**（466 行）；预算余量 61 token，后续加文案仍应先减字。
+- **本轮结果**：✅ 已实现。四个键 + 优先级 + `configure` + MCP `instructions`；`system_prompt` + 工具面 **2669/2700**（软检查 2670；`instructions` 为 initialize 快照，不参与该预算）。`persist=true` 走 `Session._persist_settings → config.persist_session_settings`；`tools._configure` 保留 `NotImplementedError` 回退。
+- **偏差**：计划里的 `tests/protocol/test_configure_tool.py` 实际落在 **`tests/test_settings.py`**（466 行）；硬上限余量 31 token、软检查余量 1 token，后续加文案仍应先减字。
 - **验证**：
-  - `tests/protocol/test_prompt_budget.py` 会强制"每个 tool 名出现在 system_prompt 里"，且总预算 ≤2700 token（`test_prompt_budget.py:24,38-41`）。加 `configure` 与 3 行说明后必须仍在预算内。
+  - `tests/protocol/test_prompt_budget.py` 会强制"每个 tool 名出现在 system_prompt 里"，并检查硬上限 2700、软检查 2670（`test_prompt_budget.py`）。加 `configure` 与说明后必须仍在预算内；`instructions` 不参与该测试。
   - 新增 `tests/protocol/test_configure_tool.py`：默认值回显、非法值不改、`reset`、`persist` 往返、`quiet_ms` 改动后下一次 CALL 的帧数变化。
   - 扩展 `tests/runtime/test_config.py`：新键的环境变量/文件/坏值三条路径。
   - 真机："状态翻转用例连跑 20 次无 TARGET_DISABLED 误判"（quiet 40 的门槛）。
@@ -483,7 +483,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 | 写入路径（标题不变） | — | 总 **81–104ms** / enum **0.6–0.9ms** | 达成（skips enumeration） |
 | 写入路径（标题变化） | — | enum **78–104ms** / 总 **154–238ms** | 与旧实现同量级；修的是正确性 |
 | `observe()` 的 enum | — | 仍 **78–102ms**（全量） | 如实记录 |
-| 提示预算 | ≤2700 | **2639/2700**（确认门控文案移除后；`run` 刚进 prompt 时是 2695） | 达成（余量 61） |
+| 提示预算 | 硬上限 2700、软检查 2670 | **2669/2700**（prompt 1780 + tools 889） | 达成（硬余量 31，软余量 1） |
 
 **读法**：真正的收益来自"减少帧数 + 只采视口"，不是"缩 cache request"；后者（P0-1）被本轮实测否定。`sig`/`lean` 档保留为实验开关，不改变默认行为。
 
@@ -491,7 +491,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 
 ## 5. 验证与回归（已实现）
 
-**本轮结果**：非 GUI（默认排除 `-m windows`）**733 passed**；真机 `pytest -m windows` **38 passed**（在子桌面会话内运行，约 **62–66s**，零 `window ... did not appear`）。 `30412a8` 新增 `test_run_script.py` / `test_observation_warnings.py` / `test_effect_retry.py`；后续提交新增 `test_read_capability.py` / `test_active_window.py` / `test_post_action_enum.py` / `test_peer_process.py` / `test_stale_relocation.py` / `test_find_escalation.py` / `test_small_window_adaptation.py`。提示预算测试通过，见 §9 的 2639 说明。
+**本轮结果**：非 GUI（默认排除 `-m windows`）**784 passed**；真机 `pytest -m windows` 也通过（最近记录 **38 passed**，在子桌面会话内运行，约 **62–66s**，零 `window ... did not appear`）。 `30412a8` 新增 `test_run_script.py` / `test_observation_warnings.py` / `test_effect_retry.py`；后续提交新增 `test_read_capability.py` / `test_active_window.py` / `test_post_action_enum.py` / `test_peer_process.py` / `test_stale_relocation.py` / `test_find_escalation.py` / `test_small_window_adaptation.py`。提示预算测试通过，见 §9 的 2669 说明。
 
 1. **单测**（无需真机）：`pytest -q`（默认排除 `-m windows`，见 `pyproject.toml:44`）
    - `tests/runtime/test_settle_frames.py`（512 行）：参数化快照耗时，断言帧数/快照次数，以及"无变化只探测、零全量"。
@@ -499,7 +499,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
    - `tests/runtime/test_viewport_capture.py`（674 行）+ `test_viewport_projection.py`（229 行）：视口采集、回退全量、FIND 重试、`OBSERVE expand`。
    - `tests/runtime/test_precision_integration.py`（415 行）、`test_registry_window_scope.py`（113 行）、`test_verifier_status.py`、`test_dropdown_selection.py`、`test_executor_select_readback.py`、`test_twin_collapse.py`、`test_select_capability.py`。
    - `tests/projection/test_desktop_summary.py`、`tests/runtime/test_find_wait_and_desktop_summary.py`。
-   - **约束仍在**：`test_prompt_budget.py` 总预算 2700、且"每个 tool 名必须出现在 system_prompt"；当前 **2639**，新增文案前仍应先减字。
+   - **约束仍在**：`test_prompt_budget.py` 只测 `system_prompt.md` + 工具面，硬上限 2700、软检查 2670；当前 **2669**（prompt 1780 + tools 889），新增文案前应先减字。MCP `instructions` 在 initialize 时发送一次，不参与该测试。
 2. **真机**：
    - `dotnet build apps\scenario-suite`（B 记录 5.7s 可过）。
    - `pytest -m windows tests/e2e/test_windows_scenarios.py`（store/form/chat/console）。
@@ -530,7 +530,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 | 持久化 | `Session._persist_settings` → `config.persist_session_settings` | ✅（`tools._configure` 仍保留 `NotImplementedError` 回退） |
 | 动作后枚举开关 | `Session.call` / `Session.call_batch`（`if self.post_action_enum: self.refresh_windows()`）；`KeyError` 恢复路径保持无条件枚举 | ✅ |
 | 加载时提示（MCP） | `mcp_server.settings_brief` + `Server(..., instructions=...)` | ✅ 由当前生效值动态生成 |
-| 加载时提示（文本宿主） | `system_prompt.md` 工具表 + `## Settings` | ✅ 预算 2639/2700 |
+| 加载时提示（文本宿主） | `system_prompt.md` 工具表 + `## Settings` | ✅ `system_prompt` + 工具面 2669/2700（软检查 2670） |
 | 可改入口 | `tools.TOOL_SPECS` 的 `configure` + `tools._configure`；返回 `SETTINGS ... scope=session`（`persist` 时追加 `persisted=<path>`） | ✅ |
 
 **边界（工具描述已写）**：`configure` 只改"等待多久 / 是否重枚举窗口"这类节奏参数；非法值一个都不改；`persist` 必须显式 `true` 才写盘；`reset=true` 回到本进程启动时的值。
@@ -541,7 +541,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 
 ## 7. 证据标注
 
-- **本轮真机实测（[实-本轮]，由实现方报告）**：observe store 3385→594ms、tokens 292；无变化 CALL ~6s→686–706ms；探测 1622–1938→384–404ms；小窗 CALL 215–231ms；无变化 0 全量；FIND 140–172ms / timeout 1.0≈1010ms / 大树 3.0≈3.1s；run 453ms vs 428ms；桌面摘要 0.002ms/+3 token、`ops` 111ms；`top_level_signature` p50 0.31–0.52ms（max ≤2.15ms），`list_windows` p50 70–78ms；写入路径（标题不变）81–104ms / enum 0.6–0.9ms，标题变化时 enum 78–104ms / 总 154–238ms；`observe()` enum 仍 78–102ms；计算器（UWP）在子桌面 `OBSERVE full` 读到 34 个按钮；探针 A 段 7/7、B 段 4/4。测试 **733 passed**（非 GUI）、**38 passed**（`-m windows`，子桌面，约 62–66s，零 `window ... did not appear`）。**这些真机数字未独立复跑**；提示预算复算为 **2639**（prompt 1641 + tools 998），与报告一致。
+- **本轮真机实测（[实-本轮]，由实现方报告）**：observe store 3385→594ms、tokens 292；无变化 CALL ~6s→686–706ms；探测 1622–1938→384–404ms；小窗 CALL 215–231ms；无变化 0 全量；FIND 140–172ms / timeout 1.0≈1010ms / 大树 3.0≈3.1s；run 453ms vs 428ms；桌面摘要 0.002ms/+3 token、`ops` 111ms；`top_level_signature` p50 0.31–0.52ms（max ≤2.15ms），`list_windows` p50 70–78ms；写入路径（标题不变）81–104ms / enum 0.6–0.9ms，标题变化时 enum 78–104ms / 总 154–238ms；`observe()` enum 仍 78–102ms；计算器（UWP）在子桌面 `OBSERVE full` 读到 34 个按钮；探针 A 段 7/7、B 段 4/4。测试 **784 passed**（非 GUI）；`-m windows` 也通过（最近记录 **38 passed**，子桌面，约 62–66s，零 `window ... did not appear`）。**这些真机数字未独立复跑**；`system_prompt` + 工具面复算为 **2669**（prompt 1780 + tools 889）。
 - **子桌面测量口径**：Win11 记事本的"恢复上次会话"会把旧标签页带回**子桌面**（用户配置级），所以 `observe` token 的判定用**相对基线**（同一会话前后对比），不假设"子桌面天然干净"。UWP 计算器在子桌面能起、能读，是 `94b6c77` 的验收样本。
 - **读代码确认（[码]，本轮工作区）**：签名探测/降级到全量的三条路径、六档 cache tier、`post_action_enum` 开关、`configure` 的原子校验与 `persist` 钩子、`settings_brief` 的 `instructions`、`_desktop_summary` 不取 `ops`、registry 的 `(window_id, fingerprint)`、`caps._is_text_entry` 的 `not node.children`、孪生重试、`EFFECT_NOT_CONFIRMED` → `_retry_unconfirmed` 换 route 一次（成功 `~ retried via <primitive>`）、`last_foreground_error` + `_observation_warnings`、确认门控移除（`policy.check_action`/`CRITICAL_NAMES`/`--confirmed` 已不存在）、键盘每字符 0.5s 未改、MCP `_call_tool` 仍同步。
 - **后续三笔读码确认**：`94b6c77` 的 `process.start/status/kill` 与 `child_allow_spawn`/`allow_processes` 双开关；`326d2ec` 的 `_refresh_after_action`（`False` 才跳过枚举）、`_single_active_window_id`、`serialize.escape_text`（CR/TAB）、`executor._read_payload`（4096/200）；`eba3926` 的 `registry.relocate` 与 `_find_escalation_ready`（截断集合永不升级）。
@@ -574,10 +574,15 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 5. **`ops=` 是"有渲染分支、无数据源"**：`projection/engine.py` 的 `_desktop_segment` 支持 `ops=`，但 `Session._desktop_summary` 明确不产生该字段（111ms > 80ms 上限）。读文档容易误以为它已生效。
 6. **P2-3 已实现（本条关闭）**：`uia.last_foreground_error` + `Session._observation_warnings`；触发条件是"有标题且根 `children==0`"，不是原计划的"节点数骤降 20%"。
 7. **旧行号引用全部失效**：本轮 `session.py`/`uia.py`/`settle.py` 大改后，§3 各条目里的行号已不对应；阅读时请以函数名/符号为准（§6 已改为符号）。
-8. **提示预算**：本轮三笔后为 **2639/2700**（prompt 1641 + tools 998，用 `estimate_tokens` 复算一致）。中间状态曾出现 2695/2692，均已过时。
+8. **提示预算**：`system_prompt` + 工具面为 **2669/2700**（prompt 1780 + tools 889；软检查 2670，硬上限 2700）。MCP `instructions` 为 initialize 一次性快照，另计。中间状态曾出现 2695/2692，均已过时。
 9. **`viewport-capture-proposal.md` 里有两个预测未复核**：§1.2 的"1000 行非虚拟化 ≈0.95s（−92%）"和 §2.4 的"探测 150–300ms"都没有真机验证（后者已被 384–404ms 否定）。
 10. **`WINDOWS` 摘要的目标 ref 与正文不一致（已修复）**：早期 `Session._desktop_summary` 从 `_window_refs_by_id` 取 ref，而 `_window_header` 只更新正向映射 `_window_refs[target_ref]`，实测会输出 `WINDOWS w2` + `WINDOW w1`（同一窗口两个 ref）。`30412a8` 已修复；现在实测 `--demo observe` 输出 `WINDOWS w1` + `WINDOW w1`。两份 README 均按修复后的行为写。
 11. **README 曾写"`WINDOWS` 行列出每个顶层窗口"**：实际最多列 **6 个**，超过部分折叠为 `+N more`；active 窗口若在 6 个之外会替换第 6 席以保证出现（`projection/engine.py` 的 `_MAX_DESKTOP_WINDOWS` / `_desktop_summary_line`）。两份 README 已改成"最多六个，active 始终在列"。
 12. **README 曾写 `OBSERVE ... expand` "渲染下一页"**：实现只是把 ref 的路径交给采集层，**页大小/是否等价一页未经验证**（viewport §"未实现 6"）。两份 README 已改为"为容器请求一页"，不再承诺固定页语义。
-13. **README 的测试数字未跟上**：旧文只写 `pytest`/`pytest -m windows`，没有数量；`optimization-plan` 曾写 658/31。现统一为 **733 passed**（非 GUI）与 **38 passed**（`-m windows`，子桌面）。
-14. **`docs/child-session.md` 曾写"the four tools"**：模型面实际是 **七个工具**（`observe/find/inspect/call/run/switch/configure`）；"四个"是早期只剩 observe/call 时的旧口径。已改为 "the tool surface"。
+13. **README 的测试数字未跟上**：旧文只写 `pytest`/`pytest -m windows`，没有数量；`optimization-plan` 曾写 658/31。现统一为 **784 passed**（非 GUI）；`-m windows` 也通过（最近记录 38 passed，子桌面）。
+14. **`docs/child-session.md` 曾写"the four tools"**：模型面实际是 **八个工具**（`observe/find/inspect/call/run/switch/launch/configure`）；"四个"是早期只剩 observe/call 时的旧口径。已改为 "the tool surface"。
+15. **切换 ref 口径已更新**：旧文只写"切换丢弃 ref"。实际切换不分配新 ref；旧节点/窗口 ref 在重新 `observe` 前由 `CALL`/`INSPECT` 返回 `STALE_TARGET`，回复为 `OK session=… windows=N` + `desktop changed; observe again`。
+16. **`launch` 行为已补全**：`wait_s` 默认 3 秒，窗口行最多 6 条后 `+N more`，多于一个窗口时有计数行；从 main 用 `window=child` 只报标题并提示 `switch child`。
+17. **FIND 去重规则已补全**：父行优先；子节点相对父节点新增动作能力（如 `+set_text`）时单独保留一行。
+18. **预算口径已拆开**：`instructions` 为 initialize 一次性快照；`test_prompt_budget` 只测 `system_prompt.md` + 工具面（硬上限 2700、软检查 2670，当前 2669）。
+19. **测试夹具约定已补**：记事本用 `WM_CLOSE` + UIA 选择"不保存"，5 秒超时回退 `taskkill`；测量前建立干净基线，否则 `DIRTY_BASELINE`。

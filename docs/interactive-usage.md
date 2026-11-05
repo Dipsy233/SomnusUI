@@ -93,8 +93,7 @@ agent 移到子会话里。agent 同一时间只在一个桌面上，用 `SWITCH
 ```text
 sui> SWITCH child
 OK session=child windows=3
-  WINDOW w1 "此电脑"
-  ...
+desktop changed; observe again
 
 sui> OBSERVE w2                 ← 现在 ref 指的是子会话里的窗口
 sui> CALL q1.set_text("hi")     ← 输入发生在子会话，不影响用户
@@ -111,8 +110,17 @@ OK session=main windows=11      ← 回到用户的桌面
 | `SESSION close` | 结束子会话并回到 main |
 | `SESSION detach` | 本进程退出后仍保留它 |
 
-**切换会丢弃全部 ref。** 切换后窗口列表不同，`w1` 指向新桌面上的另一个窗口。
-操作前重新 `OBSERVE`。
+**真正切换桌面时不分配任何 ref。** 响应为 `OK session=… windows=N`，随后
+`desktop changed; observe again`。重新 `OBSERVE` 之前，`CALL` 与 `INSPECT`
+引用旧节点或旧窗口 ref 时返回 `STALE_TARGET`。
+
+## 启动程序
+
+`launch` 是工具调用，不属于 SUI-Text 命令集，`sui>` REPL 不解析它。MCP 或
+JSON-RPC 宿主发送 `{command, args, cwd, window, wait_s}`，返回 `OK pid=…` 与
+新增窗口行；`wait_s` 默认 3 秒。从 main 启动到子桌面时使用
+`window="child"`，响应只列标题并提示 `switch child`；该路径要求子会话已打开、
+peer 可用，且 `child_allow_spawn` 为真。
 
 系统级配置（需管理员，只需一次）：
 

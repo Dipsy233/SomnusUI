@@ -71,9 +71,9 @@ ref（`p1`、`w1`、`q1` …）只在一个会话内有效。`somnus observe` �
 ```
 
 服务器暴露下列八个工具。provider 自动选择：安装 `[windows]` 扩展时使用
-UI Automation，否则回放录制的固件。服务器启动时在 `instructions` 中写明当前
-生效的 settle 值：`settle_quiet_ms=40`、`settle_poll_ms=10`、
-`settle_timeout_s=3.0`、`post_action_enum=on`。
+UI Automation，否则回放录制的固件。`instructions` 在 `initialize` 时只发送一次，
+内容是当时的生效值快照：`settle_quiet_ms=40`、`settle_poll_ms=10`、
+`settle_timeout_s=3.0`、`post_action_enum=on`。`configure` 返回实时生效值。
 
 ## 工具与协议
 
@@ -85,10 +85,29 @@ UI Automation，否则回放录制的固件。服务器启动时在 `instruction
 | `call` | `CALL ref.cap(args)`；多行作为一次批处理执行 | `OK`/`ERR` 与增量 |
 | `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL`、每步一行、合并增量 |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` 与窗口清单 |
-| `launch` | 在当前桌面启动程序 | `launch(command, args, cwd, window)` |
+| `launch` | 在当前桌面或子桌面启动程序；`wait_s` 默认 3 秒 | `OK pid=…` 与新增窗口行（最多六条，之后 `+ N more`） |
 | `configure` | 调整 `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
 
 `configure` 是节奏控制工具，不授予或拒绝能力。
+
+### 切换桌面
+
+真正切换桌面时，响应为 `OK session=… windows=N`，随后一行
+`desktop changed; observe again`。切换不分配任何 ref。重新 `OBSERVE` 之前，
+`CALL` 与 `INSPECT` 引用旧节点或旧窗口 ref 时返回 `STALE_TARGET`，并带
+`hint=observe`。没有改变桌面的切换返回 `OK session=… (already here)`，当前
+ref 继续有效。
+
+### 启动程序
+
+`launch(command, args, cwd, window, wait_s)` 启动程序，返回 `pid` 与
+`wait_s`（默认 3 秒）内出现的窗口。窗口行最多六条，之后 `+ N more`；新增
+窗口多于一个时追加 `~ N windows from one launch`。在当前桌面启动时，响应
+分配 ref；若会话在切换后仍等待新的 `OBSERVE`，则追加
+`desktop changed; observe again`。从 main 使用 `window="child"` 时，程序通过
+peer 启动，响应只列标题，并追加 `~ on child; switch child to address them`。
+peer 侧启动还要求
+`child_allow_spawn`；两条路径都应用 `allow_processes`。
 
 ### SUI-Text
 
@@ -169,6 +188,9 @@ BUTTON b1 "共享(S)..."
 BUTTON b2 "高级共享(D)..."
 LINK lnk1 "网络和共享中心"
 ```
+
+`FIND` 按元素去重，每个元素只保留一条命中，并优先父行。子节点带有父行没有的
+动作（例如 `+set_text`）时，仍单独占一行。
 
 **`inspect`**：查看单个节点的全部信息，包括隐含能力与关系：
 
@@ -425,10 +447,19 @@ CLI：
 | `SESSION close` | 结束并返回 |
 | `SESSION detach` | 本进程退出后保留 |
 
-切换会替换 provider，并重置注册表与窗口 ref 映射。切换后 `w1` 不再指向之前的
-窗口。操作前重新 `OBSERVE`。编译器、投影、注册表、解析器、策略与 ref 命名空间
-留在主侧；子会话通过命名管道运行一个瘦 peer。设计说明、实测数据与已否定的方案
-见 [docs/child-session.md](docs/child-session.md)。
+切换会替换 provider，并重置注册表与窗口 ref 映射，不分配任何 ref。响应为
+`OK session=… windows=N`，随后一行 `desktop changed; observe again`。重新
+`OBSERVE` 之前，`CALL` 与 `INSPECT` 引用旧节点或旧窗口 ref 时返回
+`STALE_TARGET`。编译器、投影、注册表、解析器、策略与 ref 命名空间留在主侧；
+子会话通过命名管道运行一个瘦 peer。
+
+从 main 使用 `launch(..., window="child")` 会在子桌面启动程序。响应只列标题，
+最多六条 `+ WINDOW` 行，之后 `+ N more`，并追加
+`~ on child; switch child to address them`。该路径要求 `child_allow_spawn`，
+并应用 `allow_processes`。
+
+设计说明、实测数据与已否定的方案见
+[docs/child-session.md](docs/child-session.md)。
 
 ## 文档索引
 
@@ -525,8 +556,8 @@ pytest -m windows           # 真实窗口，仅 Windows
 同一批界面。`MockProvider` 回放录制的 `RawTree` 固件并执行脚本化变更，包括通过
 具名回调实现的逐行行为。
 
-本机实测：可移植套件 733 passed；`pytest -m windows` 38 passed，在子会话内运行，
-约 62–66 秒，没有出现 `window ... did not appear` 超时。UWP 计算器在该子桌面
+本机实测：可移植套件 784 passed。`pytest -m windows` 同样通过；最近一次记录在
+子会话内运行约 62–66 秒，没有出现 `window ... did not appear` 超时。UWP 计算器在该子桌面
 能启动并读取，`OBSERVE full` 读到 34 个按钮。
 
 ## 指标

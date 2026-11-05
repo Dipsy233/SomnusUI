@@ -33,12 +33,13 @@ Verified live, in both directions: a process in session 1 enumerates sessions 0
 and 1 and nothing else; a process in session 2 enumerates sessions 0 and 2. The
 accessibility tree behaves the same way. It is a kernel boundary.
 
-## For the agent: one tool
+## For the agent: desktop switching
 
-The agent drives **one desktop at a time**. It is not given both, because every
-ref (`w1`, `b3`, `q1`) is a bare name that only means something relative to a
-desktop; two at once would make every call ambiguous, and asking the model to
-disambiguate each one would cost more than the feature is worth.
+The agent drives **one desktop at a time**. Desktop switching is one tool. The
+agent is not given both desktops, because every ref (`w1`, `b3`, `q1`) is a
+bare name that only means something relative to a desktop; two at once would
+make every call ambiguous, and asking the model to disambiguate each one would
+cost more than the feature is worth.
 
 ```
 SWITCH main          go to the user's desktop
@@ -48,8 +49,11 @@ SESSION close        end it, and return
 SESSION detach       leave it running after this process exits
 ```
 
-Switching **discards every ref**. After a `SWITCH` the window list is different,
-so `w1` becomes a name on the new desktop. Re-`OBSERVE` before acting.
+A switch that changes desktop **assigns no refs**. The reply is
+`OK session=… windows=N` followed by `desktop changed; observe again`. Until a
+fresh `OBSERVE`, `CALL` and `INSPECT` that name an old node or window ref return
+`STALE_TARGET` with `hint=observe`. A switch that does not change desktop
+returns `OK session=… (already here)` and leaves the current refs valid.
 
 ## Starting programs on the child desktop
 
@@ -88,10 +92,17 @@ Two switches decide who may start what:
   which is the same list that decides which processes may be *operated*. A
   program that could not be operated is not allowed to be spawned either.
 
-`run` is CLI-only. The model-facing surface has eight tools; `launch` starts a
+`run` is CLI-only. The model-facing surface has eight tools. `launch` starts a
 program on the current desktop (local `CreateProcess` on main, the peer's
-`process.start` on child) under the existing `allow_processes` list only. There
-is no `SESSION run` command in SUI-Text.
+`process.start` on child). Both paths apply `allow_processes`; the peer path
+also requires `child_allow_spawn`. `wait_s` defaults to 3 s. The reply carries
+`pid` and at most six `+ WINDOW` lines, then `+ N more`; more than one new
+window adds `~ N windows from one launch`. On the current desktop it assigns
+refs unless the session still awaits a fresh `OBSERVE` after a switch; then it
+adds `desktop changed; observe again`. From main, `window="child"` starts
+the program through the peer and reports titles only, followed by
+`~ on child; switch child to address them`. There is no `SESSION run` command
+in SUI-Text.
 
 
 ## Architecture
@@ -118,8 +129,9 @@ no model, no policy of its own.
 
 That keeps the design at one agent. A switch has low cost: `Session` is written
 against `AccessibilityProvider`, so the far session is another provider
-(`peerprovider.py`). Switching swaps the provider and resets the refs; the
-compiler and runtime do not detect that the provider is remote.
+(`peerprovider.py`). Switching swaps the provider, resets the ref namespace and
+assigns no refs; the compiler and runtime do not detect that the provider is
+remote.
 
 The transport is a named pipe, chosen after measuring what crosses the boundary
 (see below). It carries the provider interface directly - `list_windows`,

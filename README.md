@@ -85,9 +85,10 @@ one-shot rule.
 
 The server exposes the eight tools listed below. The provider is selected
 automatically: UI Automation when the `[windows]` extra is installed, recorded
-fixtures otherwise. The server's `instructions` field states the effective
-settle values at startup: `settle_quiet_ms=40`, `settle_poll_ms=10`,
-`settle_timeout_s=3.0` and `post_action_enum=on`.
+fixtures otherwise. The `instructions` field is sent once at `initialize`;
+it is a snapshot of the values in force at that time: `settle_quiet_ms=40`,
+`settle_poll_ms=10`, `settle_timeout_s=3.0` and `post_action_enum=on`.
+`configure` returns the live values.
 
 ## Tools and protocol
 
@@ -99,10 +100,31 @@ settle values at startup: `settle_quiet_ms=40`, `settle_poll_ms=10`,
 | `call` | `CALL ref.cap(args)`; several lines run as one batch | `OK`/`ERR` plus a delta |
 | `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL`, per-step lines and a merged delta |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` plus a window list |
-| `launch` | start a program on the current desktop | `launch(command, args, cwd, window)` |
+| `launch` | start a program on the current or child desktop; `wait_s` defaults to 3 s | `OK pid=…` plus new window lines (max six, then `+ N more`) |
 | `configure` | tune `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
 
 `configure` is a pacing control. It does not grant or deny capabilities.
+
+### Switching desktops
+
+A switch that changes desktop returns `OK session=… windows=N`, followed by
+`desktop changed; observe again`. It assigns no refs. Until a fresh `OBSERVE`,
+`CALL` and `INSPECT` that name an old node or window ref return `STALE_TARGET`
+with `hint=observe`. A switch that does not change desktop returns
+`OK session=… (already here)` and leaves the current refs valid.
+
+### Launching programs
+
+`launch(command, args, cwd, window, wait_s)` starts a program and returns its
+`pid` plus the windows that appeared within `wait_s` (default 3 s). Window
+lines are capped at six, followed by `+ N more`; more than one new window adds
+`~ N windows from one launch`. On the current desktop the reply assigns refs,
+unless the session is awaiting a fresh `OBSERVE` after a switch; then it adds
+`desktop changed; observe again`.
+With `window="child"` from main the program starts through the peer and the
+reply lists titles only, followed by `~ on child; switch child to address
+them`. Launching on the peer also requires `child_allow_spawn`; both paths
+apply `allow_processes`.
 
 ### SUI-Text
 
@@ -190,6 +212,10 @@ BUTTON b1 "共享(S)..."
 BUTTON b2 "高级共享(D)..."
 LINK lnk1 "网络和共享中心"
 ```
+
+`FIND` deduplicates to one hit per element and prefers the parent row. A child
+that exposes an action the parent lacks, such as `+set_text`, remains a
+separate hit with its own line.
 
 **`inspect`**: all information about one node, including implicit capabilities
 and relations:
@@ -477,10 +503,18 @@ For the agent, one desktop is active at a time:
 | `SESSION close` | end it and return |
 | `SESSION detach` | leave it running after this process exits |
 
-A switch replaces the provider and resets the registry and window-ref maps.
-After a switch, `w1` no longer names the previous window. Re-`OBSERVE` before
-acting. The compiler, projection, registry, resolver, policy and ref namespace
-remain on the main side; the child session runs a thin peer over a named pipe.
+A switch replaces the provider and resets the registry and window-ref maps, and
+assigns no refs. The reply is `OK session=… windows=N` plus
+`desktop changed; observe again`. Until a fresh `OBSERVE`, `CALL` and `INSPECT`
+that name an old node or window ref return `STALE_TARGET`. The compiler,
+projection, registry, resolver, policy and ref namespace remain on the main
+side; the child session runs a thin peer over a named pipe.
+
+`launch(..., window="child")` starts a program on the child desktop from main.
+The reply lists titles only, at most six `+ WINDOW` lines followed by
+`+ N more`, and ends with `~ on child; switch child to address them`. This path
+requires `child_allow_spawn` and applies `allow_processes`.
+
 Design notes, measurements and rejected approaches are in
 [docs/child-session.md](docs/child-session.md).
 
@@ -584,9 +618,9 @@ real UIA provider. `MockProvider` replays recorded `RawTree` fixtures and
 applies scripted mutations, including per-row behaviour through a named
 callback.
 
-Measured on this machine: 733 passed in the portable suite; 38 passed in
-`pytest -m windows`, run inside the child session in about 62–66 s, with no
-`window ... did not appear` timeout. A UWP app (Calculator) started and was
+Measured on this machine: 784 passed in the portable suite. The real-window
+suite (`pytest -m windows`) also passes; the last recorded run took about
+62–66 s inside the child session, with no `window ... did not appear` timeout. A UWP app (Calculator) started and was
 read in that child desktop; `OBSERVE full` reported 34 buttons.
 
 ## Metrics

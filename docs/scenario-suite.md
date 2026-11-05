@@ -104,7 +104,16 @@ tests/e2e/test_windows_scenarios.py   # S2：同一批界面的真实窗口版�
 
 指标口径沿用 bench：动作成功率 ≥99%、任务成功率 ≥90%、零视觉、零泄露、压缩 ≥10×。
 
-## 四、通过标准
+## 四、测试夹具约定（S2）
+
+- 记事本清理使用 `WM_CLOSE`，再通过 UIA 选择“不保存”/“Don't save”/“否”。
+  5 秒后窗口仍未关闭时，回退 `taskkill`，并打印 `fell back to taskkill` 日志。
+  强制结束会保留未保存缓冲区，下一次启动会把它们恢复成额外窗口。
+- 每轮测量前调用 `clean_notepad_state()` 建立干净基线。启动后窗口行数与
+  预期不符，或响应包含 `windows from one launch` 时，测试以
+  `DIRTY_BASELINE` 失败，不继续测量。
+
+## 五、通过标准
 
 - S1 全绿为合并门槛；S2 全绿为发布门槛（Windows runner）。
 - 任何场景输出中出现堆栈、原生 ID、坐标即失败（fail loud 契约）。
