@@ -358,6 +358,44 @@ class UiaProvider:
         """
         return self._run(self._list_windows_sync)
 
+    def top_level_signature(self) -> tuple:
+        """Cheap identity of the visible desktop: ``(hwnd, title)`` pairs.
+
+        Used only as a *change detector*: the session compares it before and
+        after an action and skips the full UIA enumeration when nothing on the
+        desktop could have changed. It deliberately does not resolve processes,
+        raise windows or apply the window-list filters - those are what make
+        :meth:`list_windows` cost 80-120ms, while this is a Win32 walk over the
+        top-level windows (~1-3ms). A pair changing is a *reason to enumerate*,
+        never a replacement for the enumeration itself.
+        """
+        return self._run(self._top_level_signature_sync)
+
+    def _top_level_signature_sync(self) -> tuple:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32")
+        pairs: list[tuple[int, str]] = []
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def _cb(hwnd, _lparam):
+            # The visible desktop is what the agent can act on. A hidden
+            # top-level window (a splash, a helper) that appears changes
+            # nothing the window list would report, and UIA drops it too.
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if not length:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 2)
+            user32.GetWindowTextW(hwnd, buf, length + 2)
+            pairs.append((int(hwnd), buf.value))
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(_cb), 0)
+        return tuple(sorted(pairs))
+
     def peek(self, window_id: str) -> WindowInfo | None:
         """One window's metadata, with its window raised first.
 
@@ -387,13 +425,18 @@ class UiaProvider:
         self._enter_foreground_sync(window_id, el)
         try:
             pid = int(el.CurrentProcessId)
+            hwnd = _top_level_hwnd_of(el)
             return WindowInfo(
                 window_id=window_id,
                 title=el.CurrentName or "",
                 process=_process_name(pid),
                 pid=pid,
-                active=bool(el.CurrentHasKeyboardFocus),
-                hwnd=_top_level_hwnd_of(el),
+                # Strictly the window handle that owns the foreground. Peeking
+                # raises the target, so a successful raise makes it the one
+                # active window; a refused raise reports False instead of
+                # trusting `HasKeyboardFocus`, which can claim several windows.
+                active=bool(hwnd) and _foreground_hwnd() == hwnd,
+                hwnd=hwnd,
             )
         except Exception:
             # The window died between the raise and the read.
@@ -474,14 +517,11 @@ class UiaProvider:
                 continue
             self._add_window(el, out, hwnd=hwnd)
 
-        # Mark the foreground window active.
-        try:
-            fg_pid = self._auto.GetFocusedElement().CurrentProcessId
-            for w in out:
-                if w.pid == fg_pid:
-                    w.active = True
-        except Exception:
-            pass
+        # Mark the foreground window active. Identity is the *window hwnd*,
+        # not the process id: one process can own several windows (three
+        # Notepad windows were all flagged active, which is what made the
+        # model pick the wrong one from OBSERVE windows).
+        _mark_active_window(out, _foreground_hwnd(self._auto))
         return out
 
     def _uwp_content_pid(self, frame_el: Any) -> int | None:
@@ -2125,6 +2165,45 @@ def _set_foreground(el: Any) -> ExecResult:
     from somnus.providers.windows.executor import _bring_to_foreground
 
     return _bring_to_foreground(el)
+
+
+def _foreground_hwnd(auto: Any = None) -> int:
+    """The top-level handle of the window that currently owns the foreground.
+
+    ``GetForegroundWindow`` is the authoritative answer. The UIA focused
+    element is only the fallback: it reports *an* element with keyboard focus,
+    which - for clients whose provider is unreliable - can be true for several
+    windows at once (the observed bug: three Notepad windows of one process all
+    marked active, because the list was marked per *process id*, not per
+    window).
+    """
+    import ctypes
+
+    try:
+        hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+        if hwnd:
+            return int(ctypes.windll.user32.GetAncestor(hwnd, 2) or hwnd)  # GA_ROOT
+    except Exception:
+        pass
+    if auto is not None:
+        try:
+            return int(_top_level_hwnd_of(auto.GetFocusedElement()) or 0)
+        except Exception:
+            return 0
+    return 0
+
+
+def _mark_active_window(windows: list[Any], foreground_hwnd: int) -> None:
+    """Mark exactly the window whose top-level handle owns the foreground.
+
+    Identity is the *window handle*, never the process: several windows of one
+    process (Notepad tabs/windows) are distinct windows, and only one of them
+    can be the foreground. Every ``WindowInfo`` is reset first, so a stale flag
+    from a previous enumeration cannot survive.
+    """
+    target = int(foreground_hwnd or 0)
+    for window in windows:
+        window.active = bool(target) and int(getattr(window, "hwnd", 0) or 0) == target
 
 
 def _top_level_hwnd_of(el: Any) -> int:

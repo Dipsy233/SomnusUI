@@ -27,7 +27,7 @@ from somnus.errors import ErrorCode, SomnusError, target_not_found
 from somnus.ir.action import Action
 from somnus.ir.node import RawTree, Relation, SemanticNode, WindowInfo
 from somnus.projection.budget import ObservationBudget, count_tokens
-from somnus.projection.engine import ProjectionEngine
+from somnus.projection.engine import ProjectionEngine, display_node
 from somnus.projection.rules import apply_projection
 from somnus.providers.base import AccessibilityProvider
 from somnus.runtime.delta import Delta, diff_trees, index_by_fingerprint
@@ -36,7 +36,13 @@ from somnus.runtime.registry import SessionRegistry
 from somnus.runtime.resolver import Resolver
 from somnus.runtime.settle import Settler, signature_of
 from somnus.runtime.verifier import Verifier
-from somnus.sui.serialize import INDENT, RenderOptions, render_document, render_node_line
+from somnus.sui.serialize import (
+    INDENT,
+    RenderOptions,
+    escape_text,
+    render_document,
+    render_node_line,
+)
 from somnus.sui.parse import parse_action
 
 log = logging.getLogger("somnus.session")
@@ -341,15 +347,74 @@ class Session:
         #: session ref -> native window_id, and reverse, for CALL w?.focus().
         self._window_refs: dict[str, str] = {}
         self._window_refs_by_id: dict[str, str] = {}
+        #: The desktop's cheap Win32 identity at the time of the last
+        #: enumeration (``provider.top_level_signature()``). ``None`` means
+        #: "unknown" - the provider offers no cheap signature, it failed to
+        #: read, or nothing has been enumerated yet - and always means "enumerate".
+        self._top_level_sig: object | None = None
 
     # ------------------------------------------------------------------ windows
 
     def refresh_windows(self) -> list[WindowInfo]:
         with _timed(self.timing, "enum"):
             self.windows = self.provider.list_windows()
+        # Record what the desktop looked like *when this list was taken*, so a
+        # later post-action comparison can tell "nothing appeared/closed/renamed"
+        # without paying for another UIA walk. An unknown signature (no provider
+        # support, or a read failure) disables the shortcut, never the refresh.
+        self._top_level_sig = self._read_top_level_signature()
         if self.target_window is None and self.windows:
             self.target_window = self._default_window()
         return self.windows
+
+    def _read_top_level_signature(self) -> object | None:
+        """The provider's cheap desktop signature, or None when unavailable."""
+        signature = getattr(self.provider, "top_level_signature", None)
+        if signature is None:
+            return None
+        try:
+            # Charged to ``enum`` so a profile run shows the *actual* desktop
+            # check: ~0.3ms when the shortcut fires, enumeration + check when
+            # it does not.
+            with _timed(self.timing, "enum"):
+                return signature()
+        except Exception:  # noqa: BLE001 - a hint must never break the call
+            log.debug("top-level signature unavailable; full enumeration", exc_info=True)
+            return None
+
+    def _desktop_changed(self) -> bool | None:
+        """Whether the desktop differs from the last enumeration.
+
+        ``True``/``False`` come from the cheap signature; ``None`` means the
+        question could not be answered (no support / read failure / no baseline)
+        and the caller must enumerate. ``False`` is safe to trust because the
+        signature covers every visible titled top-level window: a new window,
+        a closed window, or a renamed one changes it.
+        """
+        current = self._read_top_level_signature()
+        if current is None or self._top_level_sig is None:
+            return None
+        return current != self._top_level_sig
+
+    def _refresh_after_action(self) -> None:
+        """Re-enumerate after an action only if the desktop could have changed.
+
+        Called exactly where ``refresh_windows()`` used to be called in the
+        action paths. When the signature is unchanged the existing list *is*
+        the current desktop (nothing appeared, closed or was renamed), so
+        keeping it - and keeping ``_prev_windows`` as the baseline it already
+        is - reports the same empty window delta a refresh would have reported,
+        for ~1-3ms instead of an 80-120ms UIA walk. Anything unknown or
+        different falls back to the full refresh, preserving the old semantics.
+        """
+        if self._desktop_changed() is not False:
+            self.refresh_windows()
+        elif _TRACE_STATES:
+            log.info("post-action enumeration skipped: desktop signature unchanged")
+
+    # NOTE: called *after* settle in the action paths. A title change can land
+    # milliseconds after the action returns; checking before settle would miss
+    # it (and merge two later renames into one delta).
 
     # ----------------------------------------------------------------- settings
 
@@ -1399,6 +1464,25 @@ class Session:
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
         return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
 
+    def _single_active_window_id(self) -> str | None:
+        """The one window that may be printed as `active`.
+
+        The provider's window list is the primary evidence (a foreground-hwnd
+        match). A peek/raise refreshes the *target's* entry in place, so for a
+        moment the list can hold the old foreground window and the just-raised
+        target as both active; rotating the desktop can also leave a stale
+        flag. Rendering must still name exactly one: prefer the target (it was
+        raised immediately before the render), otherwise the first claimant.
+        """
+        active = [w.window_id for w in self.windows if w.active]
+        if not active:
+            return None
+        if len(active) == 1:
+            return active[0]
+        if self.target_window in active:
+            return self.target_window
+        return active[0]
+
     def _render_window_list(self) -> str:
         """The desktop as a flat list: every window, its ref and what it is.
 
@@ -1406,12 +1490,13 @@ class Session:
         list, then switch, then observe - the way a person alt-tabs.
         """
         lines = [f"WINDOWS count={len(self.windows)}"]
+        active_id = self._single_active_window_id()
         for w in self.windows:
             ref = self._header_window_ref(w.window_id)
             flags = []
             if w.window_id == self.target_window:
                 flags.append("obs")
-            if w.active:
+            if w.window_id == active_id:
                 flags.append("active")
             suffix = (" " + " ".join(flags)) if flags else ""
             lines.append(f"  WINDOW {ref} {_q(w.title)}{suffix}")
@@ -1958,14 +2043,14 @@ class Session:
             chunk = str(node.value)[start:end]
             text = (
                 f"{node.display_type} {node.ref} "
-                f"{render_node_line(node, RenderOptions(include_default_caps=True, show_relations=True))}\n"
+                f"{render_node_line(display_node(node), RenderOptions(include_default_caps=True, show_relations=True))}\n"
                 f'TEXT {node.ref} range={start}:{end} "{_esc(chunk)}"'
             )
             return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
 
         opts = RenderOptions(include_default_caps=True, show_relations=True)
         depth = action.depth if action.depth is not None else self.budget.max_depth
-        lines = [render_node_line(node, opts)]
+        lines = [render_node_line(display_node(node), opts)]
         _render_subtree(node, lines, opts, depth, 1)
         text = f"@rev {self.rev}\n" + "\n".join(lines)
         return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
@@ -2162,6 +2247,16 @@ class Session:
         if written is not None:
             echo = f"~ {effective_ref} text={_q(str(written))}"
             body = f"{body}\n{echo}" if body else echo
+        # A `read` call is an answer, not a side effect: its payload (the
+        # value, its length and whether it was truncated) is carried on the
+        # primitive result and surfaced here. Without this line every read
+        # collapsed to a bare `OK`, which is the exact complaint this fixes.
+        read_payload = ""
+        if chain.route == "read" and chain.exec_result is not None:
+            read_payload = (getattr(chain.exec_result, "message", "") or "").strip()
+        if read_payload:
+            note = f"~ {effective_ref} {read_payload}"
+            body = f"{body}\n{note}" if body else note
         if stale_heal_note:
             # A stale ref was relocated and the action then really ran: name
             # both refs and the evidence, so the agent's next CALL uses one
@@ -2323,12 +2418,6 @@ class Session:
         baseline stays the one captured before the action, so a change made by
         either attempt counts.
         """
-        # Refresh the window list first (unless the session turned post-action
-        # enumeration off): an action may have opened a dialog or replaced the
-        # target window entirely (closing a document raises a save dialog), and
-        # the delta must reflect the desktop as it is now.
-        if self.post_action_enum:
-            self.refresh_windows()
         # Re-raise before the settle snapshot: the action (or the user) may have
         # moved the foreground away, and the settled tree is only complete for a
         # window that is rendered.
@@ -2341,6 +2430,14 @@ class Session:
             tree, settle_result = self._settle(
                 fetch=self._fetch_snapshot, refs=[effective_ref]
             )
+        # The window list is refreshed *after* settle, not before it: an
+        # application may finish its title/metadata update a few milliseconds
+        # after the action returns (measured on Notepad: the title gained its
+        # "*" marker ~8ms after the write). A signature taken before settle
+        # still describes the old desktop and would skip the enumeration, so
+        # the rename was reported one CALL late (and two renames could merge).
+        if self.post_action_enum:
+            self._refresh_after_action()
         # Signature before compile (normalisation rewrites the raw nodes).
         self._remember_raw(tree)
         result = self._compile_tree(tree, self._current_pack())
@@ -2860,8 +2957,6 @@ class Session:
         ran = len(step_states)
 
         # ---------------------------------------------------- settle once
-        if self.post_action_enum:
-            self.refresh_windows()
         if self.target_window:
             self._peek(self.target_window)
         try:
@@ -2888,6 +2983,10 @@ class Session:
                 text=text,
                 settled=False,
             )
+        # Refresh after settle for the same reason as a single call: the
+        # desktop's titles are stable by the time the settle finished.
+        if self.post_action_enum:
+            self._refresh_after_action()
         # Signature before compile (normalisation rewrites the raw nodes).
         self._remember_raw(tree)
         result = self._compile_tree(tree, self._current_pack())
@@ -3631,6 +3730,9 @@ class Session:
         self._last_capture_truncated = False
         self._small_observe_window = None
         self._last_capture_window = None
+        # The cheap desktop signature described the old desktop; it must not
+        # answer "unchanged" for the new one.
+        self._top_level_sig = None
         self._prev_structured = None
         self.rev = 0
 
@@ -3918,7 +4020,7 @@ def _render_subtree(node: SemanticNode, lines: list[str], opts: RenderOptions, d
             hidden = len(children) - preview_limit
             lines.append("  " * indent + f"… +{hidden} more")
             return
-        lines.append("  " * indent + render_node_line(child, opts))
+        lines.append("  " * indent + render_node_line(display_node(child), opts))
         _render_subtree(child, lines, opts, depth - 1, indent + 1)
 
 
@@ -3945,8 +4047,8 @@ def _depth_of(root: SemanticNode, target: SemanticNode) -> int:
 def _q(text: str | None) -> str:
     if text is None:
         return '""'
-    return '"' + text.replace('"', '\\"') + '"'
+    return f'"{escape_text(text)}"'
 
 
 def _esc(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return escape_text(text)

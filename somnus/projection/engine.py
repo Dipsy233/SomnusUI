@@ -213,12 +213,9 @@ class ProjectionEngine:
         # visible / a stale flag) must render exactly as it did before: strip
         # the collector's raw names from the render-facing copy. `count=` etc.
         # stay untouched here, because the fallback is "today's output".
-        render_node = node
-        if any(key in node.attrs for key in _VIEWPORT_KEYS):
-            render_node = dataclasses.replace(
-                node,
-                attrs={k: v for k, v in node.attrs.items() if k not in _VIEWPORT_KEYS},
-            )
+        # Text-like surfaces also get their (truncated) value here, so one
+        # observation answers "what is in this box" without a read call.
+        render_node = display_node(node)
 
         # In full mode the budget does not apply.
         if not full and counter["nodes"] >= self.budget.max_nodes:
@@ -556,6 +553,87 @@ def _viewport_display(
 
 
 # ---------------------------------------------------------------------------
+# readable text preview
+# ---------------------------------------------------------------------------
+
+#: Roles whose content is *text* and therefore worth printing as `value=`.
+_TEXT_VALUE_ROLES = frozenset(
+    {"input", "text", "document", "statusbar", "heading", "paragraph", "label"}
+)
+
+#: Maximum characters of a value rendered inline. 80 matches the serializer's
+#: own long-text preview and `_clip`; worst case (CJK/emoji, ~1 token/char) is
+#: +80 tokens on one line, well inside L0's 300-token budget. A typical ASCII
+#: field is ~20 tokens. Values longer than this are cut with a trailing `…`;
+#: the full string stays available through `INSPECT ... range=` / a `read` call.
+_VALUE_PREVIEW_CHARS = 80
+
+#: The serializer already renders `len=… preview="…"` for values longer than
+#: this on text/document/input nodes. Injecting `value=` there would print the
+#: same content twice, so those nodes are left to that existing rendering.
+_LONG_TEXT_THRESHOLD = 160
+
+
+def _text_value_preview(node: SemanticNode) -> str | None:
+    """The inline `value=` preview for a text-like node, or None.
+
+    Rules, in order:
+
+    * only `input` / `text` / `document` / `statusbar` / heading-like roles;
+    * a ``None`` value is "not read", never ``value="None"``;
+    * a named text label whose value equals its name is *not* duplicated;
+    * long text is left to the serializer's `len=/preview=` line;
+    * everything else is truncated to `_VALUE_PREVIEW_CHARS` with `…`.
+    """
+    if node.role not in _TEXT_VALUE_ROLES or node.value is None:
+        return None
+    text = str(node.value)
+    if not text and node.role != "input":
+        return None
+    if node.role != "input" and node.name and text.strip() == node.name.strip():
+        return None
+    if len(text) > _LONG_TEXT_THRESHOLD and node.role in ("text", "document", "input"):
+        # `render_node_line` prints `len=N preview="…"` for these already.
+        return None
+    if len(text) > _VALUE_PREVIEW_CHARS:
+        return text[: _VALUE_PREVIEW_CHARS - 1] + "…"
+    return text
+
+
+def display_node(node: SemanticNode) -> SemanticNode:
+    """The render-facing face of ``node`` (shallow copy when anything changes).
+
+    Two display-only transformations live here, shared by the observe engine
+    and session's INSPECT rendering:
+
+    1. viewport metadata becomes `rows=/visible=/scroll=` (raw `items_*` keys
+       never printed);
+    2. a text-like node gets its (truncated) `value=` preview.
+
+    The compiled node is not mutated, so delta/signature/verifier still see the
+    real attrs and the full value.
+    """
+    viewport = _viewport_of(node)
+    if viewport is not None:
+        return _viewport_display(node, *viewport)
+
+    attrs = dict(node.attrs)
+    changed = False
+    if any(key in attrs for key in _VIEWPORT_KEYS):
+        for key in _VIEWPORT_KEYS:
+            attrs.pop(key, None)
+        changed = True
+    if "value" not in attrs:
+        preview = _text_value_preview(node)
+        if preview is not None:
+            attrs["value"] = preview
+            changed = True
+    if not changed:
+        return node
+    return dataclasses.replace(node, attrs=attrs)
+
+
+# ---------------------------------------------------------------------------
 # desktop summary line
 # ---------------------------------------------------------------------------
 
@@ -596,7 +674,7 @@ def _window_id_token(value: object) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("|", "\\|")
 
 
-def _desktop_segment(entry: object) -> str:
+def _desktop_segment(entry: object, *, is_active: bool) -> str:
     segment = _window_id_token(_field(entry, "window_id"))
     title = _field(entry, "title")
     if isinstance(title, str) and title.strip():
@@ -604,7 +682,10 @@ def _desktop_segment(entry: object) -> str:
     ops = _field(entry, "ops")
     if isinstance(ops, int) and not isinstance(ops, bool):
         segment += f" ops={ops}"
-    if _field(entry, "active"):
+    # Only one window may carry `active`, even if the input list claims
+    # several (a provider that marks every window of the foreground process
+    # does exactly that). The first claimant wins.
+    if is_active:
         segment += " active"
     return segment
 
@@ -635,7 +716,10 @@ def _desktop_summary_line(summary: object) -> str:
     if active is not None and active >= _MAX_DESKTOP_WINDOWS:
         shown = shown[: _MAX_DESKTOP_WINDOWS - 1] + [items[active]]
 
-    segments = [_desktop_segment(entry) for entry in shown]
+    active_entry = items[active] if active is not None else None
+    segments = [
+        _desktop_segment(entry, is_active=entry is active_entry) for entry in shown
+    ]
     hidden = len(items) - len(shown)
     if hidden > 0:
         segments.append(f"+{hidden} more")

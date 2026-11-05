@@ -255,22 +255,43 @@ def _is_unreadable(node: SemanticNode) -> bool:
     return node.role in ("canvas", "image", "unknown")
 
 
+def escape_text(text: str) -> str:
+    """Escape a value so it can never split a rendered line.
+
+    Escapes backslash, quote, CR, LF and TAB. **CR is the one that matters on
+    Windows**: UIA text surfaces report a Notepad line break as a bare ``\\r``
+    (the CRLF pair is normalised away), so escaping only ``\\n`` left a literal
+    carriage return inside ``value="…"`` and ``splitlines()`` cut one node into
+    two. TAB is escaped for the same contract: a node's value must be a single
+    parseable line, and a raw tab also makes space-separated readers mis-tokenize
+    the tail.
+
+    This is the inverse of nothing: :func:`somnus.sui.parse._unescape` decodes
+    only ``\\\\`` and ``\\"``. The ``\\r``/``\\n``/``\\t`` escapes exist so the
+    text stays readable and one line - a preview is meant to be *read*, not fed
+    back as an argument.
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+
+
 def _quote(text: str, limit: int) -> str:
     """Render ``text`` as a quoted SUI-Text value.
 
-    Escapes ``\\``, ``"`` and a real newline so the value stays on one line.
+    Escapes ``\\``, ``"``, CR, LF and TAB so the value stays on one line (see
+    :func:`escape_text`; CR is what Windows text surfaces actually carry).
 
-    This is **not** the inverse of :func:`somnus.sui.parse._unescape`, and that
-    is deliberate. The parser decodes only ``\\\\`` and ``\\"``; it leaves
-    ``\\n`` verbatim so a Windows path (``D:\\notes.txt``) survives being
-    passed as an argument. The result: text produced here is meant to be
-    *read*, and a value containing a real newline is not re-parseable as an
-    argument. Every other value round-trips exactly.
+    Clipping happens *before* escaping: cutting an escape sequence in half
+    would leave a dangling backslash (the same rule ``_desktop_title`` follows).
     """
-    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     if len(text) > limit:
         text = text[: limit - 1] + "…"
-    return f'"{text}"'
+    return f'"{escape_text(text)}"'
 
 
 def _render_value(value: Any, key: str, options: RenderOptions) -> str:
@@ -358,4 +379,9 @@ def _brief(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value)
+    # A delta carries the old/new value verbatim today (numbers and bare
+    # strings). Escape control characters so a value that came from a Windows
+    # text surface cannot break the one-line delta format.
+    if isinstance(value, str):
+        return escape_text(value)
+    return escape_text(str(value))

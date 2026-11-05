@@ -198,6 +198,24 @@ def _prefers_keyboard_entry(node: RawNode) -> bool:
     return "value" not in node.patterns and not node.native.native_window_handle
 
 
+def _can_read(node: RawNode) -> bool:
+    """Whether ``read`` can actually return this node's content.
+
+    Proof, not role guessing:
+
+    * ``value`` - the application's own readable value interface (every field
+      and text control that can be read back publishes it);
+    * ``text`` - the Text pattern, which is the readable surface of documents
+      and rich/self-drawn editors;
+    * for the pure text roles, the accessible **Name** *is* the content, so a
+      named text/status/heading node is readable even without either pattern
+      (its label is already what observe prints).
+    """
+    if "value" in node.patterns or "text" in node.patterns:
+        return True
+    return node.role in ("text", "statusbar", "heading", "paragraph") and bool(node.name)
+
+
 def _is_text_entry(node: RawNode) -> bool:
     """Whether ``node`` should advertise ``set_text``.
 
@@ -415,7 +433,14 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
 
     # Every readable node can be focused and read.
     caps.setdefault("focus", _cap("focus"))
-    if node.name or node.value:
+    # `read` is a *content* capability: it must return the text the platform
+    # exposes, so it is only offered where a readable surface was proven -
+    # the Value pattern (a field's own readable value) or the Text pattern
+    # (documents and self-drawn editors), plus the pure text/status roles whose
+    # content *is* their accessible Name. A button used to advertise `read`
+    # merely because it had a name, and `CALL b1.read()` then answered OK with
+    # nothing - the same false promise as a combo box's `set_text`.
+    if _can_read(node):
         caps.setdefault("read", _cap("read"))
 
     # A context menu is offered where one is *plausible*: the element exposes

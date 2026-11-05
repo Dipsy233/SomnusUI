@@ -66,6 +66,8 @@ def _image_pids(images: list[str]) -> set[int]:
                 ["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
         except Exception:  # noqa: BLE001 - bookkeeping only
@@ -83,6 +85,8 @@ def _kill_pids(pids: set[int]) -> None:
                 ["taskkill", "/F", "/PID", str(pid)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
         except Exception:  # noqa: BLE001 - teardown

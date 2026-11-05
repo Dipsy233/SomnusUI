@@ -88,7 +88,12 @@ So a row that should only be *picked* must be driven with `select`; `activate`
 opens it. Applications differ - some answer Invoke by only highlighting - which
 is why the delta, not the status word, is the source of truth.
 3. **`enabled` is the default state** and never printed; only deviations appear.
-4. **Strings are double-quoted**, escape `\"` and `\n`, clip at 80 chars with `…`.
+4. **Strings are double-quoted**, escape `\\`, `\"`, `\r`, `\n` and `\t`,
+   clip at 80 chars with `…`. A node is always exactly one line: Windows text
+   surfaces report a line break as a bare CR, so both `\r` and `\t` must appear
+   escaped. Previews (and `preview=` in particular) are for reading; the parser
+   decodes only `\\` and `\"`, so escaped whitespace is display syntax, not an
+   argument that round-trips.
 5. **Numeric values drop the currency symbol** into an attribute (`price=5.99`,
    optional `cur=USD`).
 6. **Refs are ASCII**; names keep their original language.

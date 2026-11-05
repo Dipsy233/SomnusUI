@@ -54,7 +54,20 @@ def run_primitive(
         if primitive == "focus":
             element.SetFocus()
         elif primitive == "read":
-            return ExecResult(ok=True)
+            # `read` is a *content* primitive, not a no-op acknowledgement.
+            # This is what makes `CALL q1.read()` answer "what is in the box"
+            # in one command (the observation also carries a short preview;
+            # this call returns up to the read preview cap with the exact
+            # length and a truncation flag).
+            payload = _read_payload(element)
+            if payload is None:
+                return ExecResult(
+                    ok=False,
+                    error="ACTION_NOT_SUPPORTED",
+                    message="no readable value/text surface on this element",
+                    unsupported=True,
+                )
+            return ExecResult(ok=True, message=payload)
         elif primitive == "activate":
             _pattern(element, UIA.UIA_InvokePatternId, UIA.IUIAutomationInvokePattern).Invoke()
         elif primitive == "set_text":
@@ -368,6 +381,104 @@ def _text_landed_verifier(element: Any, expected: Any):
 #: lengths, so the cap only bounds the read cost on a very long document.
 _UIA_TEXT_PATTERN_ID = 10014
 _TEXT_READ_CAP = 65536
+
+#: Hard ceiling on what a `read` call pulls across COM. A 100 KB document must
+#: not be transferred whole just to answer "what does this say"; the Text
+#: pattern honours a length cap, so the request is `cap + 1` and a result that
+#: fills it means "there is more".
+_READ_TEXT_CAP = 4096
+#: Characters returned inline by `read`. 200 is comfortable for a field or a
+#: short note and bounded enough that a reply never becomes a document dump.
+_READ_PREVIEW_CHARS = 200
+
+
+def _read_text_bounded(element: Any, max_chars: int) -> tuple[str | None, bool]:
+    """Read the element's text with a hard cap, and whether the cap was hit.
+
+    The Text pattern goes first because it is the only surface that takes a
+    length cap; the Value property is the fallback for controls that publish
+    no Text interface. Both are the same two surfaces
+    ``_text_landed_verifier`` uses, so a control that can be verified after
+    typing can also be read here.
+    """
+    text: str | None = None
+    capped = False
+    try:
+        raw = element.GetCurrentPattern(_UIA_TEXT_PATTERN_ID)
+        if raw is not None:
+            # A provider double may already hand back the interface; a real one
+            # returns an IUnknown that must be cast before its members exist.
+            query = getattr(raw, "QueryInterface", None)
+            pattern = query(_text_pattern_interface()) if query else raw
+            value = pattern.DocumentRange.GetText(max_chars)
+            if isinstance(value, str):
+                text = value
+                capped = len(value) >= max_chars
+    except Exception:  # noqa: BLE001 - no Text pattern, or it refused
+        text = None
+    if text:
+        return text, capped
+    try:
+        value = element.GetCurrentPropertyValue(_UIA_VALUE_VALUE_PROPERTY)
+    except Exception:  # noqa: BLE001 - unreadable element
+        return text, capped
+    if isinstance(value, str) and value:
+        return value, False
+    # Both surfaces answered empty: that is a readable empty field, not a
+    # failure.
+    if text is not None or isinstance(value, str):
+        return "", False
+    return None, False
+
+
+def _escape_read_text(text: str) -> str:
+    """Make a read payload one parseable line (newline/tab visible as escapes)."""
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+
+
+def _read_payload(element: Any) -> str | None:
+    """`value="…" len=N [truncated=true]` for a readable element, else None.
+
+    The length is exact unless the provider cap was hit, in which case it is a
+    lower bound (`len>=4097`) - claiming an exact 100 KB count would mean
+    reading the whole document, which is exactly what this guard exists to
+    avoid.
+    """
+    text, capped = _read_text_bounded(element, _READ_TEXT_CAP + 1)
+    if text is None:
+        # A pure text label's content is its accessible Name (that is already
+        # the whole "read" answer for it).
+        try:
+            name = element.CurrentName
+        except Exception:  # noqa: BLE001 - unreadable element
+            name = None
+        if isinstance(name, str) and name:
+            text, capped = name, False
+    if text is None:
+        return None
+
+    preview = text
+    truncated = capped or len(text) > _READ_PREVIEW_CHARS
+    if len(text) > _READ_PREVIEW_CHARS:
+        preview = text[: _READ_PREVIEW_CHARS - 1] + "…"
+    length = (
+        f"len>={_READ_TEXT_CAP + 1}" if capped else f"len={len(text)}"
+    )
+    payload = f'value="{_escape_read_text(preview)}" {length}'
+    if truncated:
+        payload += " truncated=true; use INSPECT with range=0:2000 for more"
+    return payload
+
+
+#: UIA_ValuePatternId / the Value.Value property, used to read back what a
+#: control holds while typing into it (see `_text_landed_verifier`).
+_UIA_VALUE_VALUE_PROPERTY = 30045
 
 
 def _read_surface(element: Any):

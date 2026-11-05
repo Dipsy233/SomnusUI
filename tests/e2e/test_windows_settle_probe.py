@@ -46,6 +46,8 @@ def sendgate_app(tmp_path_factory):
         cwd=project,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if built.returncode != 0:
         pytest.skip(f"send gate fixture failed to build:\n{built.stdout}{built.stderr}")
