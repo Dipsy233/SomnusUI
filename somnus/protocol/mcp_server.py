@@ -171,7 +171,7 @@ def settings_brief(session: Session) -> str:
         "refine; CAPABILITY_NOT_FOUND/INVALID_ARGUMENT inspect; "
         "ACTION_NOT_SUPPORTED/PERMISSION_DENIED report; TARGET_DISABLED "
         "precondition; EFFECT_NOT_CONFIRMED/TIMEOUT observe.\n"
-        f"Settings: settle_quiet_ms={quiet} "
+        f"Settings at initialize: settle_quiet_ms={quiet} "
         f"settle_poll_ms={poll} settle_timeout_s={timeout} "
         f"post_action_enum={'on' if enum else 'off'}. quiet_ms: settle wait; "
         "smaller = faster, too small can read an animation mid-flight; larger "
