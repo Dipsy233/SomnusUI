@@ -10,8 +10,8 @@
 
 ## 当前状态（2026-11-05，branch `test`）
 
-**提交序列（收尾提交后口径）**：已提交三笔——`aa47ccd`（视口采集 + 分层探测 + 精度修正 + 设置项）、`1b2d146`（bench 墙钟）、`1742a66`（FIND 等待 + 桌面摘要）；随后是一笔**收尾提交**，包含脚本化 `run`、P2-3 空壳告警、P2-7 效果重试、确认门控全链路移除、README 与两份文档。收尾提交的哈希尚未给出，本文不再引用哈希，统一按"收尾提交后"描述。
-实测口径：本机 i5-13500HX / 2560×1440@96DPI，`apps/scenario-suite`（store 240 行、原始树 1467/1470 节点）。
+**提交序列（`main..test`，共 8 笔）**：`aa47ccd`（视口采集 + 分层探测 + 精度修正 + 设置项）→ `1b2d146`（bench 墙钟）→ `1742a66`（FIND 等待 + 桌面摘要）→ `30412a8`（脚本化 `run` + 确认门控移除 + 空壳告警 + 效果重试）→ `87030df`（小窗口自适应）→ `eba3926`（陈旧 ref 自愈 + FIND 单次全量升级 + pid 复用修正）→ `94b6c77`（子桌面进程启动）→ `326d2ec`（`read()` 输出 + 唯一 active + settle 后刷新 + CR/TAB 转义）。本文档为**本轮第三笔**（前两笔是 `94b6c77`、`326d2ec`），只改文档、不改生产代码。
+实测口径：本机 i5-13500HX / 2560×1440@96DPI，`apps/scenario-suite`（store 240 行、原始树 1467/1470 节点）；真机数字在子桌面会话内取得（同机会话 2）。
 
 ### 已完成 / 未完成一览
 
@@ -35,9 +35,38 @@
 | `BoundingRectangle` 进缓存 | ✅ | 30001 已加；full **+6.2%**、sig **+11.6%**（视口测量） | 需要 | 达成（代价已测） |
 | P3-1 FIND 等待 | ✅ | 异步菜单 **140–172ms** 命中；`timeout=1.0` 约 **1010ms** 返回；大树 `timeout=3.0` 约 **3.1s** | 省 1 回合 | 达成（运行时按 timeout 线性） |
 | P3-2 桌面摘要 | ⚠️ 部分 | `WINDOWS` 行默认出现；成本 **0.002ms**、tokens **+3**；**`ops` 未实现** | 带 `ops` | 部分 |
-| P3-3 脚本化 `run` | ✅ 提前 | 菜单流程一次 run **453ms** vs 两次 CALL **428ms**；收益=**少一次模型推理** | 押后到阶段 3 | **提前落地（收尾提交）** |
+| P3-3 脚本化 `run` | ✅ 提前 | 菜单流程一次 run **453ms** vs 两次 CALL **428ms**；收益=**少一次模型推理** | 押后到阶段 3 | **提前落地（`30412a8`）** |
 | P3-4 宏 / 事件订阅 / 键盘超时 / MCP 线程 | ❌ | — | 阶段 4 | 剩余 |
-| 测试 | ✅ | 非 windows **658 passed**、真机 e2e **31 passed**（收尾前）；收尾新增 `test_run_script.py` / `test_observation_warnings.py` / `test_effect_retry.py` | — | 达成 |
+| 小窗口自适应 | ✅ | 未截断的小窗下一次改走全量单请求；小窗 settle 不再付全尺寸基线（`87030df`，`test_small_window_adaptation.py`） | 小窗不退化 | 达成 |
+| 陈旧 ref 自愈 | ✅ | 同一窗口内按唯一匹配重定位一次，响应 `~ healed old→new (via …)`（`eba3926`，`test_stale_relocation.py`） | 少一个重规划回合 | 达成 |
+| FIND 单次全量升级 | ✅ | 几次零命中后，**仅"部分但未截断"的小树**可花一次全量；截断集合永不升级（`eba3926`，`test_find_escalation.py`） | — | 达成（未覆盖未 realized 行） |
+| `read()` 输出 | ✅ | `~ ref value="…" len=N`；读取上限 4096（溢出报 `len>=4097 truncated=true`）；内联 200 字符预览（`326d2ec`，`test_read_capability.py`） | — | 达成 |
+| 唯一 active 窗口 | ✅ | 多个 claimant 只输出一个 `active`，目标优先（`326d2ec`，`test_active_window.py`） | — | 达成 |
+| settle 后窗口刷新 | ✅ | 标题可能在 settle 后才落地，刷新移到 settle 之后；桌面签名不变则跳过枚举，**任何差异都全量枚举**（`326d2ec`） | — | 达成 |
+| CR/TAB 转义 | ✅ | `escape_text` 转义 `\\` `"` `\r` `\n` `\t`，保证一节点一行（`326d2ec`；见 `sui/grammar.md`） | — | 达成 |
+| 子桌面启动进程 | ✅ | peer 的 `process.start/status/kill` + CLI `child-session run`；`child_allow_spawn` + `allow_processes` 双开关；SUI-Text 不暴露（`94b6c77`，`test_peer_process.py`） | — | 达成（CLI-only） |
+| 测试 | ✅ | 非 GUI **733 passed**；真机 `-m windows` **38 passed**（子桌面，约 62–66s，零 `window ... did not appear`） | — | 达成 |
+
+### 关键裁决（本轮定案）
+
+| 裁决 | 落点 / 证据 |
+|---|---|
+| 确认门控**彻底移除** | `!` 只是能力元数据，`call`/`call_batch`/`run` 直接执行；`CONFIRMATION_REQUIRED`、`--confirmed`、`policy.check_action`、`CRITICAL_NAMES` 全删（`30412a8`）。保留进程 allow-list、原生权限错误、通道开关、路由链、效果校验、批处理预校验 |
+| **不做坐标 / OCR / 截图** | 全库无截图、坐标、DPI 路径；三个真实失败（下拉、孪生、空壳）均在 UIA 内解决。`BoundingRectangle` 只作为视口信号进缓存，不是坐标点击（[viewport-capture-proposal.md](viewport-capture-proposal.md) §1.1） |
+| 刷新在 **settle 之后**判定，**任何差异都全量枚举** | `Session._refresh_after_action` 在 settle 后比较 `provider.top_level_signature()`；`False`（签名完全一致）才跳过枚举，`True`/`None` 一律 `refresh_windows()`（`326d2ec`；`session.py` 的 `_desktop_changed` / `_refresh_after_action`） |
+| `escape_text` 保证**一节点一行** | `sui/serialize.py` 的 `escape_text` 转义 `\\`、`"`、CR、LF、TAB；Windows 文本面的换行是裸 CR，只转义 `\n` 会把一行拆成两行。`executor._escape_read_text` 对 `read` 载荷用同一套规则 |
+| SUI-Text **面不暴露进程启动** | peer 的 `process.start/status/kill` 只由 `child-session run` 驱动；`SESSION` 只解析 `open/close/detach`，七个工具里没有进程启动（`94b6c77`） |
+
+### 后续三笔的实测数字
+
+| 指标 | 实测 | 说明 |
+|---|---|---|
+| `top_level_signature()` | **p50 0.31–0.52ms**，max ≤**2.15ms** | Win32 顶层窗口 `(hwnd, title)` 走查；同机 `list_windows` p50 **70–78ms**，所以"签名不变跳过枚举"省下的是一次完整 UIA 枚举 |
+| 写入路径（标题不变） | 总 **81–104ms** / enum **0.6–0.9ms** | 签名未变 → 跳过枚举 |
+| 写入路径（标题变化） | enum **78–104ms** / 总 **154–238ms** | 标题变化会改变窗口列表，**必须全量枚举**；与旧实现同量级，修的是"重命名晚一 CALL"的正确性 |
+| `observe()` 的 enum | 仍 **78–102ms**（全量） | 观察本身不做签名短路 |
+| 子桌面 UWP | 计算器能起、能读，`OBSERVE full` 读到 **34 个按钮** | 真机 `-m windows` 38 passed 的子桌面会话内 |
+| 探针验收 | A 段 **7/7**、B 段 **4/4** | A：read 85ms、4096 上限命中、预览 199/79 字符、按钮报 `CAPABILITY_NOT_FOUND`；B：active 唯一、`focus()` 跟随、关闭后无残留 |
 
 ### 未达成项与原因（如实写）
 
@@ -46,8 +75,8 @@
 3. **`ops=` 未实现**：5 个窗口浅读合计 **111ms**（其中 form 窗口 43ms），超过 observe 的 ~80ms 红线；桌面摘要只给窗口清单。`projection/engine.py` 的 `ops=` 渲染分支保留，但没有数据源。
 4. **`lean`/`sig` 档收益未证实**：两档已实现、可用 `SOMNUS_CACHE_TIER` A/B，但同窗口重复测量下与噪声同量级；默认仍 `full`。原"cache request 瘦身 → 大树 −30%"的推断被本轮否定。
 5. **大树"有变化"的 CALL 本轮没有数字**：只测了无变化路径（686–706ms）。旧预期 3.1–3.6s 未复核——这是本方案唯一没有被实测覆盖的主路径。
-6. **`run` 提前落地**：计划把它押后到阶段 3，实际随收尾提交落地。它的收益是"少一次模型推理"（453 vs 428ms 说明运行时并不省），与计划判断一致，但落地顺序改变了。
-7. **P2-1 的真机成功率仍未以数字确认**：下拉链已实现且有单测，但"0%→90%+"仍是旧目标；收尾报告没有给出真机成功率。
+6. **`run` 提前落地**：计划把它押后到阶段 3，实际随 `30412a8` 落地。它的收益是"少一次模型推理"（453 vs 428ms 说明运行时并不省），与计划判断一致，但落地顺序改变了。
+7. **P2-1 的真机成功率仍未以数字确认**：下拉链已实现且有单测，但"0%→90%+"仍是旧目标；本轮报告没有给出真机成功率。
 
 ### 剩余项与优先级（功能优先）
 
@@ -70,6 +99,19 @@
 9. **MCP handler 线程化**：`mcp_server._make_call_tool` 仍是同步调用；单 agent 串行下无收益。
 10. **宏录制/重放**（原 P3-4）：未做；收益取决于任务重复率，仍缺数据。
 11. **`lean`/`sig` 档**：保留为实验开关，不作为默认。
+
+### 未做 / 已知限制（单列，避免"看起来都做了"）
+
+| 限制 | 现状 | 为什么现在不做 |
+|---|---|---|
+| **虚拟化列表未 realized 行的 FIND 回退** | 未 realized 的行没有节点/ref；`FIND "Item 600"` 只能 0 命中或 `STALE_TARGET`。`eba3926` 的"单次全量升级"只对**部分但未截断**的小树生效，**截断集合永不升级** | 需要 provider 侧按名查询 / 滚动分页（viewport §4 R3）；这是大列表剩下的核心缺口，排第一梯队 |
+| **`run` 跨窗口** | 跨窗口流程必须显式写窗口 ref；`delta` 是脚本首尾净差；`$it` 只取首个命中 | 补跨窗口解析与 `$steps[N]` 引用会改 `run` 语义，留到下一轮 |
+| **`ops=`** | `projection/engine.py` 保留渲染分支，但 `Session._desktop_summary` **不产生该字段** | 统计可操作元素需要每窗口一次浅读：5 窗口合计 **111ms**（form 窗口 43ms），超过 observe 的 **~80ms 红线**；没有数据源就不能印 |
+| **"写入首帧确认"方案** | **暂缓**：没有用"写入后的首帧"替代 settle 后的效果确认 | 标题/状态可能在动作返回后几毫秒才落地（记事本标题的 `*` 约 8ms 后出现，`326d2ec` 因此把刷新移到 settle 之后）；首帧判定会读到中间态，也会把重命名漏一 CALL。正确性优先，保持 settle 后判定 |
+| **healing / 重试链** | 最坏 **3 个纠正步骤**，每种只做一次：① 同窗唯一匹配的陈旧 ref 重定位；② 目标不答时换孪生一次；③ `EFFECT_NOT_CONFIRMED` 时换下一条 route 一次（另外允许一次普通重编译，不算纠正） | 不做循环、不做多轮重试：一次 CALL 内的纠正是有界的，失败就如实报原错（`session.py` 的 `call` 注释与 `_retry_unconfirmed`） |
+| **大树"有变化"的 CALL** | 本轮仍**没有数字**（只测了无变化路径 686–706ms）；旧预期 3.1–3.6s 未复核 | 唯一未被实测覆盖的主路径；不给推断数字 |
+| **ComboBox 真机成功率** | 已实现 `+select` / `SelectionItem` 首路由 / 回读 / `activate` 升级，但**没有真机成功率数字** | "0%→90%+"仍是旧目标，未以数字确认 |
+| **observe 594ms vs 360ms** | −82.5% 达成，360ms 未达；没有做分段拆分 | 未拆清"骨架 / 窥视 / 可见行 / 编译"的占比前，不确定是否值得再动 |
 
 ---
 
@@ -194,7 +236,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 阶段 1（削固定税）    ✅ P1-1 签名探测 → ✅ P1-2 设置项/加载提示 → ✅ P1-3 窗口枚举开关
 阶段 2（提准）        ✅ P2-1 下拉 → ✅ P2-2 孪生 → ✅ P2-3 空壳上浮 → ✅ P2-4 状态词
                       → ✅ P2-5 投影去噪 → ✅ P2-6 registry 隔离 → ✅ P2-7 效果重试（一次）
-阶段 3（削回合）      ✅ 提前：P3-1 FIND、⚠️ P3-2 桌面摘要（无 ops）、✅ P3-3 run（收尾提交）、❌ P3-4 宏
+阶段 3（削回合）      ✅ 提前：P3-1 FIND、⚠️ P3-2 桌面摘要（无 ops）、✅ P3-3 run（`30412a8`）、❌ P3-4 宏
 阶段 4（可选/不做）   事件订阅、键盘超时、MCP 线程、坐标/视觉、500 节点预算：本轮均未动
 ```
 
@@ -364,8 +406,8 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 
 ---
 
-### 阶段 3｜削"回合数"（**P3-1/P3-2 已提交；P3-3 随收尾提交；P3-4 未做**）
-> 原计划把这一阶段押后到阶段 1 验收后。实际实现方在阶段 1 落地的同一轮里把 P3-1/P3-2 做了，P3-3（`run`）随后一起进收尾提交。阶段 1 的真机验收数字已拿到（见 §0），因此提前启动不构成风险。
+### 阶段 3｜削"回合数"（**P3-1/P3-2 已提交；P3-3 随 `30412a8`；P3-4 未做**）
+> 原计划把这一阶段押后到阶段 1 验收后。实际实现方在阶段 1 落地的同一轮里把 P3-1/P3-2 做了，P3-3（`run`）随后一起进 `30412a8`。阶段 1 的真机验收数字已拿到（见 §0），因此提前启动不构成风险。
 
 #### P3-1 FIND 带 timeout（把"等菜单出现"从一轮变零轮）
 - **文件/函数**：`Session.find(action, window=None, timeout_s=None)`（`session.py`）、`sui/parse.py` 的 `parse_find`、`tools.py` 的 `find` 分支（`timeout` 参数）。
@@ -383,12 +425,12 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 - **验证**：`tests/projection/test_desktop_summary.py`、`tests/runtime/test_find_wait_and_desktop_summary.py`；golden（观察 token ≤300）。
 - **依赖**：无。**成本 S。**
 
-#### P3-3 脚本化 `run`（批量的"逐步解析"档）——**已随收尾提交落地**
-- **状态**：✅ 已实现，随收尾提交。原计划"押后"已失效，原因见 §0 未达成项 6。
+#### P3-3 脚本化 `run`（批量的"逐步解析"档）——**已随 `30412a8` 落地**
+- **状态**：✅ 已实现，随 `30412a8`。原计划"押后"已失效，原因见 §0 未达成项 6。
 - **文件/函数**：`sui/parse.py` 的 `parse_script`（`CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap()`）、`Session.run_script`、`tools.py` 的 `run` 工具、`sui/grammar.md` 的 `await` 产生式。
 - **改法（实际形态）**：纯 `CALL` 脚本保留**全量预校验**；一旦含 `AWAIT` 就改为逐步执行（执行→settle→重编译→解析下一步），失败就地停并报 `RUN PARTIAL steps=k/N failed-at=i`。`AWAIT` 默认 2s、`timeout=0` 为一次搜索。
 - **本轮结果**：✅ 真机菜单流程一次 run **453ms** vs 两次 CALL **428ms**——**运行时并不省**，收益是**少一次模型推理**。限制：跨窗口流程需显式 ref；`delta` 是首尾净差；`$it` 只取首个命中。
-- **验证**：`tests/runtime/test_run_script.py`（收尾提交新增）、`tests/e2e/test_windows_menu_dialog.py`。
+- **验证**：`tests/runtime/test_run_script.py`（`30412a8` 新增）、`tests/e2e/test_windows_menu_dialog.py`。
 - **依赖**：阶段 1 + P2-1/P2-2。**成本 L。**
 
 #### P3-4 宏录制/重放
@@ -435,8 +477,12 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 | 无变化时的全量快照次数 | 0 | **0** | 达成 |
 | ComboBox 选择 | 0% → 90%+ | 已实现 `+select`/首路由/回读/升级；**无真机成功率数字** | 未以数字确认 |
 | FIND 等待（异步菜单） | 省 1 回合 | **140–172ms 命中**；`timeout=1.0` ≈ **1010ms**；大树 `timeout=3.0` ≈ **3.1s** | 达成（等待成本按 timeout 线性） |
-| 菜单/对话框 4 步流程 | 押后到阶段 3，目标 1 回合 | `run` 已随收尾提交实现：一次 run **453ms** vs 两次 CALL **428ms**，收益为**少一次模型推理** | 达成（运行时不变） |
+| 菜单/对话框 4 步流程 | 押后到阶段 3，目标 1 回合 | `run` 已随 `30412a8` 实现：一次 run **453ms** vs 两次 CALL **428ms**，收益为**少一次模型推理** | 达成（运行时不变） |
 | 桌面摘要 | 带 `ops` 的一行 | `WINDOWS` 行已默认出现；`ops` **未实现**（111ms > ~80ms 红线）；成本 0.002ms、+3 token | 部分 |
+| 桌面签名 vs 枚举 | — | `top_level_signature` **p50 0.31–0.52ms / max ≤2.15ms**；`list_windows` p50 **70–78ms** | 达成（签名不变才跳过枚举） |
+| 写入路径（标题不变） | — | 总 **81–104ms** / enum **0.6–0.9ms** | 达成（skips enumeration） |
+| 写入路径（标题变化） | — | enum **78–104ms** / 总 **154–238ms** | 与旧实现同量级；修的是正确性 |
+| `observe()` 的 enum | — | 仍 **78–102ms**（全量） | 如实记录 |
 | 提示预算 | ≤2700 | **2639/2700**（确认门控文案移除后；`run` 刚进 prompt 时是 2695） | 达成（余量 61） |
 
 **读法**：真正的收益来自"减少帧数 + 只采视口"，不是"缩 cache request"；后者（P0-1）被本轮实测否定。`sig`/`lean` 档保留为实验开关，不改变默认行为。
@@ -445,7 +491,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 
 ## 5. 验证与回归（已落地）
 
-**本轮结果**：非 windows **658 passed**、真机 e2e **31 passed**（收尾提交前）；收尾提交新增 `test_run_script.py` / `test_observation_warnings.py` / `test_effect_retry.py`。提示预算测试通过，见 §9 的 2639 说明。
+**本轮结果**：非 GUI（默认排除 `-m windows`）**733 passed**；真机 `pytest -m windows` **38 passed**（在子桌面会话内运行，约 **62–66s**，零 `window ... did not appear`）。 `30412a8` 新增 `test_run_script.py` / `test_observation_warnings.py` / `test_effect_retry.py`；后续提交新增 `test_read_capability.py` / `test_active_window.py` / `test_post_action_enum.py` / `test_peer_process.py` / `test_stale_relocation.py` / `test_find_escalation.py` / `test_small_window_adaptation.py`。提示预算测试通过，见 §9 的 2639 说明。
 
 1. **单测**（无需真机）：`pytest -q`（默认排除 `-m windows`，见 `pyproject.toml:44`）
    - `tests/runtime/test_settle_frames.py`（512 行）：参数化快照耗时，断言帧数/快照次数，以及"无变化只探测、零全量"。
@@ -466,14 +512,14 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 
 ## 6. 已实现：运行时设置项与门控移除
 
-全部落地（收尾提交后口径）。本节的"落点"用**函数名**而不是行号——本轮大改后行号已漂移，旧行号引用作废。
+全部落地（本轮三笔后口径）。本节的"落点"用**函数名**而不是行号——本轮大改后行号已漂移，旧行号引用作废。
 
 | 决策 | 结果 | 实际默认 |
 |---|---|---|
 | settle 探测参数 | 不写死，运行时可调 | `settle_quiet_ms=40`、`settle_poll_ms=10`、`settle_timeout_s=3.0` |
 | 动作后窗口枚举 | 默认开启，可关 | `post_action_enum=true` |
-| 脚本化 `run` | **提前落地**，随收尾提交 | 收尾提交 |
-| 确认门控 | **已全链路移除**：`!` 能力直接执行；错误码 / `--confirmed` / `check_action` / `CRITICAL_NAMES` 全删 | 收尾提交 |
+| 脚本化 `run` | **提前落地** | `30412a8` |
+| 确认门控 | **已全链路移除**：`!` 能力直接执行；错误码 / `--confirmed` / `check_action` / `CRITICAL_NAMES` 全删 | `30412a8` |
 
 | 层 | 实际落点（符号） | 状态 |
 |---|---|---|
@@ -495,8 +541,10 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 
 ## 7. 诚实标注
 
-- **本轮真机实测（[实-本轮]，由实现方报告）**：observe store 3385→594ms、tokens 292；无变化 CALL ~6s→686–706ms；探测 1622–1938→384–404ms；小窗 CALL 215–231ms；无变化 0 全量；FIND 140–172ms / timeout 1.0≈1010ms / 大树 3.0≈3.1s；run 453ms vs 428ms；桌面摘要 0.002ms/+3 token、`ops` 111ms；658 + 31 测试通过（收尾提交前）。**我未独立复跑这些真机数字**；提示预算我复算为 **2639**（prompt 1641 + tools 998），与报告一致。
-- **亲自读代码确认（[码]，收尾提交前的工作区）**：签名探测/降级到全量的三条路径、六档 cache tier、`post_action_enum` 开关、`configure` 的原子校验与 `persist` 钩子、`settings_brief` 的 `instructions`、`_desktop_summary` 不取 `ops`、registry 的 `(window_id, fingerprint)`、`caps._is_text_entry` 的 `not node.children`、孪生重试、`EFFECT_NOT_CONFIRMED` → `_retry_unconfirmed` 换 route 一次（成功 `~ retried via <primitive>`）、`last_foreground_error` + `_observation_warnings`、`EFFECT_NOT_CONFIRMED` 不再直接 raise、确认门控移除（`policy.check_action`/`CRITICAL_NAMES`/`--confirmed` 已不存在）、键盘每字符 0.5s 未改、MCP `_call_tool` 仍同步。
+- **本轮真机实测（[实-本轮]，由实现方报告）**：observe store 3385→594ms、tokens 292；无变化 CALL ~6s→686–706ms；探测 1622–1938→384–404ms；小窗 CALL 215–231ms；无变化 0 全量；FIND 140–172ms / timeout 1.0≈1010ms / 大树 3.0≈3.1s；run 453ms vs 428ms；桌面摘要 0.002ms/+3 token、`ops` 111ms；`top_level_signature` p50 0.31–0.52ms（max ≤2.15ms），`list_windows` p50 70–78ms；写入路径（标题不变）81–104ms / enum 0.6–0.9ms，标题变化时 enum 78–104ms / 总 154–238ms；`observe()` enum 仍 78–102ms；计算器（UWP）在子桌面 `OBSERVE full` 读到 34 个按钮；探针 A 段 7/7、B 段 4/4。测试 **733 passed**（非 GUI）、**38 passed**（`-m windows`，子桌面，约 62–66s，零 `window ... did not appear`）。**我未独立复跑这些真机数字**；提示预算我复算为 **2639**（prompt 1641 + tools 998），与报告一致。
+- **子桌面测量口径**：Win11 记事本的"恢复上次会话"会把旧标签页带回**子桌面**（用户配置级），所以 `observe` token 的判定用**相对基线**（同一会话前后对比），不假设"子桌面天然干净"。UWP 计算器在子桌面能起、能读，是 `94b6c77` 的验收样本。
+- **亲自读代码确认（[码]，本轮工作区）**：签名探测/降级到全量的三条路径、六档 cache tier、`post_action_enum` 开关、`configure` 的原子校验与 `persist` 钩子、`settings_brief` 的 `instructions`、`_desktop_summary` 不取 `ops`、registry 的 `(window_id, fingerprint)`、`caps._is_text_entry` 的 `not node.children`、孪生重试、`EFFECT_NOT_CONFIRMED` → `_retry_unconfirmed` 换 route 一次（成功 `~ retried via <primitive>`）、`last_foreground_error` + `_observation_warnings`、确认门控移除（`policy.check_action`/`CRITICAL_NAMES`/`--confirmed` 已不存在）、键盘每字符 0.5s 未改、MCP `_call_tool` 仍同步。
+- **后续三笔读码确认**：`94b6c77` 的 `process.start/status/kill` 与 `child_allow_spawn`/`allow_processes` 双开关；`326d2ec` 的 `_refresh_after_action`（`False` 才跳过枚举）、`_single_active_window_id`、`serialize.escape_text`（CR/TAB）、`executor._read_payload`（4096/200）；`eba3926` 的 `registry.relocate` 与 `_find_escalation_ready`（截断集合永不升级）。
 - **实施前的实测（[实]，B 路）**：E/S/C/I 分项、旧 store 5.9s / observe 3.0s、ComboBox 失败、pywinauto 137ms、windows2text 9.5s。**B-1 与 B-2 对 pywinauto 的 1832/3172ms 自相矛盾**，因此"三家里最快"仍不做定论。
 - **本机合成计时（[算]）**：1470 节点纯 Python 45ms；旧 settle 帧数 3/2、批量 10 步 = 单步墙钟。脚本在 `%TEMP%\somnus_frame_count.py`、`somnus_bench_synth.py`、`somnus_batch_cost.py`（未写入仓库）。
 - **仍是推断（[推]）**：observe 594ms 与 360ms 之间的构成（未做分段）；大树"有变化" CALL 的现值；ComboBox 的真机成功率；`run` 跨窗口与 `$steps[N]` 的实际收益；宏的端到端收益；LLM 每回合 1–10s。
@@ -510,7 +558,7 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 | "cache request 瘦身（`lean` 去 4 个模式、`sig` 只留签名）能带来大树 −30%+" | **否定**：两档与噪声同量级；默认仍 `full`。收益来自帧数与视口采集，不是请求内容 |
 | "observe 首屏 ≈0.36s" | **未达**：实测 594ms（−82.5%），固定成本未拆清 |
 | "大树探测 150–300ms" | **未达**：384–404ms；provider 侧固有 |
-| "脚本化 `run` 押后到阶段 3" | **提前落地**（随收尾提交），收益是一次模型推理而非运行时 |
+| "脚本化 `run` 押后到阶段 3" | **提前落地**（`30412a8`），收益是一次模型推理而非运行时 |
 | "静态的桌面摘要带 `ops`" | **未实现**：5 窗口浅读 111ms 超过 80ms 红线，只给窗口清单（渲染分支保留但无数据源） |
 | "P2-7 = `EFFECT_NOT_CONFIRMED` 换 route 原地重试" | **已实现**：同一目标换下一条未试 route 一次；成功 `OK ~ retried via <primitive>` |
 | "关键能力需要确认（`+submit!` 返回 `CONFIRMATION_REQUIRED`）" | **已推翻**：确认门控全链路移除，`!` 能力直接执行 |
@@ -520,12 +568,16 @@ F = 1 + ceil(quiet_ms / (poll_ms + S(n)))
 ## 9. 文档与代码不一致清单（本轮核对发现）
 
 1. **`docs/viewport-capture-proposal.md` 顶部"未改任何生产代码"已过期**：`aa47ccd` 已实现视口采集与分层探测；该文件顶部的状态与"若批准/建议落地顺序"都已改成"已实现/未实现"。
-2. **本文 §6 曾把 `run` 标为"押后、不排期"**：已改为"随收尾提交落地"。
-3. **提交口径**：`run`、P2-3、P2-7、确认门控移除、README 与文档都在**收尾提交**里；本文不引用尚未给出的哈希。
+2. **本文 §6 曾把 `run` 标为"押后、不排期"**：已改为"随 `30412a8` 落地"。
+3. **提交口径（本轮已核对）**：`run`、P2-3、P2-7、确认门控移除在 `30412a8`；小窗口自适应在 `87030df`；陈旧 ref 自愈与 FIND 升级在 `eba3926`；子桌面进程启动在 `94b6c77`；`read()`/唯一 active/settle 后刷新/CR-TAB 转义在 `326d2ec`。早期"哈希尚未给出"的说法已过期。
 4. **P2-7 与"孪生重试"是两条独立机制**：`_retry_unconfirmed` 处理效果确认失败后换 route；`_execute_with_twin` 处理目标接口不可用时换孪生。早期文档把两者混为一谈，已分开。
 5. **`ops=` 是"有渲染分支、无数据源"**：`projection/engine.py` 的 `_desktop_segment` 支持 `ops=`，但 `Session._desktop_summary` 明确不产生该字段（111ms > 80ms 红线）。读文档容易误以为它已生效。
 6. **P2-3 已实现（本条关闭）**：`uia.last_foreground_error` + `Session._observation_warnings`；触发条件是"有标题且根 `children==0`"，不是原计划的"节点数骤降 20%"。
 7. **旧行号引用全部失效**：本轮 `session.py`/`uia.py`/`settle.py` 大改后，§3 各条目里的行号已不对应；阅读时请以函数名/符号为准（§6 已改为符号）。
-8. **提示预算**：收尾提交后为 **2639/2700**（prompt 1641 + tools 998，我用 `estimate_tokens` 复算一致）。中间状态曾出现 2695/2692，均已过时。
+8. **提示预算**：本轮三笔后为 **2639/2700**（prompt 1641 + tools 998，我用 `estimate_tokens` 复算一致）。中间状态曾出现 2695/2692，均已过时。
 9. **`viewport-capture-proposal.md` 里有两个预测未复核**：§1.2 的"1000 行非虚拟化 ≈0.95s（−92%）"和 §2.4 的"探测 150–300ms"都没有真机验证（后者已被 384–404ms 否定）。
-10. **`WINDOWS` 摘要的目标 ref 与正文不一致（已修复）**：早期 `Session._desktop_summary` 从 `_window_refs_by_id` 取 ref，而 `_window_header` 只更新正向映射 `_window_refs[target_ref]`，实测会输出 `WINDOWS w2` + `WINDOW w1`（同一窗口两个 ref）。收尾提交已修复；现在实测 `--demo observe` 输出 `WINDOWS w1` + `WINDOW w1`。两份 README 均按修复后的行为写。
+10. **`WINDOWS` 摘要的目标 ref 与正文不一致（已修复）**：早期 `Session._desktop_summary` 从 `_window_refs_by_id` 取 ref，而 `_window_header` 只更新正向映射 `_window_refs[target_ref]`，实测会输出 `WINDOWS w2` + `WINDOW w1`（同一窗口两个 ref）。`30412a8` 已修复；现在实测 `--demo observe` 输出 `WINDOWS w1` + `WINDOW w1`。两份 README 均按修复后的行为写。
+11. **README 曾写"`WINDOWS` 行列出每个顶层窗口"**：实际最多列 **6 个**，超过部分折叠为 `+N more`；active 窗口若在 6 个之外会替换第 6 席以保证出现（`projection/engine.py` 的 `_MAX_DESKTOP_WINDOWS` / `_desktop_summary_line`）。两份 README 已改成"最多六个，active 始终在列"。
+12. **README 曾写 `OBSERVE ... expand` "渲染下一页"**：实现只是把 ref 的路径交给采集层，**页大小/是否等价一页未经验证**（viewport §"未实现 6"）。两份 README 已改为"为容器请求一页"，不再承诺固定页语义。
+13. **README 的测试数字未跟上**：旧文只写 `pytest`/`pytest -m windows`，没有数量；`optimization-plan` 曾写 658/31。现统一为 **733 passed**（非 GUI）与 **38 passed**（`-m windows`，子桌面）。
+14. **`docs/child-session.md` 曾写"the four tools"**：模型面实际是 **七个工具**（`observe/find/inspect/call/run/switch/configure`）；"四个"是早期只剩 observe/call 时的旧口径。已改为 "the tool surface"。

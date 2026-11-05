@@ -147,8 +147,10 @@ WINDOW w1 "agent 属性" +scroll_into_view
   TAB t3 "共享"
 ```
 
-The `WINDOWS` line names every top-level window and marks the active one; it
-carries no `ops` count (counting operable elements needs one shallow read per
+The `WINDOWS` line lists up to six top-level windows and marks exactly one as
+`active`; anything beyond six folds into `+N more`, and the active window is
+always included (it replaces the sixth slot if it falls outside the first six).
+It carries no `ops` count (counting operable elements needs one shallow read per
 window, measured at ~111 ms for five windows — above the observation's ~80 ms
 budget). `OBSERVE windows` is still the cheapest way to get the list alone.
 
@@ -168,10 +170,11 @@ WINDOW w1 "Store" active
 ```
 
 `rows=` is the real total, `visible=` how many rows are on screen. Use
-`FIND "<name>"` to reach an off-screen row, or `OBSERVE w1 expand l1` to render
-the rows of one more page. Scroll/expand invalidates the viewport, so the next
-response says `~ viewport changed; OBSERVE again` when the captured set no
-longer matches the screen.
+`FIND "<name>"` to reach an off-screen row, or `OBSERVE w1 expand l1` to ask the
+collector to read a page for that container (the page size is not specified; it
+is whatever the collector reads next for that ref). Scroll/expand invalidates
+the viewport, so the next response says `~ viewport changed; OBSERVE again` when
+the captured set no longer matches the screen.
 
 **② `find`** — locate by keyword; each hit is a complete entity line:
 
@@ -216,6 +219,32 @@ The model never sees a handle, a coordinate, an `AutomationId`, a process id, a
 COM pointer, a raw `control_type`, or the stacks of unnamed `Pane` wrappers that
 a UIA dump contains. A full walkthrough is in
 [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md).
+
+**⑤ `read`** — the implicit content capability. `CALL q1.read()` returns the
+text the control publishes as data, not a delta:
+
+```
+CALL q1.read()
+→ OK rev=5
+  ~ q1 value="共享" len=2
+```
+
+- The payload is `value="…" len=N`. `len=` is exact unless the provider's
+  **4096-character read cap** was hit: then it is `len>=4097` and the line ends
+  with `truncated=true; use INSPECT with range=0:2000 for more`.
+- At most **200 characters** come back inline (199 + `…` when cut); longer text
+  needs `INSPECT`, which takes a range.
+- The UIA `Text` pattern is tried first, then the `Value` property; a pure
+  label with neither is read from its accessible Name.
+- `read` is implicit: L0 does not print `+read`, and `INSPECT` lists it only
+  when the node really publishes a readable surface.
+
+Every quoted string in SUI-Text — `value=` included — escapes `\\`, `\"`, `\r`,
+`\n` and `\t`, so a node is always exactly one line. Previews are for reading,
+not for re-parsing: the parser decodes only `\\` and `\"`. `observe`/`inspect`
+also print a short `value=` for text-like nodes (max **80 characters**, `…` when
+cut); values longer than 160 characters switch to the serializer's
+`len= / preview=` form instead.
 
 ## Generic mode
 
@@ -389,14 +418,41 @@ session** — a second interactive logon for the same account, with its own inpu
 desktop, foreground window and input queue — removes the interference entirely:
 work there cannot disturb the console session.
 
-```bash
-somnus child-session setup     # once, elevated
-somnus child-session start     # open the loopback
-somnus child-session close     # end it and clean up
-```
+**Preconditions and costs**
 
-For the agent this is one tool; it stays on one desktop at a time and `SWITCH`
-moves it:
+- Windows **Pro / Enterprise / Education**; Home cannot create child sessions.
+- One elevated `somnus child-session setup` (enables the feature, the RDP
+  listener, credential delegation, and sets `TermService` to automatic).
+- The session is reached through an **RDP loopback**, so it exists only while
+  that connection does. A Windows Hello **PIN cannot be used** for the loopback;
+  if delegation is refused, store the account password once with
+  `somnus child-session credential --save`.
+- **One child session at a time**, system-wide.
+- No security isolation: both sessions are the same account.
+
+**CLI (setup and diagnostics)**
+
+| Command | Effect |
+| --- | --- |
+| `somnus child-session status` | read-only: is the feature available, is a session live |
+| `somnus child-session setup` | the one elevated step; `--dry-run` / `--disable` |
+| `somnus child-session start` | open the loopback (`--headless`, `--auto`) |
+| `somnus child-session peer-setup` | start the far-side peer with the child logon (per-user Run key) |
+| `somnus child-session probe` | ask the peer on the pipe what it can see |
+| `somnus child-session close` | end it and clear leftovers |
+| `somnus child-session run -- <cmd>` | run one program on the child desktop, print exit code and stdout/stderr |
+
+`somnus child-session run` sends `process.start` to the peer, polls
+`process.status` until the command exits (or `--timeout`, default 600 s, kills
+it), then prints the exit code and the full output. Output lives under
+`%TEMP%\somnusui-child-run\<timestamp>\`; the last run is kept. It is gated by
+`child_allow_spawn` (default `true`, the capability itself) **and**
+`allow_processes` (empty = any; the same list that decides which processes may
+be operated — a program that cannot be operated cannot be spawned either). It is
+**CLI-only**: there is no `SESSION run`, because the model-facing surface does
+not expose an arbitrary process launcher.
+
+**For the agent: one desktop at a time**
 
 | Command | Effect |
 | --- | --- |
@@ -406,12 +462,14 @@ moves it:
 | `SESSION close` | end it, and return |
 | `SESSION detach` | leave it running after this process exits |
 
+**Refs live only on the current desktop.** A switch swaps the provider and
+resets the registry and window-ref maps: after `SWITCH`, `w1` no longer means
+the window it meant before. Re-`OBSERVE` before acting.
+
 The compiler, projection, registry, resolver, policy and ref namespace all stay
 on the main side; the far session runs a thin peer that answers tool calls over
-a named pipe. Requirements: Windows Pro / Enterprise / Education, one elevated
-setup, one child session at a time. There is no security isolation — the two
-sessions are the same account. Design notes, measurements and the approaches
-that were tried and rejected are in [docs/child-session.md](docs/child-session.md).
+a named pipe. Design notes, measurements, and the approaches that were tried and
+rejected are in [docs/child-session.md](docs/child-session.md).
 
 ## The seven tools
 
@@ -654,12 +712,22 @@ mock), i5-13500HX / 2560×1440@96DPI. The `CALL` range is across repeats; the
 | Signature probe itself | 1622–1938 ms | **384–404 ms** | probe reads only the signature fields on the visible set |
 | `CALL` on a small window | 423 ms | **215–231 ms** | fewer settle frames (`quiet=40 ms`, `poll=10 ms`) |
 | Token cost of the store `observe` | 292 | **292** | unchanged — the projection still folds to the same lines |
+| Desktop change check (`top_level_signature`) | — | **p50 0.31–0.52 ms** (max ≤2.15 ms) | a Win32 `(hwnd, title)` walk; `list_windows` on the same machine is p50 **70–78 ms** |
+| `CALL` that writes, title unchanged | — | **81–104 ms** total / **0.6–0.9 ms** enum | the desktop signature matched, so enumeration was skipped |
+| `CALL` that writes, title changed | — | **78–104 ms** enum / **154–238 ms** total | a title change changes the window list, so the full enumeration is paid; same order as before — the fix is correctness |
+| `observe()` window enumeration | — | **78–102 ms** | observations still enumerate fully; no signature shortcut |
 
 These are the only performance numbers measured end-to-end. A *changing* call
 on the store still needs one full snapshot and has **not** been re-measured
 after this change; no number is claimed for it. `SOMNUS_PROFILE=1` prints the
 per-stage split (enum / snapshot / compile / settle) if you want to reproduce
 the measurement on your own machine.
+
+Test counts on this machine: **733 passed** in the portable suite (which
+excludes `-m windows` by default) and **38 passed** for the real-window suite
+(`pytest -m windows`) run inside the child session, about **62–66 s**, with no
+`window ... did not appear` timeout. A UWP app (Calculator) started and read
+inside that child desktop; `OBSERVE full` reported 34 buttons.
 
 ## License
 

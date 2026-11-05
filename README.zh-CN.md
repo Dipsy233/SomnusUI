@@ -131,9 +131,11 @@ WINDOW w1 "agent 属性" +scroll_into_view
   TAB t3 "共享"
 ```
 
-`WINDOWS` 行列出每个顶层窗口并标记 active 的那个；它**不带** `ops` 计数（统计
-可操作元素需要每个窗口做一次浅读，实测 5 个窗口合计约 111 ms，超过观察约
-80 ms 的预算）。只想看窗口清单时，`OBSERVE windows` 依然最便宜。
+`WINDOWS` 行最多列出**六个**顶层窗口，并且只标记一个 `active`；超过六个的部分
+折叠为 `+N more`，active 窗口始终在列（若它落在前六之外，会替换第六席）。它
+**不带** `ops` 计数（统计可操作元素需要每个窗口做一次浅读，实测 5 个窗口合计
+约 111 ms，超过观察约 80 ms 的预算）。只想看窗口清单时，`OBSERVE windows` 依然
+最便宜。
 
 超过视口的大列表**只读可见部分**，屏幕外的行以摘要呈现，不会静默缺失：
 
@@ -150,9 +152,9 @@ WINDOW w1 "Store" active
 ```
 
 `rows=` 是真实总数，`visible=` 是屏内行数。要够到屏幕外的行，用
-`FIND "<name>"`，或用 `OBSERVE w1 expand l1` 渲染下一页的行。滚动/展开会让视口
-失效，当采集集与屏幕不再对应时，下一次响应会带
-`~ viewport changed; OBSERVE again`。
+`FIND "<name>"`，或用 `OBSERVE w1 expand l1` 让采集层为这个容器再读一页（页的
+大小没有规定，取决于采集层对该 ref 的读取）。滚动/展开会让视口失效，当采集集
+与屏幕不再对应时，下一次响应会带 `~ viewport changed; OBSERVE again`。
 
 **② `find`** —— 按关键词定位，每条命中都是完整的实体行：
 
@@ -198,6 +200,29 @@ ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 模型永远看不到句柄、坐标、`AutomationId`、进程 ID、COM 指针、原始
 `control_type`，也看不到 UIA 转储中大量无名的 `Pane` 包装节点。完整示例见
 [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md)。
+
+**⑤ `read`** —— 隐式的内容能力。`CALL q1.read()` 返回控件发布的内容数据，而不是增量：
+
+```
+CALL q1.read()
+→ OK rev=5
+  ~ q1 value="共享" len=2
+```
+
+- 载荷是 `value="…" len=N`。`len=` 通常精确；如果触发了 provider 的
+  **4096 字符读取上限**，则变成 `len>=4097`，行尾追加
+  `truncated=true; use INSPECT with range=0:2000 for more`。
+- 内联最多返回 **200 字符**（超长时为 199 + `…`）；更长的内容用 `INSPECT`
+  的 `range=` 读取。
+- 先试 UIA `Text` 模式，再试 `Value` 属性；两者都没有的纯标签退回其
+  accessible Name。
+- `read` 是隐式的：L0 不打印 `+read`，`INSPECT` 只在节点确实发布可读接口时列出它。
+
+SUI-Text 中所有带引号的字符串（包括 `value=`）都转义 `\\`、`\"`、`\r`、`\n`、
+`\t`，因此一个节点永远只占一行。预览只用于**阅读**，不用于回写：解析器只解码
+`\\` 与 `\"`。`observe`/`inspect` 还会为文本类节点打印一个短的 `value=` 预览
+（最多 **80 字符**，截断时带 `…`）；超过 160 字符的值改用序列化器的
+`len= / preview=` 形式。
 
 ## 通用模式（Generic mode）
 
@@ -348,13 +373,38 @@ provider。
 ——同一账户的第二次交互式登录，拥有自己的 input desktop、前台窗口和输入队列——
 彻底消除了这种干扰：在其中工作不会影响到控制台会话中的用户。
 
-```bash
-somnus child-session setup     # 一次性，需管理员
-somnus child-session start     # 打开环回
-somnus child-session close     # 结束并清理
-```
+**前置条件与代价**
 
-对 agent 来说这只是一个工具；它同一时间只在一个桌面上，用 `SWITCH` 移动：
+- Windows **专业版 / 企业版 / 教育版**；家庭版无法创建子会话。
+- 一次管理员权限的 `somnus child-session setup`（启用功能、RDP 监听、凭据委托，
+  并把 `TermService` 设为自动）。
+- 子会话通过 **RDP 环回**进入，所以连接在它就存在，连接断它就没。Windows Hello
+  **PIN 不能**用于这次环回登录；若委托被拒，用
+  `somnus child-session credential --save` 存一次账户密码。
+- **全系统同时只允许一个子会话。**
+- 不提供安全隔离：两个会话是同一账户。
+
+**CLI（配置与诊断）**
+
+| 命令 | 效果 |
+| --- | --- |
+| `somnus child-session status` | 只读：功能是否可用、是否有活着的会话 |
+| `somnus child-session setup` | 唯一需要管理员的一步；`--dry-run` / `--disable` |
+| `somnus child-session start` | 打开环回（`--headless`、`--auto`） |
+| `somnus child-session peer-setup` | 让 peer 随子会话登录启动（每用户 Run 键） |
+| `somnus child-session probe` | 向管道另一侧的 peer 询问它能看见什么 |
+| `somnus child-session close` | 结束并清理残留 |
+| `somnus child-session run -- <cmd>` | 在子桌面运行一个程序，打印退出码与 stdout/stderr |
+
+`somnus child-session run` 向 peer 发 `process.start`，轮询 `process.status`
+直到命令退出（或 `--timeout`，默认 600 秒，超时杀死），然后打印退出码与完整
+输出。输出落在 `%TEMP%\somnusui-child-run\<timestamp>\`，只保留最近一次。它受
+两个开关约束：`child_allow_spawn`（默认 `true`，能力本身）与 `allow_processes`
+（空 = 不限制；与"允许操作哪些进程"是同一份列表——不能被操作的进程也不能被
+启动）。它是**CLI-only**：没有 `SESSION run`，因为面向模型的接口不暴露任意进程
+启动器。
+
+**给 agent：同一时间一个桌面**
 
 | 命令 | 效果 |
 | --- | --- |
@@ -364,10 +414,12 @@ somnus child-session close     # 结束并清理
 | `SESSION close` | 结束并回来 |
 | `SESSION detach` | 本进程退出后仍保留 |
 
+**ref 只在当前桌面有效。** 切换会换 provider，并重置注册表与窗口 ref 映射：
+`SWITCH` 之后，`w1` 不再是之前那个窗口。动手前先重新 `OBSERVE`。
+
 编译器、投影、注册表、解析器、策略和 ref 命名空间全部留在主侧；子会话中只运行
-一个瘦 peer，通过命名管道应答工具调用。要求：Windows 专业版 / 企业版 / 教育版、
-一次管理员配置、全系统同时只允许一个子会话。两个会话是同一账户，不提供安全隔离。
-设计说明、实测数据与试过但不采用的方案见 [docs/child-session.md](docs/child-session.md)。
+一个瘦 peer，通过命名管道应答工具调用。设计说明、实测数据与试过但不采用的方案见
+[docs/child-session.md](docs/child-session.md)。
 
 ## 七个工具
 
@@ -597,10 +649,19 @@ i5-13500HX / 2560×1440@96DPI。`CALL` 的区间来自多次重复；`observe` �
 | 签名探测本身 | 1622–1938 ms | **384–404 ms** | 探测只读覆盖集上的签名字段 |
 | 小窗口上的 `CALL` | 423 ms | **215–231 ms** | settle 帧数减少（`quiet=40 ms`、`poll=10 ms`） |
 | store 观察的 token | 292 | **292** | 不变——投影仍折叠为同样的行 |
+| 桌面变化检测（`top_level_signature`） | — | **p50 0.31–0.52 ms**（max ≤2.15 ms） | Win32 `(hwnd, title)` 走查；同机 `list_windows` p50 **70–78 ms** |
+| 写入后标题不变 | — | 总 **81–104 ms** / enum **0.6–0.9 ms** | 桌面签名一致，跳过枚举 |
+| 写入后标题变化 | — | enum **78–104 ms** / 总 **154–238 ms** | 标题变化会改变窗口列表，必须全量枚举；与旧实现同量级，修的是正确性 |
+| `observe()` 的窗口枚举 | — | **78–102 ms** | 观察仍然全量枚举，没有签名短路 |
 
 这些是本轮唯一端到端实测过的性能数字。store 上**有变化**的 `CALL` 仍需一次全量
 快照，且本轮**没有复测**，因此不给出数字。想在自己的机器上复现，可设
 `SOMNUS_PROFILE=1`，它会打印分段耗时（枚举 / 快照 / 编译 / settle）。
+
+本机测试数：可移植套件 **733 passed**（默认排除 `-m windows`）；真机
+`pytest -m windows` **38 passed**，在子会话内运行，约 **62–66 s**，没有出现
+`window ... did not appear` 超时。UWP 计算器在该子桌面能起、能读，
+`OBSERVE full` 读到 **34 个按钮**。
 
 ## 许可证
 
