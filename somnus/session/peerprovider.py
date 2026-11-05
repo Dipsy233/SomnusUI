@@ -34,6 +34,15 @@ from somnus.session.bridge import PeerBridge, PeerUnavailable
 log = logging.getLogger("somnus.session.peerprovider")
 
 
+class PeerProcessError(RuntimeError):
+    """The peer refused a ``process.*`` request (schema or authorization)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
 @dataclass
 class PeerProvider:
     """An ``AccessibilityProvider`` backed by the peer in another session.
@@ -173,6 +182,77 @@ class PeerProvider:
         from somnus.providers.base import NullSubscription
 
         return NullSubscription()
+
+    # -- processes on the far desktop ---------------------------------------
+
+    @staticmethod
+    def _process_result(response: dict[str, Any], key: str) -> Any:
+        error = response.get("error") or {}
+        if error:
+            raise PeerProcessError(
+                str(error.get("code", "NATIVE_EXECUTION_FAILED")),
+                str(error.get("message", "")),
+            )
+        return (response.get("result") or {}).get(key)
+
+    def start_process(
+        self,
+        command: str,
+        args: list[str] | None = None,
+        *,
+        cwd: str | None = None,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> int:
+        """Start a program **on the far desktop** and return its pid.
+
+        The peer inherits that session's window station and desktop, so this
+        needs no privilege. ``PeerProcessError`` carries the peer's code
+        (``INVALID_ARGUMENT`` / ``PERMISSION_DENIED`` / ``NATIVE_EXECUTION_FAILED``).
+        """
+        result = self._process_result(
+            self.ensure().request(
+                {
+                    "method": "process.start",
+                    "params": {
+                        "command": command,
+                        "args": list(args or []),
+                        "cwd": cwd,
+                        "stdout_path": stdout_path,
+                        "stderr_path": stderr_path,
+                    },
+                }
+            ),
+            "pid",
+        )
+        return int(result)
+
+    def _process_status(self, pid: int) -> dict[str, Any]:
+        response = self.ensure().request(
+            {"method": "process.status", "params": {"pid": int(pid)}}
+        )
+        error = response.get("error") or {}
+        if error:
+            raise PeerProcessError(
+                str(error.get("code", "NATIVE_EXECUTION_FAILED")),
+                str(error.get("message", "")),
+            )
+        return dict(response.get("result") or {})
+
+    def process_status(self, pid: int) -> dict[str, Any]:
+        """``{"pid", "alive", "exit_code"}`` for a pid on the far desktop."""
+        return self._process_status(pid)
+
+    def process_kill(self, pid: int) -> bool:
+        """Terminate a pid on the far desktop; False when it was already gone."""
+        return bool(
+            self._process_result(
+                self.ensure().request(
+                    {"method": "process.kill", "params": {"pid": int(pid)}}
+                ),
+                "killed",
+            )
+        )
 
     def close(self) -> None:
         if self._bridge is not None:

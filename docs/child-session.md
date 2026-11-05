@@ -52,6 +52,48 @@ Switching **discards every ref**. After a `SWITCH` the window list is different,
 so `w1` does not merely go stale - it names whatever `w1` is on the new desktop.
 Re-`OBSERVE` before acting.
 
+## Starting programs on the child desktop
+
+A program has to be started *inside* the child session to appear there. The
+peer already runs there, so it starts the program with its own token - no
+`CreateProcessAsUser`, no elevation, no token borrowing:
+
+```bash
+somnus child-session run --cwd E:/0down/SomnusUI -- python.exe -m pytest -m windows
+somnus child-session run -- cmd /c start notepad.exe      # launcher exits, Notepad stays
+```
+
+`run` sends `process.start` to the peer, polls `process.status` until the child
+command exits (or `--timeout`, default 600 s, kills it), then prints the exit
+code and the full stdout/stderr. Output files live in
+`%TEMP%\somnusui-child-run\<timestamp>\`; the last run is kept and its paths are
+printed, older runs are removed.
+
+Wire methods (not agent-facing tools):
+
+| method | params | result |
+| --- | --- | --- |
+| `process.start` | `command`, `args[]`, `cwd`, `stdout_path`, `stderr_path` | `{pid}` |
+| `process.status` | `pid` | `{pid, alive, exit_code}` (`exit_code` null while alive) |
+| `process.kill` | `pid` | `{pid, killed}` |
+
+Errors are `PERMISSION_DENIED` / `INVALID_ARGUMENT` / `NATIVE_EXECUTION_FAILED`
+with a message. `process.kill` exists so `run --timeout` can end the command; a
+program started through a launcher (`cmd /c start ...`) is left running for the
+caller to observe.
+
+Two switches decide who may start what:
+
+- `child_allow_spawn` (default `true`) - the capability itself;
+- `allow_processes` (empty = any) - the executable's basename must be in it,
+  which is the same list that decides which processes may be *operated*. A
+  program that could not be operated is not allowed to be spawned either.
+
+`run` is CLI-only. There is no `SESSION run` in SUI-Text: the agent-facing
+surface stays the four tools, and a model should not be given an arbitrary
+process launcher without an explicit user decision.
+
+
 ## Architecture
 
 ```

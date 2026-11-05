@@ -49,6 +49,12 @@ hand-edited file do not fight::
     child_session = false
     child_session_debug_window = true   # keep the RDP loopback window visible
 
+    # Optional: let the child-session peer start processes on that desktop
+    # (`somnus child-session run -- ...`). On by default; set false to turn the
+    # capability off without changing allow_processes, which still restricts
+    # *which* processes may be operated/spawned.
+    child_allow_spawn = true
+
     # Call timing. See docs/optimization-plan.md P1-2 for the trade-offs.
     settle_quiet_ms   = 40     # 10..1000: smaller = faster, can read mid-animation
     settle_poll_ms    = 10     # 1..100
@@ -80,6 +86,7 @@ ENV_ALLOW_KEYBOARD = "SOMNUS_ALLOW_KEYBOARD"
 #: Environment overrides for the child-session switches.
 ENV_CHILD_SESSION = "SOMNUS_CHILD_SESSION"
 ENV_CHILD_SESSION_DEBUG = "SOMNUS_CHILD_SESSION_DEBUG_WINDOW"
+ENV_CHILD_ALLOW_SPAWN = "SOMNUS_CHILD_ALLOW_SPAWN"
 #: Environment overrides for the settle/action timing knobs.
 ENV_SETTLE_QUIET_MS = "SOMNUS_SETTLE_QUIET_MS"
 ENV_SETTLE_POLL_MS = "SOMNUS_SETTLE_POLL_MS"
@@ -113,6 +120,7 @@ _KNOWN_KEYS = frozenset(
         "allow_processes",
         "child_session",
         "child_session_debug_window",
+        "child_allow_spawn",
         "settle_quiet_ms",
         "settle_poll_ms",
         "settle_timeout_s",
@@ -162,6 +170,11 @@ class Settings:
     #: Keep the RDP loopback window visible, for testing. Only meaningful when
     #: :attr:`child_session` is on.
     child_session_debug_window: bool = True
+    #: Let the peer in the child session start processes there. This is a
+    #: capability of the *far* session, not of the action allow-list: turning it
+    #: off makes `process.start` refuse, while `allow_processes` still decides
+    #: which executables may be operated (and, when set, spawned).
+    child_allow_spawn: bool = True
     #: How long the UI must stay unchanged before an action counts as done.
     #: Smaller is faster but can read an animation mid-flight; larger is safer
     #: but makes every call wait longer.
@@ -191,6 +204,7 @@ class Settings:
             f"allow_processes  : {', '.join(self.allow_processes) or '(any)'}",
             f"child_session    : {self.child_session}",
             f"child_session_win: {self.child_session_debug_window}",
+            f"child_allow_spawn: {self.child_allow_spawn}",
             f"settle_quiet_ms  : {self.settle_quiet_ms}",
             f"settle_poll_ms   : {self.settle_poll_ms}",
             f"settle_timeout_s : {self.settle_timeout_s}",
@@ -234,6 +248,7 @@ def _apply_file(settings: Settings, data: dict) -> Settings:
         "allow_keyboard",
         "child_session",
         "child_session_debug_window",
+        "child_allow_spawn",
         "post_action_enum",
     ):
         if key not in data:
@@ -304,6 +319,7 @@ def _apply_env(settings: Settings) -> Settings:
         (ENV_ALLOW_KEYBOARD, "allow_keyboard"),
         (ENV_CHILD_SESSION, "child_session"),
         (ENV_CHILD_SESSION_DEBUG, "child_session_debug_window"),
+        (ENV_CHILD_ALLOW_SPAWN, "child_allow_spawn"),
         (ENV_POST_ACTION_ENUM, "post_action_enum"),
     ):
         override = _truthy_env(env_name)
@@ -479,6 +495,11 @@ def render_toml(settings: Settings) -> str:
         "# Keep the RDP loopback window visible (testing). It does not affect\n"
         "# isolation - the session is the same either way - only what you see.\n"
         f"child_session_debug_window = {_toml_bool(settings.child_session_debug_window)}\n"
+        "\n"
+        "# Let the peer in the child session start processes on that desktop\n"
+        "# (`somnus child-session run -- ...`). allow_processes still restricts\n"
+        "# which executables may be operated or spawned.\n"
+        f"child_allow_spawn = {_toml_bool(settings.child_allow_spawn)}\n"
         "\n"
         "# How long the UI must stay unchanged before an action counts as done.\n"
         "# Smaller = faster calls, but an animation that has not finished can be\n"
