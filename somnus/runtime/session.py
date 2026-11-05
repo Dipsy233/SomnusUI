@@ -102,6 +102,16 @@ _VIEWPORT_MOVING_PRIMITIVES = frozenset(
 #: is ~0ms - cannot spin a core for the whole timeout.
 _FIND_POLL_FLOOR_MS = 20
 
+#: A complete capture (nothing truncated) up to this many nodes is read with
+#: one full subtree request instead of the viewport walker. The walker pays a
+#: cache round trip per node, so it only earns that back when it can *cut*
+#: rows (a truncated collection); an untruncated tree is identical either way.
+#: Measured p50 on the acceptance screens: form 30 nodes full 78ms vs viewport
+#: 127ms, chat 58 nodes 140 vs 192, menu 18 55 vs 76, tree 16 36 vs 62. The cap
+#: only guards a pathologically large untruncated window; both paths grow with
+#: the node count and full keeps a single request.
+_SMALL_WINDOW_NODES = 500
+
 #: Default wait for a script's ``AWAIT`` when the step gives no ``timeout=``.
 #: Menus and dialogs in the suite settle well inside this; the cap keeps a
 #: missing element from spending the whole call on one wait.
@@ -283,6 +293,16 @@ class Session:
         #: call's own target and its ancestors; an empty list means "no captured
         #: layers", which disables layered probing (full snapshots instead).
         self._watch_natives: list = []
+        #: Size of the last capture and whether it cut anything. Drives the
+        #: small-window adaptation: an untruncated capture is read in full next
+        #: time, and settle then reads full frames instead of walking a small
+        #: tree node by node for a probe.
+        self._last_capture_nodes: int | None = None
+        self._last_capture_truncated: bool = False
+        #: Which window that capture described. A small window's size says
+        #: nothing about another window, so a switch must forget it - otherwise
+        #: the first observation of a long-list window would be read in full.
+        self._last_capture_window: str | None = None
         #: session ref -> native window_id, and reverse, for CALL w?.focus().
         self._window_refs: dict[str, str] = {}
         self._window_refs_by_id: dict[str, str] = {}
@@ -464,19 +484,24 @@ class Session:
     def _signature_probe(self) -> Callable[[], RawTree] | None:
         """The cheap probe for settle, when the provider offers one.
 
-        Prefers the provider's *layered* probe (structure + visible rows in the
-        signature profile); the older whole-subtree signature read remains for a
-        provider that only implements that. Either way, what is compared is the
-        watched set, not the raw tree (see ``_watch_signature``).
+        The provider's *layered* probe (structure + visible rows in the signature
+        profile) is what makes a big window cheap; the older whole-subtree
+        signature read remains for a provider that only implements that. The
+        caller decides whether to use it at all: on a window that fits whole,
+        the probe costs about a full read (measured: chat sig probe 158ms vs
+        full 163ms), and "probe, read, probe" is then three reads where the
+        full-read loop takes two - see ``_settle``.
         """
         window = self.target_window
         if window is None:
             return None
         layered = getattr(self.provider, "snapshot_probe", None)
         if layered is not None:
+
             def probe_layered() -> RawTree:
                 with _timed(self.timing, "probe"):
                     return layered(window)  # type: ignore[arg-type]
+
             return probe_layered
         snapshot_signature = getattr(self.provider, "snapshot_signature", None)
         if snapshot_signature is None:
@@ -566,10 +591,29 @@ class Session:
         established the layers), the probe is dropped and the settler uses full
         snapshots. It never treats "not captured" as "did not change".
         """
-        probe = self._signature_probe()
-        layered = getattr(self.provider, "snapshot_probe", None) is not None
-        if probe is None and _TRACE_STATES:
-            log.info("settle probe disabled: provider offers no probe; full snapshots")
+        has_layered = getattr(self.provider, "snapshot_probe", None) is not None
+        if (
+            self._capture_prefers_full()
+            and has_layered
+            and not self._settle_deterministic
+        ):
+            # The window fits whole and the provider's layered probe walks it
+            # node by node, so a probe buys nothing: it costs about the same as
+            # the one-request full read, and "probe, snapshot, confirm" is then
+            # three reads where the full loop takes two. Correctness is
+            # unchanged - a full frame is the strictest evidence there is.
+            # Providers whose only probe is the whole-tree signature keep it
+            # (that is the documented one-probe/no-snapshot path), as does a
+            # deterministic provider, whose probe is just a copy.
+            probe = None
+            layered = False
+            if _TRACE_STATES:
+                log.info("settle probe skipped: window fits whole; full reads")
+        else:
+            probe = self._signature_probe()
+            layered = has_layered
+            if probe is None and _TRACE_STATES:
+                log.info("settle probe disabled: provider offers no probe; full snapshots")
         if not layered:
             # Legacy path: a provider whose probe reads the *whole* tree's
             # signature can be compared directly (no watched-set projection).
@@ -620,6 +664,49 @@ class Session:
         with _timed(self.timing, "snapshot"):
             return self.provider.snapshot(self.target_window)  # type: ignore[arg-type]
 
+    def _note_capture(self, tree: RawTree, partial: bool) -> None:
+        """Remember how big the last capture was, and whether it cut anything.
+
+        Walking the raw tree is O(nodes) in Python - microseconds at these
+        sizes - against the 50-100ms a wrong read strategy costs. The provider's viewport metadata
+        is consulted too: it records truncation for containers a provider
+        reports without setting the raw node's flag, and its key is the window
+        the capture actually described.
+        """
+        nodes = 0
+        truncated = False
+        for node in tree.walk():
+            nodes += 1
+            if node.truncated:
+                truncated = True
+        if partial:
+            meta = getattr(self.provider, "viewport_meta", None) or {}
+            for container in (meta.get(self.target_window or "") or {}).values():
+                if container.get("items_truncated"):
+                    truncated = True
+        self._last_capture_nodes = nodes
+        self._last_capture_truncated = truncated
+        self._last_capture_window = self.target_window
+
+    def _capture_prefers_full(self) -> bool:
+        """Whether the next read of this window should skip the viewport walker.
+
+        Only a *truncated* capture benefits from the walker (it skipped rows).
+        Once we know the window fit whole, the walker's per-node round trips are
+        pure overhead (measured: 127ms vs one 78ms subtree request on the form),
+        so the next read is done in one request. ``None`` (nothing captured yet,
+        e.g. the first observation of a session) keeps the walker: choosing full
+        without knowing whether a list is long would cost seconds on a big
+        window, while choosing the walker costs only ~50ms on a small one.
+        """
+        nodes = self._last_capture_nodes
+        return (
+            nodes is not None
+            and self._last_capture_window == self.target_window
+            and nodes <= _SMALL_WINDOW_NODES
+            and not self._last_capture_truncated
+        )
+
     def _snapshot_viewport(
         self, expanded_paths: set[tuple[int, ...]] | None = None
     ) -> tuple[RawTree, bool]:
@@ -635,6 +722,12 @@ class Session:
         instead of only the on-screen rows.
         """
         if not _VIEWPORT_ENABLED or self.target_window is None:
+            return self._snapshot(), False
+        # Small-window adaptation: a window whose last capture fit whole is
+        # read with one subtree request. The first capture of a session still
+        # uses the walker - there is no evidence yet that the tree is small,
+        # and guessing "full" on a long list costs seconds instead of ~50ms.
+        if self._capture_prefers_full():
             return self._snapshot(), False
         capture = getattr(self.provider, "snapshot_viewport", None)
         if capture is None:
@@ -1158,6 +1251,7 @@ class Session:
         # result is adopted, so every printed ref resolves.
         expand_paths = self._expand_paths(expanded)
         tree, partial = self._snapshot_viewport(expand_paths)
+        self._note_capture(tree, partial)
         # The tree may not describe the window: a refused raise (or an empty
         # capture) is a fact about the *capture*, not about the application.
         # Both would otherwise read as "this window has no controls".
@@ -1540,6 +1634,7 @@ class Session:
         while time.monotonic() < deadline:
             poll_started = time.monotonic()
             tree, partial = self._snapshot_viewport()
+            self._note_capture(tree, partial)
             result = self._recompile_with(tree, remember=not partial)
             self._apply_viewport_meta(result)
             # Same bookkeeping as ``observe``: settle's next probe must compare
@@ -3372,6 +3467,9 @@ class Session:
         self._last_raw_map = {}
         self._viewport_limited = False
         self._watch_natives = []
+        self._last_capture_nodes = None
+        self._last_capture_truncated = False
+        self._last_capture_window = None
         self._prev_structured = None
         self.rev = 0
 

@@ -68,10 +68,18 @@ class ScriptedViewport(MockProvider):
         self._sequence = list(trees)
         self.reads = 0
 
-    def snapshot_viewport(self, window_id, expanded_paths=None):
+    def _next(self):
         tree = self._sequence[min(self.reads, len(self._sequence) - 1)]
         self.reads += 1
         return copy.deepcopy(tree)
+
+    def snapshot_viewport(self, window_id, expanded_paths=None):
+        return self._next()
+
+    def snapshot(self, window_id, scope=None, max_depth=12):
+        # The small-window adaptation reads the window in full instead of
+        # walking it; both entry points must serve the same scripted UI.
+        return self._next()
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +94,10 @@ def test_find_without_a_timeout_does_not_read_the_window_again():
     reads = provider.reads
 
     assert session.find("Target").startswith("FOUND 1")
+    assert provider.reads == reads, "a hit must not re-read"
+    # A miss on a viewport-limited result deliberately takes one full read
+    # before reporting "not found" (the rows off screen were not captured).
     assert session.find("Nothing").startswith("FOUND 0")
-    assert provider.reads == reads, "an immediate search must not re-read"
 
 
 def test_a_zero_timeout_is_the_immediate_path_too():
