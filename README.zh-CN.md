@@ -47,6 +47,7 @@ somnus observe                     # 描述目标窗口
 somnus observe w1                  # 只观察一个窗口
 somnus call 'CALL b1.activate()'
 somnus --no-pack repl              # 多步会话，不应用 App Pack
+somnus observe w2 --out obs.txt    # 大结果写入文件，stdout 只回执
 somnus record w1 -o fixture.json
 somnus mcp                         # MCP 服务器（stdio）
 ```
@@ -76,6 +77,10 @@ ref（`p1`、`w1`、`q1` …）只在一个会话内有效。`somnus observe` �
 在 `initialize` 时只发送一次，内容是共享规则与当时的生效值快照：`settle_quiet_ms=40`、
 `settle_poll_ms=10`、`settle_timeout_s=3.0`、`post_action_enum=on`。`configure`
 返回实时生效值。
+
+默认情况下会话与客户端同生命周期。设置 `SOMNUS_IDLE_TIMEOUT_S`（秒，默认关闭）
+后，超过该时长没有任何工具调用就关闭 provider；下次调用自动重建，此前的 ref
+与其他全新会话一样返回 `STALE_TARGET`。
 
 ## 工具与协议
 

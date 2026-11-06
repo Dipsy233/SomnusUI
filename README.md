@@ -58,6 +58,7 @@ somnus windows                     # list windows
 somnus observe                     # describe the target window
 somnus observe w1                  # one window
 somnus call 'CALL b1.activate()'
+somnus observe w2 --out obs.txt    # large result to a file, stdout gets a receipt
 somnus --no-pack repl              # multi-step session without an App Pack
 somnus record w1 -o fixture.json
 somnus mcp                         # MCP server over stdio
@@ -92,6 +93,11 @@ The `instructions` field is sent once at `initialize`; it carries the shared
 rules plus a snapshot of the values in force at that time: `settle_quiet_ms=40`,
 `settle_poll_ms=10`, `settle_timeout_s=3.0` and `post_action_enum=on`.
 `configure` returns the live values.
+
+By default the session lives as long as the client. `SOMNUS_IDLE_TIMEOUT_S`
+(seconds, off by default) closes the provider after that long without a tool
+call; the next call rebuilds it, so refs from before the gap answer
+`STALE_TARGET` like any other fresh session.
 
 ## Tools and protocol
 

@@ -725,7 +725,20 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def cmd_observe(args: argparse.Namespace) -> int:
     session = build_session(args)
-    print(session.observe(args.window).text)
+    text = session.observe(args.window).text
+    if args.out:
+        # Large-result offload: the observation goes to the file, stdout only
+        # carries the receipt, so an agent can save the full tree and page
+        # through it with its own tools instead of a terminal buffer.
+        from pathlib import Path
+
+        from somnus.projection.budget import count_tokens
+
+        Path(args.out).write_text(text, encoding="utf-8")
+        lines = text.count("\n") + (0 if (not text or text.endswith("\n")) else 1)
+        print(f"wrote {args.out} ({lines} lines, {count_tokens(text)} tokens)")
+        return 0
+    print(text)
     return 0
 
 
@@ -1544,6 +1557,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("observe")
     p.add_argument("window", nargs="?")
+    p.add_argument(
+        "-o",
+        "--out",
+        metavar="PATH",
+        help="write the observation to a file instead of stdout (stdout gets "
+        "a one-line receipt)",
+    )
     p.set_defaults(func=cmd_observe)
 
     p = sub.add_parser("call")

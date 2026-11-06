@@ -41,6 +41,18 @@ def test_observe_on_the_demo_prints_the_window():
     assert "PRODUCT" in out
 
 
+def test_observe_out_writes_the_file_and_prints_a_receipt(tmp_path):
+    target = tmp_path / "observation.txt"
+    code, out, _ = run(["--demo", "observe", "--out", str(target)])
+    assert code == 0
+    text = target.read_text(encoding="utf-8")
+    assert 'WINDOW w1 "Restaurant Demo"' in text
+    # stdout carries only the receipt, not the whole observation.
+    assert out.startswith("wrote ")
+    assert "lines" in out and "tokens" in out
+    assert 'WINDOW w1 "Restaurant Demo"' not in out
+
+
 def test_call_runs_the_action_and_prints_the_delta():
     code, out, _ = run(["--demo", "call", "CALL p1.add()"])
     assert code == 0

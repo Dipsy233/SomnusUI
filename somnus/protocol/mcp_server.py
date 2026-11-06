@@ -85,14 +85,23 @@ def build_session(**kwargs: Any) -> Session:
     # reuse a closed one. Without this the MCP server could enter the child
     # session but never leave it. "auto" resolves to the real Windows provider
     # here; where it falls back to the replay provider the factory simply
-    # rebuilds that, and an empty window list is the honest answer.
-    if provider_name in ("auto", "uia", "windows"):
-        session._local_provider_factory = lambda: get_provider(provider_name)
+    # rebuilds that, and an empty window list is the honest answer. The idle
+    # recycler below rebuilds through the same factory.
+    def _rebuild_provider(
+        _name: str = provider_name, _kwargs: dict[str, Any] = dict(kwargs)
+    ) -> Any:
+        return get_provider(_name, **_kwargs)
+
+    session._local_provider_factory = _rebuild_provider
     return session
 
 
-def _make_list_tools(session: Session, capabilities: tuple[str, ...] | None = None):
-    """Build the ``on_list_tools`` handler bound to *session*."""
+def _make_list_tools(session, capabilities: tuple[str, ...] | None = None):
+    """Build the ``on_list_tools`` handler bound to *session*.
+
+    ``session`` may also be a :class:`_RecyclableSession`, whose current
+    session is resolved per call so an idle rebuild is picked up.
+    """
     from mcp.types import ListToolsResult, Tool
 
     tiers = (
@@ -114,8 +123,13 @@ def _make_list_tools(session: Session, capabilities: tuple[str, ...] | None = No
     return _list_tools
 
 
-def _make_call_tool(session: Session, capabilities: tuple[str, ...] | None = None):
-    """Build the ``on_call_tool`` handler bound to *session*."""
+def _make_call_tool(session, capabilities: tuple[str, ...] | None = None):
+    """Build the ``on_call_tool`` handler bound to *session*.
+
+    ``session`` may also be a :class:`_RecyclableSession`: the idle timer is
+    disarmed while a call runs and re-armed when it returns, so the provider
+    is never closed under an in-flight action.
+    """
     from mcp.types import CallToolRequestParams, CallToolResult, TextContent
 
     tiers = (
@@ -123,10 +137,87 @@ def _make_call_tool(session: Session, capabilities: tuple[str, ...] | None = Non
     )
 
     async def _call_tool(ctx, params: CallToolRequestParams) -> CallToolResult:
-        text = call_tool(session, params.name, params.arguments, capabilities=tiers)
+        current = session.current() if isinstance(session, _RecyclableSession) else session
+        if isinstance(session, _RecyclableSession):
+            session.disarm()
+        try:
+            text = call_tool(current, params.name, params.arguments, capabilities=tiers)
+        finally:
+            if isinstance(session, _RecyclableSession):
+                session.arm()
         return CallToolResult(content=[TextContent(type="text", text=text)])
 
     return _call_tool
+
+
+ENV_IDLE_TIMEOUT_S = "SOMNUS_IDLE_TIMEOUT_S"
+
+
+def resolve_idle_timeout_s(value: str | None = None) -> float:
+    """Parse ``SOMNUS_IDLE_TIMEOUT_S``; 0 (the default) keeps the session.
+
+    An MCP server process is one long-lived session, so an agent that walks
+    away holds the provider (and on a real desktop, window state) open. When
+    a timeout is set and no tool call arrives in that window, the provider is
+    closed and the next call transparently rebuilds the session - the model
+    then sees the fresh-session refs, and a stale ref from before the idle
+    gap answers ``STALE_TARGET`` like any other rebuild.
+
+    A malformed value means "off": a server that refuses to start over an
+    ops knob helps nobody. The knob stays an environment variable (not a
+    settings key) because it describes *this server process*, the same scope
+    ``SOMNUS_TRACE`` and ``SOMNUS_CAPABILITIES`` live in.
+    """
+    import os
+
+    raw = os.environ.get(ENV_IDLE_TIMEOUT_S) if value is None else value
+    if raw is None or not raw.strip():
+        return 0.0
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return 0.0
+    return timeout if timeout > 0 else 0.0
+
+
+class _RecyclableSession:
+    """Close the provider after an idle gap and rebuild on the next call.
+
+    The rebuild swaps the provider on the *same* ``Session`` (via
+    ``_swap_provider``), so the settler, policy and trace sink survive and
+    only the refs/registry reset - the same state a fresh session presents.
+    Single-threaded asyncio: the timer task either fires with no call in
+    flight (close + rebuild) or is cancelled by the call's ``disarm()``.
+    """
+
+    def __init__(self, session: Session, factory, timeout_s: float):
+        self._session = session
+        self._factory = factory
+        self.timeout_s = timeout_s
+        self._timer: asyncio.Task | None = None
+
+    def current(self) -> Session:
+        return self._session
+
+    def disarm(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def arm(self) -> None:
+        """(Re)start the idle timer; a no-op when the timeout is off."""
+        self.disarm()
+        if self.timeout_s <= 0:
+            return
+        self._timer = asyncio.get_running_loop().create_task(self._sleep())
+
+    async def _sleep(self) -> None:
+        try:
+            await asyncio.sleep(self.timeout_s)
+        except asyncio.CancelledError:
+            return
+        self._timer = None
+        self._session._swap_provider(self._factory())
 
 
 def settings_brief(
@@ -181,6 +272,10 @@ def make_mcp_server(
 
     ``capabilities`` is resolved once here, so the tool list, the ``help``
     reply and the ``initialize`` note all describe the same surface.
+
+    ``SOMNUS_IDLE_TIMEOUT_S`` (seconds, default off) wraps the session in an
+    idle recycler: after that long without a tool call the provider is closed
+    and the next call rebuilds it through the session's provider factory.
     """
     try:
         from mcp.server import Server
@@ -190,9 +285,17 @@ def make_mcp_server(
     tiers = (
         policy.resolve_capabilities() if capabilities is None else tuple(capabilities)
     )
+    timeout = resolve_idle_timeout_s()
+    if timeout > 0:
+        factory = getattr(session, "_local_provider_factory", None)
+        if factory is not None:
+            session = _RecyclableSession(session, factory, timeout)
     return Server(
         "somnusui",
-        instructions=settings_brief(session, tiers),
+        instructions=settings_brief(
+            session.current() if isinstance(session, _RecyclableSession) else session,
+            tiers,
+        ),
         on_list_tools=_make_list_tools(session, tiers),
         on_call_tool=_make_call_tool(session, tiers),
     )

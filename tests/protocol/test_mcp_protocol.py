@@ -341,3 +341,90 @@ def test_build_session_honours_the_persistent_opt_ins(tmp_path):
         assert session.policy.allow_keyboard is True
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# idle recycle (SOMNUS_IDLE_TIMEOUT_S)
+# ---------------------------------------------------------------------------
+
+
+def test_idle_timeout_defaults_to_off(monkeypatch):
+    from somnus.protocol.mcp_server import resolve_idle_timeout_s
+
+    monkeypatch.delenv("SOMNUS_IDLE_TIMEOUT_S", raising=False)
+    assert resolve_idle_timeout_s() == 0.0
+
+
+def test_idle_timeout_parses_and_falls_back_to_off(monkeypatch):
+    from somnus.protocol.mcp_server import resolve_idle_timeout_s
+
+    monkeypatch.setenv("SOMNUS_IDLE_TIMEOUT_S", "0.05")
+    assert resolve_idle_timeout_s() == 0.05
+    # A malformed or non-positive value means "off": a server that refuses to
+    # start over an ops knob helps nobody.
+    for bad in ("bogus", "-3", "0"):
+        monkeypatch.setenv("SOMNUS_IDLE_TIMEOUT_S", bad)
+        assert resolve_idle_timeout_s() == 0.0, bad
+
+
+def test_the_idle_timer_swaps_in_a_fresh_provider(session):
+    import asyncio
+
+    from somnus.protocol.mcp_server import _RecyclableSession
+
+    fresh = MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    recycler = _RecyclableSession(session, lambda: fresh, 0.01)
+    original = session.provider
+
+    async def run():
+        recycler.arm()
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+    # Same Session object - settler, policy and trace sink survive - but the
+    # provider was swapped, so refs from before the gap are gone.
+    assert recycler.current() is session
+    assert session.provider is fresh
+    assert session.provider is not original
+
+
+def test_the_call_handler_disarms_and_rearms_the_timer(session):
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from mcp.types import CallToolRequestParams
+
+    from somnus.protocol.mcp_server import _RecyclableSession, _make_call_tool
+
+    fresh = MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    recycler = _RecyclableSession(session, lambda: fresh, 0.01)
+    handler = _make_call_tool(recycler, ("core", "desktop"))
+    params = CallToolRequestParams(name="observe", arguments={})
+
+    async def run():
+        result = await handler(None, params)
+        # The handler re-armed on the way out, so the idle gap after it still
+        # recycles the provider.
+        await asyncio.sleep(0.05)
+        return result
+
+    result = asyncio.run(run())
+    assert "Restaurant Demo" in result.content[0].text
+    assert session.provider is fresh
+
+
+def test_the_call_handler_survives_a_timeout_of_zero(session):
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from mcp.types import CallToolRequestParams
+
+    from somnus.protocol.mcp_server import _RecyclableSession, _make_call_tool
+
+    fresh = MockProvider(fixtures=[restaurant_demo_tree()], scripts=demo_scripts())
+    recycler = _RecyclableSession(session, lambda: fresh, 0.0)
+    handler = _make_call_tool(recycler, ("core", "desktop"))
+    params = CallToolRequestParams(name="observe", arguments={})
+    result = asyncio.run(handler(None, params))
+    assert "Restaurant Demo" in result.content[0].text
+    assert session.provider is not fresh  # nothing fired; no swap happened
