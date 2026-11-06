@@ -464,6 +464,27 @@ Two additional generic behaviours:
 - Entities are detected structurally: a titled row with a verb button, or three
   or more titled rows under one container (a list, toolbar or navigation pane).
 
+## Decision traces
+
+`--trace DIR` (or `SOMNUS_TRACE=DIR`) records what the runtime decided: the
+route a capability took, the settle frames, the delta, the verifier status and
+the error code, plus the SUI-Text the model saw before and after the call.
+Without `DIR`, a fresh run directory is created under the platform data
+directory (`%LOCALAPPDATA%\somnusui\traces` on Windows), outside the repository.
+
+```bash
+somnus --demo --trace /tmp/somnus-demo-trace call 'CALL p1.add()'
+somnus trace show /tmp/somnus-demo-trace                     # timeline
+somnus trace show /tmp/somnus-demo-trace --snapshots         # + before/after SUI-Text
+```
+
+Tracing is off by default and costs nothing on the hot path when off. Trace
+files are development evidence: they stay outside the repository and are **not
+redacted in this stage** (snapshots can contain window titles, form values and
+chat text). Redaction is a close-out step before any trace is added to the
+repository as reference evidence; the entry point and its required decisions
+are marked `TODO(stage-final)` in `somnus/observability/jsonl.py`.
+
 ## Child session
 
 A child session is a second interactive logon for the same account. It has its

@@ -6,6 +6,7 @@ Commands::
     somnus record  <window> -o tree.json record a RawTree fixture
     somnus observe [window]              print the L0 SUI-Text observation
     somnus call    "CALL p1.add()"       run one action
+    somnus trace show <dir>              print a recorded decision trace
     somnus repl                          interactive SUI-Text loop
     somnus bench   [--runs 100]          run the acceptance benchmark
     somnus mcp                           start the MCP server (stdio)
@@ -129,6 +130,24 @@ def build_session(args: argparse.Namespace) -> Session:
     )
     # Session-scope switch, also updated later by ``configure``.
     session.post_action_enum = settings.post_action_enum
+
+    # Decision trace: ``--trace DIR`` for this run, else ``SOMNUS_TRACE``.
+    # Traces are written outside the repository by default (see
+    # somnus/observability/jsonl.py) and are never required for a normal run.
+    trace_value = getattr(args, "trace", None)
+    if trace_value is None:
+        trace_value = os.environ.get("SOMNUS_TRACE")
+    if trace_value is not None:
+        from somnus.observability.jsonl import attach_trace
+
+        sink = attach_trace(
+            session,
+            trace_value,
+            settings=session._current_settings(),
+            session_label=session.session_label,
+        )
+        if sink is not None:
+            print(f"trace -> {sink.root}", file=sys.stderr)
 
     # Remember how to rebuild a local provider. ``Session.switch_session`` swaps
     # providers (only one may hold UIA state, so the old one is released), and
@@ -711,6 +730,21 @@ def cmd_call(args: argparse.Namespace) -> int:
     return 0 if not text.startswith("ERR") else 1
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """Print a recorded trace as a readable timeline."""
+    from somnus.observability.view import render_timeline
+
+    try:
+        text = render_timeline(
+            args.path, snapshots=args.snapshots, limit=args.limit
+        )
+    except OSError as exc:
+        print(f"ERR TRACE_READ {exc}", file=sys.stderr)
+        return 1
+    print(text)
+    return 0
+
+
 def cmd_repl(args: argparse.Namespace) -> int:
     session = build_session(args)
     # Start from the desktop: the window list is the entry point of every
@@ -793,6 +827,19 @@ def build_parser() -> argparse.ArgumentParser:
             "settings file to read (default: the platform config directory, "
             "see `somnus config --path`). Settings are the persistent form of "
             "--allow-clipboard / --allow-keyboard; a flag still wins for one run"
+        ),
+    )
+    parser.add_argument(
+        "--trace",
+        nargs="?",
+        const="1",
+        default=None,
+        metavar="DIR",
+        help=(
+            "record a decision trace (routes, settle, delta, verify, snapshots) "
+            "into DIR. Omit DIR to use a fresh run directory under the platform "
+            "data dir (outside the repository, never git-tracked). Env: "
+            "SOMNUS_TRACE. Read one with `somnus trace show DIR`"
         ),
     )
     parser.add_argument(
@@ -1065,6 +1112,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("window", nargs="?")
     p.add_argument("-o", "--output", default="fixture.json")
     p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("trace", help="inspect a recorded decision trace")
+    tsub = p.add_subparsers(dest="trace_action", required=True)
+    show = tsub.add_parser(
+        "show",
+        help=(
+            "print the event timeline; with --snapshots also print the "
+            "before/after SUI-Text bodies"
+        ),
+    )
+    show.add_argument("path", help="trace directory, or one of its .jsonl files")
+    show.add_argument("--snapshots", action="store_true")
+    show.add_argument("--limit", type=int, default=None)
+    show.set_defaults(func=cmd_trace)
 
     p = sub.add_parser("observe")
     p.add_argument("window", nargs="?")

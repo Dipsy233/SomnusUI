@@ -57,6 +57,9 @@ ALLOWED_PREFIXES: dict[str, tuple[str, ...]] = {
         "somnus.sui",
     ),
     "providers": ("somnus.ir", "somnus.providers"),
+    # Trace storage: a leaf package (stdlib only). It must stay independent of
+    # the runtime so a sink can be reused by tests, CLI and MCP alike.
+    "observability": ("somnus.observability",),
     "runtime": (
         "somnus.ir",
         "somnus.compiler",
@@ -69,6 +72,8 @@ ALLOWED_PREFIXES: dict[str, tuple[str, ...]] = {
         "somnus.providers.base",
         "somnus.session",
         "somnus.runtime",
+        # trace events go through the sink protocol / implementations
+        "somnus.observability",
     ),
     "protocol": (
         "somnus.ir",
@@ -78,6 +83,8 @@ ALLOWED_PREFIXES: dict[str, tuple[str, ...]] = {
         "somnus.errors",
         "somnus.config",
         "somnus.protocol",
+        # SOMNUS_TRACE is attached when the MCP server builds its session
+        "somnus.observability",
     ),
     "session": (
         "somnus.ir",

@@ -66,6 +66,16 @@ def build_session(**kwargs: Any) -> Session:
     )
     # Session-scope switch; ``apply_settings`` (session side) updates it later.
     session.post_action_enum = settings.post_action_enum
+    # ``SOMNUS_TRACE`` opens a trace for MCP sessions too, so a long agent loop
+    # can be inspected after the fact. There is no per-request flag here: a
+    # server process is one session, so the environment is the right switch.
+    from somnus.observability.jsonl import attach_from_env
+
+    attach_from_env(
+        session,
+        settings=session._current_settings(),
+        session_label=session.session_label,
+    )
     # Remember how to rebuild a local provider: ``SWITCH main`` from the child
     # session swaps the provider (only one may hold UIA state, so the old one
     # is released on the way out) and has to construct a fresh one rather than

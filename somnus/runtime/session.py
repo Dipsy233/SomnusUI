@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
@@ -28,6 +29,7 @@ from somnus.compiler.pack_schema import Pack, select_pack
 from somnus.errors import ErrorCode, SomnusError, target_not_found
 from somnus.ir.action import Action
 from somnus.ir.node import RawTree, Relation, SemanticNode, WindowInfo
+from somnus.observability.trace import NullTraceSink, TraceSink
 from somnus.projection.budget import ObservationBudget, count_tokens
 from somnus.projection.engine import ProjectionEngine, display_node
 from somnus.projection.rules import apply_projection
@@ -270,6 +272,21 @@ class Session:
         #: Per-call segment timings (see module attribute ``_PROFILE``). ``None``
         #: unless SOMNUS_PROFILE is on.
         self.timing: dict[str, float] | None = {} if _PROFILE else None
+        #: Decision-trace sink (see :mod:`somnus.observability`). Off by default:
+        #: every hook checks :attr:`enabled` before doing any work, so a normal
+        #: run pays one attribute lookup per hook and nothing else.
+        self.trace_sink: TraceSink = NullTraceSink()
+        #: Session identity for trace call ids, created on first use.
+        self._trace_session_id: str | None = None
+        self._trace_call_seq = 0
+        #: Call ids of the calls currently executing (a ``run`` script nests its
+        #: steps inside the script's own call). Trace events inherit the top id.
+        self._trace_call_stack: list[str] = []
+        #: call id -> {"before": snapshot ref, "after": snapshot ref}.
+        self._trace_snapshots: dict[str, dict[str, str]] = {}
+        #: The exact text the last OBSERVE returned, so a call's before-snapshot
+        #: is what the model actually saw rather than a re-render.
+        self._last_observation_text: str = ""
         self.registry = SessionRegistry()
         self.compiler = compiler or Compiler(allocator=self.registry.allocator)
 
@@ -364,6 +381,60 @@ class Session:
         #: element with the same name.
         self._refs_need_observe = False
 
+    # -------------------------------------------------------------------- trace
+
+    def _trace_event(self, event: str, **fields: Any) -> None:
+        """Emit one trace record; a no-op when tracing is off.
+
+        Every field must be JSON-safe for the JSONL sink; a sink still falls
+        back to ``str`` rather than losing the record.
+        """
+        if not self.trace_sink.enabled:
+            return
+        call_id = self._trace_call_stack[-1] if self._trace_call_stack else None
+        if call_id is not None and "call_id" not in fields:
+            fields["call_id"] = call_id
+        try:
+            self.trace_sink.emit(event, **fields)
+        except Exception:  # noqa: BLE001 - evidence must never break a call
+            log.debug("trace emit failed", exc_info=True)
+
+    def _trace_new_call_id(self) -> str:
+        if self._trace_session_id is None:
+            self._trace_session_id = uuid.uuid4().hex[:12]
+        self._trace_call_seq += 1
+        return f"{self._trace_session_id}:{self._trace_call_seq}"
+
+    def _trace_snapshot(self, text: str | None, call_id: str, slot: str) -> str | None:
+        """Store one SUI-Text snapshot and remember its reference for this call."""
+        if not text:
+            return None
+        try:
+            ref = self.trace_sink.snapshot(text)
+        except Exception:  # noqa: BLE001
+            log.debug("trace snapshot failed", exc_info=True)
+            return None
+        if ref:
+            self._trace_snapshots.setdefault(call_id, {})[slot] = ref
+        return ref
+
+    def _trace_sui_text(self, result: CompileResult) -> str:
+        """Render the current tree as SUI-Text, once, for a trace snapshot."""
+        opts = RenderOptions(include_default_caps=False)
+        lines = [render_node_line(display_node(result.root), opts)]
+        _render_subtree(result.root, lines, opts, 1000, 1)
+        return "\n".join([f"@rev {self.rev}", *lines])
+
+    def _trace_observe(self, text: str, tokens: int, *, truncated: bool) -> None:
+        self._last_observation_text = text
+        self._trace_event(
+            "observe",
+            rev=self.rev,
+            window=self.target_window,
+            tokens=tokens,
+            truncated=truncated,
+        )
+
     # ------------------------------------------------------------------ windows
 
     def refresh_windows(self) -> list[WindowInfo]:
@@ -374,6 +445,11 @@ class Session:
 
     def _adopt_windows(self, listed: list[WindowInfo]) -> None:
         """Take one enumeration as the desktop, one ref per native window."""
+        trace_before = (
+            [(w.window_id, w.title, w.active) for w in self.windows]
+            if self.trace_sink.enabled
+            else None
+        )
         # One native top-level window gets one ref. A UWP host can report the
         # same HWND twice (frame + content); keeping both created two window
         # refs for one element, and only one of them resolved in the tree.
@@ -405,6 +481,12 @@ class Session:
             w.window_id == self.target_window for w in self.windows
         ):
             self.target_window = self._default_window()
+        if trace_before is not None:
+            trace_after = [(w.window_id, w.title, w.active) for w in self.windows]
+            if trace_after != trace_before:
+                self._trace_event(
+                    "window.change", before=trace_before, after=trace_after
+                )
 
     def _read_top_level_signature(self) -> object | None:
         """The provider's cheap desktop signature, or None when unavailable."""
@@ -594,8 +676,20 @@ class Session:
     def _compile_tree(
         self, tree: RawTree, pack: Pack | None, *, window_ref: str | None = None
     ) -> CompileResult:
+        if not self.trace_sink.enabled:
+            with _timed(self.timing, "compile"):
+                return self.compiler.compile(tree, pack=pack, window_ref=window_ref)
+        started = time.perf_counter()
         with _timed(self.timing, "compile"):
-            return self.compiler.compile(tree, pack=pack, window_ref=window_ref)
+            result = self.compiler.compile(tree, pack=pack, window_ref=window_ref)
+        self._trace_event(
+            "compile",
+            nodes=sum(1 for _ in result.root.walk()),
+            rev=self.rev,
+            duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            truncated=any(node.truncated for node in tree.walk()),
+        )
+        return result
 
     def _remember_raw(self, tree: RawTree) -> None:
         """Store the frame settle may reuse, *before* it is compiled.
@@ -1387,7 +1481,9 @@ class Session:
             else:
                 text = f"@rev {self.rev}\n" + self._render_window_list()
             self._refs_need_observe = False
-            return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
+            tokens = count_tokens(text)
+            self._trace_observe(text, tokens, truncated=False)
+            return Observation(text=text, rev=self.rev, tokens=tokens)
 
         # Raise the target before reading it (and before the header reports its
         # active flag, which is only true after the raise). `_recompile` then
@@ -1513,7 +1609,9 @@ class Session:
 
         text = render_document(plan.lines, rev=self.rev, extra_header=header)
         self._refs_need_observe = False
-        return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
+        tokens = count_tokens(text)
+        self._trace_observe(text, tokens, truncated=self._last_capture_truncated)
+        return Observation(text=text, rev=self.rev, tokens=tokens)
 
     def _single_active_window_id(self) -> str | None:
         """The one window that may be printed as `active`.
@@ -2410,6 +2508,67 @@ class Session:
     # ------------------------------------------------------------------ call
 
     def call(self, action: Action) -> CallOutcome:
+        """Execute one capability call, with the trace envelope around it.
+
+        Tracing is the only reason this is a wrapper: a call's *envelope*
+        (start/end, why it ended, and the text the model saw before and after)
+        is what a trace reader needs, while ``_call`` owns the behaviour. With
+        tracing off this is one flag check and a direct delegation.
+        """
+        if not self.trace_sink.enabled:
+            return self._call(action)
+        started = time.perf_counter()
+        call_id = self._trace_new_call_id()
+        self._trace_call_stack.append(call_id)
+        self._trace_snapshots[call_id] = {}
+        try:
+            before = self._last_observation_text
+            if not before and self.result is not None:
+                before = self._trace_sui_text(self.result)
+            self._trace_event(
+                "call.start",
+                tool="call",
+                ref=action.ref,
+                cap=action.capability,
+                args=action.args,
+                rev=self.rev,
+                window=self.target_window,
+                target_states=_trace_target_states(self.result, action.ref),
+                before=self._trace_snapshot(before, call_id, "before"),
+            )
+            outcome = self._call(action)
+            self._trace_event(
+                "call.end",
+                status=outcome.status,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                settled=outcome.settled,
+                after=self._trace_snapshots.get(call_id, {}).get("after"),
+            )
+            return outcome
+        except SomnusError as err:
+            self._trace_event(
+                "call.end",
+                status="ERR",
+                error_code=str(err.code),
+                hint=err.hint,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                after=self._trace_snapshots.get(call_id, {}).get("after"),
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - record the envelope, then re-raise
+            self._trace_event(
+                "call.end",
+                status="ERR",
+                error_code="INTERNAL",
+                message=str(exc),
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            )
+            raise
+        finally:
+            self._trace_call_stack.pop()
+            self._trace_snapshots.pop(call_id, None)
+
+    def _call(self, action: Action) -> CallOutcome:
         if self._refs_need_observe:
             raise SomnusError(
                 ErrorCode.STALE_TARGET,
@@ -2535,6 +2694,14 @@ class Session:
         )
         effective_ref = healed or (action.ref or "")
         written = chain.written
+        self._trace_event(
+            "route.chain",
+            route=chain.route,
+            routes=[step.primitive for step in resolution.steps],
+            written=written,
+            healed=healed,
+            remaining=len(chain.remaining),
+        )
 
         # Settle, recompile, compute delta, verify.
         try:
@@ -2545,6 +2712,13 @@ class Session:
             return self._target_replaced_outcome()
 
         verify = verifier.verify(resolution.effects, effective_ref, delta)
+        self._trace_event(
+            "verify",
+            attempt="first",
+            status=verify.status,
+            checked=verify.checked,
+            failed=list(verify.failed),
+        )
         retried_via: str | None = None
         if verify.status == "EFFECT_NOT_CONFIRMED":
             # The route reported success but the settled tree does not show the
@@ -2569,6 +2743,14 @@ class Session:
             except KeyError:
                 return self._target_replaced_outcome()
             verify = verifier.verify(resolution.effects, effective_ref, delta)
+            self._trace_event(
+                "verify",
+                attempt="retry",
+                route=retry.route,
+                status=verify.status,
+                checked=verify.checked,
+                failed=list(verify.failed),
+            )
             if verify.status == "EFFECT_NOT_CONFIRMED":
                 # The retry did not confirm either: the original failure is the
                 # honest answer, and there is no second retry.
@@ -2798,6 +2980,14 @@ class Session:
             tree, settle_result = self._settle(
                 fetch=self._fetch_snapshot, refs=[effective_ref]
             )
+        self._trace_event(
+            "settle",
+            settled=settle_result.settled,
+            timed_out=settle_result.timed_out,
+            snapshots=settle_result.snapshots,
+            probes=settle_result.probes,
+            waited_ms=settle_result.waited_ms,
+        )
         # The window list is refreshed *after* settle, not before it: an
         # application may finish its title/metadata update a few milliseconds
         # after the action returns (measured on Notepad: the title gained its
@@ -2853,8 +3043,22 @@ class Session:
                 # with "context_menu succeeded" and nothing to act on.
                 popup_text = self._mount_popup_content(effective_ref)
 
+        # The after-snapshot is rendered once, and only when tracing: it is the
+        # settled tree the model is about to be shown, including a mounted menu.
+        if self.trace_sink.enabled and self._trace_call_stack:
+            self._trace_snapshot(
+                self._trace_sui_text(result), self._trace_call_stack[-1], "after"
+            )
+
         after_index = index_by_fingerprint(result.root)
         delta = diff_trees(before_index, after_index)
+        self._trace_event(
+            "delta",
+            changed=len(delta.changed),
+            added=len(delta.added),
+            removed=len(delta.removed),
+            folded=delta.removed_folded,
+        )
         return tree, result, delta, settle_result, popup_text
 
     def _target_replaced_outcome(self) -> CallOutcome:
@@ -4298,7 +4502,10 @@ class Session:
         cleanup happens at *process exit* for sessions the process started, or
         explicitly through ``switch(close)``.
         """
-        self.provider.close()
+        try:
+            self.trace_sink.close()
+        finally:
+            self.provider.close()
 
     # ------------------------------------------------------------------ dispatch
 
@@ -4388,6 +4595,12 @@ def result_root(session: "Session") -> SemanticNode:
 def _node_caps(result: "CompileResult", ref: str) -> set[str]:
     node = result.find(ref) if result else None
     return node.cap_names() if node else set()
+
+
+def _trace_target_states(result: "CompileResult | None", ref: str | None) -> list[str]:
+    """The target's states as the trace records them (empty when unresolvable)."""
+    node = result.find(ref) if result is not None and ref else None
+    return sorted(node.states) if node is not None else []
 
 
 def _native_key(native) -> tuple:
