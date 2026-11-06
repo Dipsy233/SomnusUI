@@ -53,6 +53,19 @@ def test_observe_out_writes_the_file_and_prints_a_receipt(tmp_path):
     assert 'WINDOW w1 "Restaurant Demo"' not in out
 
 
+def test_trace_to_script_distils_a_recorded_flow(tmp_path):
+    trace_dir = tmp_path / "trace"
+    code, _, _ = run(["--demo", "--trace", str(trace_dir), "observe"])
+    assert code == 0
+    code, _, _ = run(["--demo", "--trace", str(trace_dir), "call", "CALL p1.add()"])
+    assert code == 0
+    code, out, _ = run(["trace", "to-script", str(trace_dir)])
+    assert code == 0
+    # The draft names elements by what they print, not by the session refs.
+    assert 'AWAIT PRODUCT "Big Mac" timeout=0' in out
+    assert "CALL $it.add()" in out
+
+
 def test_call_runs_the_action_and_prints_the_delta():
     code, out, _ = run(["--demo", "call", "CALL p1.add()"])
     assert code == 0

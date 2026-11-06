@@ -550,6 +550,11 @@ somnus --demo heal script.sui # 离线
 不猜测、不执行。运行时内部同样用这个定位器作为陈旧 ref 的第二重定位策略，但它
 不暴露成模型工具：工具面没有新增 `locate`。
 
+`somnus trace to-script DIR` 把录制过的流程蒸馏成 `run` 脚本草稿：每一步成功的
+`CALL` 变成 `AWAIT "名称"` + `CALL $it.cap(args)`，同样的任务第二次只需一次
+`run` 调用而不是逐步往返；trace 无法命名的步骤降级为 `# TODO` 注释，UI 漂移后
+由 `heal` 修复草稿。
+
 ## 文档索引
 
 | 文档 | 内容 |

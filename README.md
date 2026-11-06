@@ -522,6 +522,12 @@ Two additional generic behaviours:
 
 ## Decision traces
 
+`somnus trace to-script DIR` distils a recorded flow into a `run`-script
+draft: every successful `CALL` becomes `AWAIT "name"` + `CALL $it.cap(args)`,
+so the second time the task costs one `run` call instead of one round
+trip per step; steps the trace cannot name become `# TODO` comments, and
+`heal` repairs the draft when the UI drifts.
+
 `--trace DIR` (or `SOMNUS_TRACE=DIR`) records what the runtime decided: the
 route a capability took, the settle frames, the delta, the verifier status and
 the error code, plus the SUI-Text the model saw before and after the call.

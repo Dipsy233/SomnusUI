@@ -725,29 +725,39 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def cmd_observe(args: argparse.Namespace) -> int:
     session = build_session(args)
-    text = session.observe(args.window).text
-    if args.out:
-        # Large-result offload: the observation goes to the file, stdout only
-        # carries the receipt, so an agent can save the full tree and page
-        # through it with its own tools instead of a terminal buffer.
-        from pathlib import Path
+    try:
+        text = session.observe(args.window).text
+        if args.out:
+            # Large-result offload: the observation goes to the file, stdout
+            # only carries the receipt, so an agent can save the full tree and
+            # page through it with its own tools instead of a terminal buffer.
+            from pathlib import Path
 
-        from somnus.projection.budget import count_tokens
+            from somnus.projection.budget import count_tokens
 
-        Path(args.out).write_text(text, encoding="utf-8")
-        lines = text.count("\n") + (0 if (not text or text.endswith("\n")) else 1)
-        print(f"wrote {args.out} ({lines} lines, {count_tokens(text)} tokens)")
+            Path(args.out).write_text(text, encoding="utf-8")
+            lines = text.count("\n") + (0 if (not text or text.endswith("\n")) else 1)
+            print(f"wrote {args.out} ({lines} lines, {count_tokens(text)} tokens)")
+            return 0
+        print(text)
         return 0
-    print(text)
-    return 0
+    finally:
+        # A one-shot command releases its session here, not at process exit:
+        # the trace sink is buffered, so a following `trace to-script` (and
+        # any other reader) needs the flush that close() performs.
+        session.close()
 
 
 def cmd_call(args: argparse.Namespace) -> int:
     session = build_session(args)
-    session.observe()
-    text = session.dispatch(args.action)
-    print(text)
-    return 0 if not text.startswith("ERR") else 1
+    try:
+        session.observe()
+        text = session.dispatch(args.action)
+        print(text)
+        return 0 if not text.startswith("ERR") else 1
+    finally:
+        # Same as cmd_observe: flush the trace deterministically.
+        session.close()
 
 
 def cmd_help(args: argparse.Namespace) -> int:
@@ -774,6 +784,31 @@ def cmd_trace(args: argparse.Namespace) -> int:
         print(f"ERR TRACE_READ {exc}", file=sys.stderr)
         return 1
     print(text)
+    return 0
+
+
+def cmd_trace_to_script(args: argparse.Namespace) -> int:
+    """Distil a recorded trace into a ``run``-script draft."""
+    from pathlib import Path
+
+    from somnus.selfcheck.distill_script import distill_script
+
+    try:
+        report = distill_script(args.path, await_timeout=args.await_timeout)
+    except OSError as exc:
+        print(f"ERR TRACE_READ {exc}", file=sys.stderr)
+        return 1
+    except SomnusError as exc:
+        print(exc.render(), file=sys.stderr)
+        return 1
+    if args.out:
+        Path(args.out).write_text(report.script, encoding="utf-8")
+        print(
+            f"wrote {args.out} ({report.distilled} steps distilled, "
+            f"{report.skipped} need review)"
+        )
+    else:
+        print(report.script, end="")
     return 0
 
 
@@ -1468,6 +1503,31 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--snapshots", action="store_true")
     show.add_argument("--limit", type=int, default=None)
     show.set_defaults(func=cmd_trace)
+
+    toscript = tsub.add_parser(
+        "to-script",
+        help=(
+            "distil a recorded trace into a run-script draft: successful "
+            "CALL steps become AWAIT \"name\" + CALL $it.cap(args); steps "
+            "the trace cannot name become # TODO comments"
+        ),
+    )
+    toscript.add_argument("path", help="trace directory, or one of its .jsonl files")
+    toscript.add_argument(
+        "--out",
+        metavar="PATH",
+        help="write the script to a file (stdout otherwise)",
+    )
+    toscript.add_argument(
+        "--await-timeout",
+        type=float,
+        default=0.0,
+        help=(
+            "timeout=s on each generated AWAIT (default 0: one search, the "
+            "element was there when the step ran)"
+        ),
+    )
+    toscript.set_defaults(func=cmd_trace_to_script)
 
     p = sub.add_parser("doctor")
     p.set_defaults(func=cmd_doctor)
