@@ -247,10 +247,15 @@ CALL tx1.set_text("Hello SomnusUI")
 
 ```
 ERR TARGET_DISABLED b5 hint=inspect
+ERR NOT_ACTIONABLE b5 hint=wait msg="state=disabled waited=300ms"
 ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
 ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 ERR ACTION_NOT_SUPPORTED b1 hint=try select
 ```
+
+`NOT_ACTIONABLE` 表示为被阻塞元素（禁用的控件）做的短暂等待已用尽，状态仍在：
+重试没有意义。没有签名探针的 provider 无法观察状态变化，仍立即返回
+`TARGET_DISABLED`。
 
 `activate` 以 `ACTION_NOT_SUPPORTED` 最终失败、且节点仍暴露 `select` 时，同一行
 追加 `hint=try select`。运行时不会自动改调 `select`。
@@ -335,6 +340,10 @@ pack 是可选优化。使用 `--no-pack`，或窗口没有匹配的 pack 时，
 - 能力由已发布的接口推导。只有平台提供默认动作（`Invoke` 模式或
   `LegacyIAccessible` 回退）时才出现 `activate`。只暴露 `ExpandCollapse` 的
   按钮显示 `+expand +collapse`，没有 `activate`。
+- 平台未给出名称的控件会从它实际可见的标签合成名称：字段前方的文本兄弟节点，
+  或它唯一的叶子文本。该名称只作为展示与匹配证据：`FIND` 与实体识别使用它，
+  指纹不使用它，因此会变化的标题（计数、价格）不会让 ref 重新分配。没有标签
+  的控件仍保持无名。
 - `set_text` 为每个可输入表面推导。路径由控件自身的接口决定，不看类名或角色。
   路径在执行时判定，因为 UIA 会报告元素随后拒绝的接口。生效的路径在整个会话
   内保留。
@@ -416,6 +425,7 @@ somnus config --allow-clipboard
 | `settle_poll_ms` | `10` | 1–100 | 探测间隔。 |
 | `settle_timeout_s` | `3.0` | 0.5–30 | 单次 settle 的硬上限；超时后响应写明 `settled=false`，仍携带增量。 |
 | `post_action_enum` | `true` | 布尔 | 动作后重新枚举窗口，报告动作打开的新窗口。关闭后每次调用约省 100 ms，可能漏报该窗口。 |
+| `actionable_timeout_s` | `0.3` | 0–2 | 被阻塞的动作（禁用的控件）最多等待多久让元素变为可操作。只在阻塞路径上付出；`0` 关闭等待。仅文件/环境变量（`SOMNUS_ACTIONABLE_TIMEOUT_S`），不能通过 `configure` 修改。 |
 
 时间参数优先级：内置默认 < 文件 < 环境变量（`SOMNUS_SETTLE_QUIET_MS`、
 `SOMNUS_SETTLE_POLL_MS`、`SOMNUS_SETTLE_TIMEOUT_S`、`SOMNUS_POST_ACTION_ENUM`）

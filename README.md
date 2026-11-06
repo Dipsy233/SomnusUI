@@ -278,10 +278,16 @@ Failures are one line with a recovery hint:
 
 ```
 ERR TARGET_DISABLED b5 hint=inspect
+ERR NOT_ACTIONABLE b5 hint=wait msg="state=disabled waited=300ms"
 ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
 ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 ERR ACTION_NOT_SUPPORTED b1 hint=try select
 ```
+
+`NOT_ACTIONABLE` is the refusal after the short wait for a blocked element
+(a disabled control) ran out: the state is still in force, so retrying will not
+help. A provider with no signature probe cannot observe a change and keeps the
+immediate `TARGET_DISABLED`.
 
 When `activate` ends in `ACTION_NOT_SUPPORTED` and the node still exposes
 `select`, the same error line carries `hint=try select`. The runtime does not
@@ -473,6 +479,7 @@ Timing values can be set in the same file and changed at runtime with
 | `settle_poll_ms` | `10` | 1–100 | probe spacing. |
 | `settle_timeout_s` | `3.0` | 0.5–30 | hard cap for one settle; on timeout the reply reports `settled=false` and still carries the delta. |
 | `post_action_enum` | `true` | bool | re-enumerate windows after an action so a window opened by the action is reported. Off saves about 100 ms per call and can hide that window. |
+| `actionable_timeout_s` | `0.3` | 0–2 | how long a blocked action (a disabled control) waits for the element to become actionable. Only paid on the blocked path; `0` disables the wait. File/environment only (`SOMNUS_ACTIONABLE_TIMEOUT_S`), not settable through `configure`. |
 
 Timing precedence: built-in < file < environment
 (`SOMNUS_SETTLE_QUIET_MS`, `SOMNUS_SETTLE_POLL_MS`, `SOMNUS_SETTLE_TIMEOUT_S`,
@@ -498,6 +505,12 @@ Two additional generic behaviours:
   the gesture that works.
 - Entities are detected structurally: a titled row with a verb button, or three
   or more titled rows under one container (a list, toolbar or navigation pane).
+- A control the platform reports without a name gets one from the label it
+  visibly has: the text sibling in front of a field, or the only leaf text it
+  contains. The name is presentation evidence only - `FIND` and entity
+  matching use it, the fingerprint does not, so a caption that changes (a
+  counter, a price) never re-mints a ref. Without a label the control stays
+  unnamed.
 
 ## Decision traces
 

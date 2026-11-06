@@ -71,4 +71,5 @@ Details: `help gestures`.
 | `CAPABILITY_NOT_FOUND` / `INVALID_ARGUMENT` | `inspect` |
 | `ACTION_NOT_SUPPORTED` / `PERMISSION_DENIED` | report, do not retry |
 | `TARGET_DISABLED` | satisfy the precondition |
+| `NOT_ACTIONABLE` | still blocked after the wait; do not retry |
 | `EFFECT_NOT_CONFIRMED` / `TIMEOUT` | `observe` and decide |

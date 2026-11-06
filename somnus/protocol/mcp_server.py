@@ -67,6 +67,8 @@ def build_session(**kwargs: Any) -> Session:
     )
     # Session-scope switch; ``apply_settings`` (session side) updates it later.
     session.post_action_enum = settings.post_action_enum
+    # Tolerance for a briefly blocked action (somnus/runtime/preflight.py).
+    session.actionable_timeout_s = settings.actionable_timeout_s
     # ``SOMNUS_TRACE`` opens a trace for MCP sessions too, so a long agent loop
     # can be inspected after the fact. There is no per-request flag here: a
     # server process is one session, so the environment is the right switch.

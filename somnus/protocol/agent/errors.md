@@ -27,6 +27,7 @@ OK rev=8
 | `ACTION_NOT_SUPPORTED` | no usable interface; report, do not retry |
 | `PERMISSION_DENIED` | report, do not retry |
 | `TARGET_DISABLED` | satisfy the precondition |
+| `NOT_ACTIONABLE` | `state=…` was still blocking after the short wait; do not retry |
 | `EFFECT_NOT_CONFIRMED` / `TIMEOUT` | `observe` and decide |
 
 `ACTION_NOT_SUPPORTED` on `activate` with `hint=try select` means the node

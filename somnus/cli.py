@@ -130,6 +130,8 @@ def build_session(args: argparse.Namespace) -> Session:
     )
     # Session-scope switch, also updated later by ``configure``.
     session.post_action_enum = settings.post_action_enum
+    # Environment tolerance for a blocked action (somnus/runtime/preflight.py).
+    session.actionable_timeout_s = settings.actionable_timeout_s
 
     # Decision trace: ``--trace DIR`` for this run, else ``SOMNUS_TRACE``.
     # Traces are written outside the repository by default (see

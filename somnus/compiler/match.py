@@ -161,7 +161,10 @@ def _node_attr(node: RawNode, attr: str) -> str | None:
     if attr in ("automation_id", "id"):
         return node.native.automation_id
     if attr == "name":
-        return node.name
+        # A synthesised name is a label, not a platform key: an entity whose
+        # identity came from it would change identity whenever the caption
+        # text did (somnus.compiler.names).
+        return None if node.name_synthetic else node.name
     if attr == "value":
         return node.value
     if attr == "class_name":
@@ -221,9 +224,11 @@ def _default_identity(node: RawNode, members: dict[str, RawNode]) -> str | None:
         return node.native.automation_id
     for key in ("title", "add_btn", "open_btn", "count_text", "price_text"):
         member = members.get(key)
-        if member is not None and member.name:
+        if member is not None and member.name and not member.name_synthetic:
             return member.name
-    return node.name
+    # A synthesised name is display evidence only; falling back to it would
+    # let a volatile label become a stable identity (compiler/names.py).
+    return None if node.name_synthetic else node.name
 
 
 # ---------------------------------------------------------------------------

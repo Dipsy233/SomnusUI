@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from somnus.compiler.compile import CompileResult, Compiler
 from somnus.compiler.pack_schema import Pack, select_pack
+from somnus.config import DEFAULT_ACTIONABLE_TIMEOUT_S
 from somnus.errors import ErrorCode, SomnusError, target_not_found
 from somnus.ir.action import Action
 from somnus.ir.node import RawTree, Relation, SemanticNode, WindowInfo
@@ -36,6 +37,7 @@ from somnus.projection.rules import apply_projection
 from somnus.providers.base import AccessibilityProvider
 from somnus.runtime.delta import Delta, diff_trees, index_by_fingerprint
 from somnus.runtime.policy import Policy
+from somnus.runtime import preflight
 from somnus.runtime.registry import SessionRegistry
 from somnus.runtime.resolver import Resolver
 from somnus.runtime.settle import Settler, signature_of
@@ -111,6 +113,12 @@ _VIEWPORT_MOVING_PRIMITIVES = frozenset(
 #: suite's windows), so the floor only exists so a replay provider - whose read
 #: is ~0ms - cannot spin a core for the whole timeout.
 _FIND_POLL_FLOOR_MS = 20
+
+#: Minimum spacing between the preflight wait's signature probes. Same reason
+#: as the find floor: on a real provider the probe itself (~hundreds of
+#: milliseconds on a large window) is the throttle, but a replay/fake provider
+#: could otherwise spin for the whole (small) bound.
+_PREFLIGHT_POLL_FLOOR_MS = 20
 
 #: A wait first polls the viewport capture. When that capture is a partial tree
 #: (a popup/pane is not in the viewport's layer) and still fits a full read, the
@@ -261,6 +269,11 @@ class Session:
         #: enumeration per call (~85-121ms measured) and hides exactly that -
         #: the new window still shows up on the next ``observe``.
         self.post_action_enum: bool = True
+        #: How long one action may wait for a blocked element (a disabled
+        #: control) to become actionable. Paid only on the blocked path; the
+        #: happy path never probes. 0 disables the wait. A host assigns the
+        #: configured value (somnus/config.py).
+        self.actionable_timeout_s: float = DEFAULT_ACTIONABLE_TIMEOUT_S
         #: The settings this session started with, so ``reset`` restores them
         #: (file + environment as resolved by the config layer, not the
         #: built-in defaults). Captured lazily on the first ``apply_settings``:
@@ -2636,6 +2649,13 @@ class Session:
         # died), `_execute_with_twin` retries its twin once. The set is kept for
         # diagnostics and for the batch's per-step report.
 
+        # State actionability: a disabled control refuses a real action for a
+        # real reason. A *briefly* disabled one (a submit button during a
+        # validation round-trip) can clear within a frame or two, so this wait
+        # is bounded and only paid when the action is already blocked - the
+        # happy path reads the compiled states and does nothing else.
+        self._preflight(action)
+
         resolver = Resolver(self.result)
         before_index = index_by_fingerprint(self.result.root)
         #: Window list before the action: a context_menu may open its menu as
@@ -2952,6 +2972,81 @@ class Session:
             + ("\n" + body if body else ""),
             settled=settle_result.settled,
         )
+
+    def _blocked_state(self, action: Action) -> preflight.PreflightResult | None:
+        """The blocking preflight result for this action, or None."""
+        if self.result is None:
+            return None
+        node = self.result.find(action.ref or "")
+        if node is None:
+            return None
+        result = preflight.check(node, action.capability)
+        return None if result.ok else result
+
+    def _preflight(self, action: Action) -> None:
+        """Refuse an action the element's *state* cannot accept, after a bounded wait.
+
+        The check itself is free - it reads the states the last compilation
+        already carries. The wait is the only cost, and it is paid exactly on
+        the blocked path. Providers with no signature probe (a replay) cannot
+        observe a change, so they get the historical immediate refusal.
+        """
+        blocked = self._blocked_state(action)
+        if blocked is None:
+            return
+        waited_ms = 0
+        if blocked.waitable and float(self.actionable_timeout_s) > 0:
+            waited_ms = self._wait_for_actionable(action)
+            if self._blocked_state(action) is None:
+                self._trace_event("preflight", blocked=None, waited_ms=waited_ms)
+                return
+        self._trace_event(
+            "preflight", blocked=blocked.state, waited_ms=waited_ms
+        )
+        raise preflight.error(blocked, action.ref, waited_ms=waited_ms)
+
+    def _wait_for_actionable(self, action: Action) -> int:
+        """Wait (bounded) for a blocked element's state to clear.
+
+        Polls the provider's cheap whole-window signature and pays for a full
+        read + compile only when the signature *changed* - the same evidence
+        settle uses, so a state flip (disabled -> enabled) is visible and an
+        unrelated repaint does not cause a read. Returns the time waited in
+        milliseconds (0 when this provider offers no probe).
+        """
+        window = self.target_window
+        probe = getattr(self.provider, "snapshot_signature", None)
+        if window is None or probe is None:
+            return 0
+        poll_s = max(int(self.settler.poll_interval_ms), _PREFLIGHT_POLL_FLOOR_MS) / 1000
+        start = time.monotonic()
+        deadline = start + float(self.actionable_timeout_s)
+        previous = self._settle_previous()
+        previous_signature = previous[1] if previous else None
+        if previous_signature is None:
+            try:
+                previous_signature = signature_of(probe(window))
+            except KeyError:  # window vanished; the caller reports the state
+                return 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_s, remaining))
+            try:
+                signature = signature_of(probe(window))
+            except KeyError:
+                break
+            if signature == previous_signature:
+                continue
+            previous_signature = signature
+            try:
+                self._recompile()
+            except KeyError:
+                break
+            if self._blocked_state(action) is None:
+                break
+        return int((time.monotonic() - start) * 1000)
 
     def _read_after_action(
         self,
@@ -3565,6 +3660,12 @@ class Session:
             # here, and a step that finds no usable interface retries its twin
             # in the execute loop below.
             resolution = self._resolve_with_hint(resolver, action)
+            # State is checked here, without a wait: nothing in this batch has
+            # run yet, so a disabled step cannot clear before its turn - and a
+            # wait per step would delay a refusal that is still free.
+            blocked = preflight.check(resolution.node, action.capability)
+            if not blocked.ok:
+                raise preflight.error(blocked, action.ref)
             # A refused *route* is skipped at execution, as in a single call;
             # a step whose every route is refused can never run, which the
             # dry run refuses here while refusal is still free.

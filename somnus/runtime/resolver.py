@@ -7,8 +7,6 @@ a declared native pattern.
 
 from __future__ import annotations
 
-import logging
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,11 +20,6 @@ from somnus.errors import (
 )
 from somnus.ir.capability import Capability, Effect, PrimitiveStep
 from somnus.ir.node import NativeRef, SemanticNode
-
-log = logging.getLogger("somnus.resolver")
-
-#: Set SOMNUS_TRACE_STATES=1 for the same trace the provider emits.
-_TRACE_STATES = os.environ.get("SOMNUS_TRACE_STATES", "") not in ("", "0", "false")
 
 
 @dataclass(slots=True)
@@ -88,18 +81,9 @@ class Resolver:
 
         self._validate_args(node, cap, action.args)
 
-        if "disabled" in node.states and cap.name not in ("read", "focus", "inspect"):
-            if _TRACE_STATES:
-                log.info(
-                    "refuse ref=%s cap=%s role=%s name=%r states=%s caps=%s",
-                    action.ref,
-                    cap.name,
-                    node.role,
-                    node.name,
-                    sorted(node.states),
-                    [c.name for c in node.caps],
-                )
-            raise SomnusError(ErrorCode.TARGET_DISABLED, ref=action.ref)
+        # State actionability moved to somnus.runtime.preflight: the session
+        # checks states *before* resolving, so a briefly disabled control can
+        # be waited on. The resolver stays a pure capability/route mapping.
 
         steps = self._build_steps(node, cap, action.args)
         if not steps and cap.level == "primitive":

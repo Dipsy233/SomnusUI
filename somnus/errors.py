@@ -18,6 +18,7 @@ class ErrorCode:
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     ACTION_NOT_SUPPORTED = "ACTION_NOT_SUPPORTED"
     TARGET_DISABLED = "TARGET_DISABLED"
+    NOT_ACTIONABLE = "NOT_ACTIONABLE"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     NATIVE_EXECUTION_FAILED = "NATIVE_EXECUTION_FAILED"
     TIMEOUT = "TIMEOUT"
@@ -35,6 +36,7 @@ HINTS: dict[str, str] = {
     ErrorCode.INVALID_ARGUMENT: "inspect",
     ErrorCode.ACTION_NOT_SUPPORTED: "report-user",
     ErrorCode.TARGET_DISABLED: "inspect",
+    ErrorCode.NOT_ACTIONABLE: "wait",
     ErrorCode.PERMISSION_DENIED: "report-user",
     ErrorCode.NATIVE_EXECUTION_FAILED: "retry-once",
     ErrorCode.TIMEOUT: "observe",

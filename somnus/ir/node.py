@@ -100,6 +100,11 @@ class RawNode:
     native: NativeRef
     role: str
     name: str | None = None
+    #: True when ``name`` was *synthesised* by :mod:`somnus.compiler.names`
+    #: from a label or the node's own text, not read from the platform. A
+    #: synthetic name is display/matching evidence only and is excluded from
+    #: fingerprint identity (see :func:`compute_fingerprint`).
+    name_synthetic: bool = False
     value: str | None = None
     description: str | None = None
     states: frozenset[str] = frozenset()
@@ -186,6 +191,11 @@ class SemanticNode:
     layer: str | None = None
     entity: str | None = None
     name: str | None = None
+    #: Hidden: ``name`` came from :mod:`somnus.compiler.names`, not from the
+    #: platform. It is rendered and matched like any other name, but it is not
+    #: identity evidence - otherwise a volatile caption (a counter, a price)
+    #: would re-mint the ref of a node that never moved.
+    name_synthetic: bool = False
     value: Any | None = None
     states: frozenset[str] = frozenset()
     #: Native pattern names the source element exposed, carried through so the
@@ -246,6 +256,7 @@ def compute_fingerprint(
     ancestor_path: str = "",
     role_index: int | None = None,
     runtime_id: tuple[int, ...] = (),
+    name_synthetic: bool = False,
 ) -> str:
     """Build a stable identity hash for a semantic node.
 
@@ -281,7 +292,17 @@ def compute_fingerprint(
 
     The runtime deliberately excludes ``value`` and mutable state: those change
     constantly and would make every ref stale.
+
+    ``name_synthetic`` marks a name the compiler synthesised from a label or
+    the node's own text (:mod:`somnus.compiler.names`). Such a name is not a
+    platform identity: it can be a counter, a price or a status line, so using
+    it here would re-mint refs whenever the text changed. It is therefore
+    dropped before hashing, which makes a synthesised name behave exactly like
+    the empty name the element really reported.
     """
+
+    if name_synthetic:
+        name = None
 
     def norm(value: str | None) -> str:
         if not value:

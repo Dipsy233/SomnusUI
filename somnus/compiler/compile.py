@@ -18,6 +18,7 @@ from somnus.compiler.match import (
     match_entities,
 )
 from somnus.compiler.normalize import normalize
+from somnus.compiler.names import synthesize_names
 from somnus.compiler.pack_schema import Pack
 from somnus.compiler.relations import build_relations
 from somnus.compiler.simplify import auto_collapse_groups, simplify
@@ -152,10 +153,15 @@ class Compiler:
         use_heuristics: bool = True,
         max_depth: int = 24,
         allocator: RefAllocator | None = None,
+        synthesize_names: bool = True,
     ) -> None:
         self.use_heuristics = use_heuristics
         self.max_depth = max_depth
         self.allocator = allocator or RefAllocator()
+        #: Name synthesis (:mod:`somnus.compiler.names`). On by default; the
+        #: switch exists so the token cost can be measured against the same
+        #: scenario suite (see docs/optimization-plan.md's A/B convention).
+        self.synthesize_names = synthesize_names
 
     def compile(
         self,
@@ -182,6 +188,13 @@ class Compiler:
 
         # 2. Structural simplify.
         simplify(raw_root)
+
+        # 2b. Name synthesis: give an unnamed control or row the label it
+        #     visibly has, so FIND and entity matching can address it. Runs
+        #     before matching because the title is matching evidence, and after
+        #     simplify so the caption text is settled in its final place.
+        if self.synthesize_names:
+            synthesize_names(raw_root)
 
         # 3. Entity matching (pack first, then heuristics).
         matches: dict[int, EntityMatch] = {}
@@ -360,6 +373,7 @@ class Compiler:
             role=raw.role,
             entity=em.entity if em else None,
             name=_clip(raw.name),
+            name_synthetic=raw.name_synthetic,
             value=raw.value,
             states=raw.states,
             patterns=raw.patterns,
@@ -416,6 +430,7 @@ class Compiler:
             role=node.role,
             identity=identity,
             name=node.name,
+            name_synthetic=raw.name_synthetic,
             ancestor_path=ancestor_path,
             role_index=role_index,
             runtime_id=raw.native.runtime_id,
@@ -474,7 +489,7 @@ class Compiler:
             idx = role_counts.get(child.role, 0)
             role_counts[child.role] = idx + 1
             needs_index = (
-                (child.role, _name_key(child)) in dup_key
+                (child.role, _fingerprint_name_key(child)) in dup_key
                 or (child.native.automation_id or "") in dup_identity
                 or _identity_class(child.native.class_name) in dup_identity
             )
@@ -545,7 +560,14 @@ class Compiler:
             return "window"
         if raw.role == "dialog" or "modal" in raw.states:
             return "dialog"
-        if raw.role in ("group", "pane") and raw.name and depth <= 1:
+        # A synthesised name is a caption, not a structural title: a row named
+        # after its text must stay a row, not be promoted to a SCREEN.
+        if (
+            raw.role in ("group", "pane")
+            and raw.name
+            and not raw.name_synthetic
+            and depth <= 1
+        ):
             return "screen"
         return None
 
@@ -557,6 +579,11 @@ class Compiler:
 
 def _name_key(node: RawNode) -> str:
     return (node.name or "").strip().casefold()
+
+
+def _fingerprint_name_key(node: RawNode) -> str:
+    """The name as fingerprint evidence: empty when it was synthesised."""
+    return "" if node.name_synthetic else _name_key(node)
 
 
 #: Class-name tokens that carry no identity: they describe appearance or state,
@@ -757,10 +784,19 @@ def _identity_class(class_name: str | None) -> str | None:
 
 
 def _duplicate_keys(children: list[RawNode]) -> set[tuple[str, str]]:
-    """(role, name) pairs that appear more than once among ``children``."""
+    """(role, name) pairs that appear more than once among ``children``.
+
+    A *synthetic* name counts as no name here on purpose. This set only decides
+    whether siblings need a disambiguating role index in their fingerprint, and
+    a synthesised name is not identity evidence (see
+    :func:`~somnus.ir.node.compute_fingerprint`). Counting it would make the
+    index - and therefore the ref - depend on caption *text*: two unnamed
+    siblings whose labels happen to differ would lose the index they had before
+    the name existed, and their refs would move when the text changed.
+    """
     seen: dict[tuple[str, str], int] = {}
     for child in children:
-        key = (child.role, _name_key(child))
+        key = (child.role, _fingerprint_name_key(child))
         seen[key] = seen.get(key, 0) + 1
     return {key for key, count in seen.items() if count > 1}
 

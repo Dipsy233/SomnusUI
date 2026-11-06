@@ -92,12 +92,19 @@ ENV_SETTLE_QUIET_MS = "SOMNUS_SETTLE_QUIET_MS"
 ENV_SETTLE_POLL_MS = "SOMNUS_SETTLE_POLL_MS"
 ENV_SETTLE_TIMEOUT_S = "SOMNUS_SETTLE_TIMEOUT_S"
 ENV_POST_ACTION_ENUM = "SOMNUS_POST_ACTION_ENUM"
+#: How long a blocked action may wait for the element to become actionable.
+ENV_ACTIONABLE_TIMEOUT_S = "SOMNUS_ACTIONABLE_TIMEOUT_S"
 
 #: Built-in defaults for the timing knobs (see docs/optimization-plan.md P1-2).
 DEFAULT_SETTLE_QUIET_MS = 40
 DEFAULT_SETTLE_POLL_MS = 10
 DEFAULT_SETTLE_TIMEOUT_S = 3.0
 DEFAULT_POST_ACTION_ENUM = True
+#: Bound for the preflight wait (somnus/runtime/preflight.py). It is only paid
+#: when an action is already blocked (a disabled control), never on the happy
+#: path, so it can be generous enough to cover a validation round-trip without
+#: slowing ordinary calls. 0 disables the wait.
+DEFAULT_ACTIONABLE_TIMEOUT_S = 0.3
 
 #: Accepted ranges. Values outside are refused, never clamped: clamping would
 #: silently accept a request the caller did not make.
@@ -111,6 +118,11 @@ _INT_KEYS = {
     "settle_poll_ms": SETTLE_POLL_MS_RANGE,
 }
 _FLOAT_KEYS = {"settle_timeout_s": SETTLE_TIMEOUT_S_RANGE}
+#: File/environment-only float knobs. They are not exposed through
+#: ``configure`` (that tool is the *model-facing* pacing control, and this is an
+#: environment tolerance), so they are kept out of :data:`_FLOAT_KEYS`, which
+#: ``validate_settle_overrides`` walks.
+_EXTRA_FLOAT_KEYS = {"actionable_timeout_s": (0.0, 2.0)}
 
 #: Keys understood in the file. Anything else is ignored (see module docstring).
 _KNOWN_KEYS = frozenset(
@@ -125,6 +137,7 @@ _KNOWN_KEYS = frozenset(
         "settle_poll_ms",
         "settle_timeout_s",
         "post_action_enum",
+        "actionable_timeout_s",
     }
 )
 
@@ -187,6 +200,9 @@ class Settings:
     #: Re-enumerate windows after an action so a window the action opened can be
     #: reported. Off saves ~100 ms per call and can hide that window.
     post_action_enum: bool = DEFAULT_POST_ACTION_ENUM
+    #: How long one action may wait for a blocked element to become actionable.
+    #: Only paid on the blocked path; 0 disables the wait.
+    actionable_timeout_s: float = DEFAULT_ACTIONABLE_TIMEOUT_S
     #: The file these came from (even when it does not exist yet), so a host can
     #: tell the user exactly which path to edit.
     path: Path | None = None
@@ -209,6 +225,7 @@ class Settings:
             f"settle_poll_ms   : {self.settle_poll_ms}",
             f"settle_timeout_s : {self.settle_timeout_s}",
             f"post_action_enum : {self.post_action_enum}",
+            f"actionable_timeout: {self.actionable_timeout_s}",
         ]
         for problem in self.problems:
             lines.append(f"warning          : {problem}")
@@ -274,7 +291,7 @@ def _apply_file(settings: Settings, data: dict) -> Settings:
         else:
             setattr(settings, key, value)
 
-    for key, (lo, hi) in _FLOAT_KEYS.items():
+    for key, (lo, hi) in {**_FLOAT_KEYS, **_EXTRA_FLOAT_KEYS}.items():
         if key not in data:
             continue
         value = data[key]
@@ -341,6 +358,14 @@ def _apply_env(settings: Settings) -> Settings:
         problems.append(problem)
     elif value is not None:
         settings.settle_timeout_s = value
+
+    value, problem = _env_float(
+        ENV_ACTIONABLE_TIMEOUT_S, *_EXTRA_FLOAT_KEYS["actionable_timeout_s"]
+    )
+    if problem:
+        problems.append(problem)
+    elif value is not None:
+        settings.actionable_timeout_s = value
 
     settings.problems = tuple(problems)
     return settings
@@ -517,6 +542,11 @@ def render_toml(settings: Settings) -> str:
         "# Re-enumerate windows after an action, so a window the action opened\n"
         "# can be reported. Off saves ~100 ms per call and can hide that window.\n"
         f"post_action_enum = {_toml_bool(settings.post_action_enum)}\n"
+        "\n"
+        "# How long a blocked action (a disabled control) may wait for the\n"
+        "# element to become actionable before it is refused. Only paid when an\n"
+        "# action is already blocked; 0 turns the wait off.\n"
+        f"actionable_timeout_s = {settings.actionable_timeout_s}\n"
     )
 
 
