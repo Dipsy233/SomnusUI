@@ -7,6 +7,9 @@ Commands::
     somnus observe [window]              print the L0 SUI-Text observation
     somnus call    "CALL p1.add()"       run one action
     somnus trace show <dir>              print a recorded decision trace
+    somnus doctor                        diagnose the self-check environment
+    somnus eval                          run generic self-checks (runtime verdict)
+    somnus replay <trace>                replay a trace, report the first divergence
     somnus repl                          interactive SUI-Text loop
     somnus bench   [--runs 100]          run the acceptance benchmark
     somnus mcp                           start the MCP server (stdio)
@@ -31,6 +34,7 @@ one run (``--no-allow-clipboard`` / ``--no-allow-keyboard``) or persistently
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -759,6 +763,234 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Diagnose the environment, then optionally smoke observe/find/call.
+
+    The smoke follows the self-check sandbox rule: fixtures offline, the child
+    session by default, the user's desktop only with ``--real``. The command
+    itself never opens a child session - it reports whether one is live and
+    what to run if it is not.
+    """
+    from somnus import config as config_module
+    from somnus.selfcheck import doctor, evaluate
+    from somnus.selfcheck.sandbox import SandboxError, enter
+
+    offline = _offline_mode(args)
+    if offline and args.real:
+        print(
+            "ERR INVALID_ARGUMENT hint=fix-syntax msg=\"--real cannot be used "
+            "with an offline provider (mock/scenario fixture)\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    settings = config_module.load(getattr(args, "config", None))
+    env = doctor.diagnose(offline=offline, real=args.real, settings=settings)
+
+    smoke = None
+    if not args.no_smoke and env.can_smoke:
+        session = build_session(args)
+        try:
+            if offline:
+                desktop = "offline"
+            else:
+                desktop = enter(session, real=args.real).desktop
+            smoke = evaluate.run(session, desktop=desktop)
+        except SandboxError as err:
+            env.lines.append(doctor.CheckLine("sandbox", doctor.FAIL, err.message))
+            env.can_smoke = False
+            env.smoke_skip = err.message
+        finally:
+            session.close()
+
+    print(doctor.render(env, smoke))
+    failed = env.failed or (smoke is not None and not smoke.ok)
+    return 1 if failed else 0
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Run the generic self-check and print a JSON verdict.
+
+    The tasks and the verdict are model-free: observe, find and call are driven
+    by this process, and success is read from the session's compiled result and
+    call outcomes. The default desktop is the child session; fixtures are the
+    offline path; ``--real`` is the explicit opt-in to the user's desktop.
+    """
+    from somnus.selfcheck import evaluate
+    from somnus.selfcheck.sandbox import SandboxError, enter
+
+    offline = _offline_mode(args)
+    if offline and args.real:
+        print(
+            "ERR INVALID_ARGUMENT hint=fix-syntax msg=\"--real cannot be used "
+            "with an offline provider (mock/scenario fixture)\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    session = build_session(args)
+    report = None
+    try:
+        _ensure_trace(session, args)
+        if offline:
+            desktop = "offline"
+        else:
+            try:
+                desktop = enter(session, real=args.real).desktop
+            except SandboxError as err:
+                print(err.render(), file=sys.stderr)
+                return 1
+        report = evaluate.run(session, desktop=desktop)
+    finally:
+        trace = _trace_where(session)
+        session.close()
+
+    print(evaluate.render_json(report, trace=trace))
+    return 0 if report.ok else 1
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Replay a trace on the sandbox desktop and name the first divergence."""
+    from somnus.observability.view import load_events, trace_path
+    from somnus.selfcheck import replay
+    from somnus.selfcheck.sandbox import SandboxError, enter
+
+    offline = _offline_mode(args)
+    if offline and args.real:
+        print(
+            "ERR INVALID_ARGUMENT hint=fix-syntax msg=\"--real cannot be used "
+            "with an offline provider (mock/scenario fixture)\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        events = load_events(args.path)
+    except OSError as exc:
+        print(f"ERR TRACE_READ {exc}", file=sys.stderr)
+        return 1
+    if not any(record.get("event") == "call.start" for record in events):
+        print(f"ERR TRACE_EMPTY {trace_path(args.path)} has no call to replay",
+              file=sys.stderr)
+        return 1
+
+    session = build_session(args)
+    report = None
+    try:
+        _ensure_trace(session, args)
+        if offline:
+            desktop = "offline"
+        else:
+            try:
+                desktop = enter(session, real=args.real).desktop
+            except SandboxError as err:
+                print(err.render(), file=sys.stderr)
+                return 1
+        report = replay.replay_trace(
+            session,
+            args.path,
+            desktop=desktop,
+            trace_out=_trace_where(session),
+        )
+    finally:
+        report_out = report
+        session.close()
+
+    if args.json:
+        print(
+            json.dumps(
+                report_out.as_dict(), ensure_ascii=False, indent=2, default=str
+            )
+        )
+    else:
+        _print_replay(report_out)
+    return 0 if report_out.ok else 1
+
+
+def _print_replay(report) -> None:
+    print(
+        f"replay {report.trace} desktop={report.desktop} "
+        f"provider={report.provider} steps={len(report.steps)}"
+    )
+    for step in report.steps:
+        mark = "OK" if step.actual_status == "OK" else step.actual_status
+        source = (
+            f"{step.recorded_ref}->{step.resolved_ref}"
+            if step.resolved and step.resolved_ref != step.recorded_ref
+            else step.recorded_ref
+        )
+        print(
+            f"  {step.index}. CALL {source}.{step.capability}() "
+            f"-> {mark}"
+            + (f" ({step.detail})" if step.detail and not step.divergence else "")
+        )
+        if step.output and step.divergence:
+            print(f"     {step.output}")
+    first = report.diverged
+    if first is not None:
+        print(
+            f"DIVERGED step={first.index} kind={first.divergence} "
+            f"expected={first.expected_status} actual={first.actual_status}"
+        )
+    else:
+        print(f"PASS steps={len(report.steps)}")
+    if report.trace_out:
+        print(f"trace -> {report.trace_out}")
+
+
+def _offline_mode(args: argparse.Namespace) -> bool:
+    """Whether this command should use fixtures rather than a live desktop.
+
+    ``--demo`` / ``--scenario`` / ``--fixture`` / ``--provider mock`` are the
+    explicit offline forms. A bare run is live, so an accidental missing flag
+    cannot silently turn a live check into a fixture replay.
+    """
+    return bool(
+        getattr(args, "demo", False)
+        or getattr(args, "scenario", None)
+        or getattr(args, "fixture", None)
+        or getattr(args, "provider", "auto") == "mock"
+    )
+
+
+def _ensure_trace(session, args: argparse.Namespace) -> None:
+    """Turn tracing on for a self-check unless the caller explicitly turned it off.
+
+    Evidence is the point of these commands: the report says what happened, and
+    the trace says why. The sink is still the same one the runtime uses, written
+    outside the repository; ``--no-trace`` (or an explicit ``--trace 0`` /
+    ``SOMNUS_TRACE=0``) keeps it off.
+    """
+    if getattr(args, "no_trace", False):
+        if session.trace_sink.enabled:
+            from somnus.observability.trace import NullTraceSink
+
+            session.trace_sink.close()
+            session.trace_sink = NullTraceSink()
+        return
+    if session.trace_sink.enabled:
+        return
+    if getattr(args, "trace", None) is not None:
+        return
+    if os.environ.get("SOMNUS_TRACE"):
+        return
+    from somnus.observability.jsonl import attach_trace
+
+    sink = attach_trace(
+        session,
+        "1",
+        settings=session._current_settings(),
+        session_label=session.session_label,
+    )
+    if sink is not None:
+        print(f"trace -> {sink.root}", file=sys.stderr)
+
+
+def _trace_where(session) -> str | None:
+    root = getattr(session.trace_sink, "root", None)
+    return str(root) if root is not None else None
+
+
 def cmd_repl(args: argparse.Namespace) -> int:
     session = build_session(args)
     # Start from the desktop: the window list is the entry point of every
@@ -1149,6 +1381,57 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--snapshots", action="store_true")
     show.add_argument("--limit", type=int, default=None)
     show.set_defaults(func=cmd_trace)
+
+    p = sub.add_parser("doctor")
+    p.set_defaults(func=cmd_doctor)
+    p.add_argument(
+        "--real",
+        action="store_true",
+        help=(
+            "run the smoke on the user's main desktop. The default is the child "
+            "session (or the offline fixture when --demo/--scenario is used)"
+        ),
+    )
+    p.add_argument(
+        "--no-smoke",
+        action="store_true",
+        help="report the environment only; do not drive any desktop",
+    )
+
+    p = sub.add_parser("eval")
+    p.set_defaults(func=cmd_eval)
+    p.add_argument(
+        "--real",
+        action="store_true",
+        help="run on the user's main desktop instead of the child session",
+    )
+    p.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="do not record a trace (one is written automatically otherwise)",
+    )
+
+    p = sub.add_parser("replay")
+    p.set_defaults(func=cmd_replay)
+    p.add_argument("path", help="trace directory, or one of its .jsonl files")
+    p.add_argument(
+        "--real",
+        action="store_true",
+        help=(
+            "replay against the user's main desktop. The default is the child "
+            "session; offline traces replay against --demo/--scenario fixtures"
+        ),
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="print the replay report as JSON instead of a timeline",
+    )
+    p.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="do not record a trace of the replay (one is written otherwise)",
+    )
 
     p = sub.add_parser("observe")
     p.add_argument("window", nargs="?")

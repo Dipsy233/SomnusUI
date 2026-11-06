@@ -509,6 +509,33 @@ CLI：
 设计说明、实测数据与已否定的方案见
 [docs/child-session.md](docs/child-session.md)。
 
+## 自检与回放
+
+三个仅 CLI 的命令让 agent（或人）像模型一样实际驱动沙箱，运行时内不跑模型：
+
+```bash
+somnus doctor                 # 环境诊断 + observe/find/call 冒烟
+somnus --demo doctor          # 离线版本
+somnus eval                   # JSON 判定，结论来自运行时状态
+somnus --scenario store eval  # 离线
+somnus replay <trace>         # 回放记录的调用，报告首个分歧
+somnus --demo replay <trace>  # 离线
+```
+
+沙箱口径固定：默认是**子会话**；mock / scenario 是离线路径；操作用户主桌面必须
+显式 `--real`。没有活的子会话时明确报错并给出启动命令，绝不静默改用主桌面。
+`doctor` 对子会话是只读的：只报告是否存在、没有时该运行什么，不自行开启。
+
+`eval` 执行三个通用任务——`observe`、`find`、`call`——目标是当前桌面实际提供的
+内容。成功与否取自运行时：`observe` 必须编译出结果，`find` 命中的 ref 必须能在
+会话自己的结果里解析，`call` 必须是 `OK`。任务只调用 `focus`，是探针而非改动。
+
+`replay` 读取 trace 里的 `call.start`。ref 只在记录它的会话内有效，因此回放从
+动作前快照重建身份：类型 + 名称（同名行按文档顺序），再用当前桌面的 `FIND` 得到
+本次的 ref；窗口 ref 按标题定位。它比较状态、错误码与 delta 计数，并在首个分歧处
+停止，因为之后的状态已经不同。`eval` 与 `replay` 默认各写一份自己的 trace，可用
+`--no-trace` 关闭。
+
 ## 文档索引
 
 | 文档 | 内容 |
@@ -536,6 +563,7 @@ somnus/
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── session/       子会话：childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
+├── selfcheck/     doctor、eval、replay（host 侧，无模型）
 ├── packs/         generic.py restaurant_demo.py
 ├── protocol/      tools.py policy.py help.py mcp_server.py jsonrpc.py
 │                  system_prompt.md agent/*.md

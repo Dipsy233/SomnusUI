@@ -596,6 +596,39 @@ requires `child_allow_spawn` and applies `allow_processes`.
 Design notes, measurements and rejected approaches are in
 [docs/child-session.md](docs/child-session.md).
 
+## Self-check and replay
+
+Three CLI-only commands let an agent (or a person) drive the sandbox the way a
+model would, without a language model in the loop:
+
+```bash
+somnus doctor                 # environment report + observe/find/call smoke
+somnus --demo doctor          # the same, offline
+somnus eval                   # JSON verdict, judged from runtime state
+somnus --scenario store eval  # offline
+somnus replay <trace>         # replay recorded calls, name the first divergence
+somnus --demo replay <trace>  # offline
+```
+
+The sandbox rule is fixed: the **child session** is the default, mock/scenario
+fixtures are the offline path, and the user's main desktop requires an explicit
+`--real`. A missing child session is reported with the command that starts one,
+never silently replaced by the main desktop. `doctor` is read-only with respect
+to the session: it reports whether one is live and what to run if it is not.
+
+`eval` runs three generic tasks - `observe`, `find`, `call` - against whatever
+the current desktop offers. Success comes from the runtime, not from a task
+script: a compiled result for `observe`, a hit whose ref resolves inside the
+session's own result for `find`, an `OK` outcome for `call`. The tasks use only
+`focus`, so they are a probe, not a mutation.
+
+`replay` reads the `call.start` records of a trace. Refs are session-scoped, so
+it resolves each one from the before-snapshot instead: type plus name (document
+order for same-named rows), then `FIND` on the live desktop; window refs resolve
+by title. It compares status, error code and delta counts, and stops at the first
+divergence because later steps would then run against a different state. Both
+`eval` and `replay` write a trace of their own run unless `--no-trace` is given.
+
 ## Documentation
 
 | Document | Content |
@@ -623,6 +656,7 @@ somnus/
 ├── runtime/       registry resolver settle verifier delta policy session
 ├── session/       child session: childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
+├── selfcheck/     doctor, eval and replay (host-side, no model)
 ├── packs/         generic.py restaurant_demo.py
 ├── protocol/      tools.py policy.py help.py mcp_server.py jsonrpc.py
 │                  system_prompt.md agent/*.md

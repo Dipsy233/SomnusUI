@@ -95,6 +95,20 @@ ALLOWED_PREFIXES: dict[str, tuple[str, ...]] = {
         "somnus.config",
         "somnus.session",
     ),
+    # Self-check commands are host code, invoked from the CLI only. They drive
+    # a normal Session and read traces; nothing in the runtime imports them.
+    "selfcheck": (
+        "somnus.ir",
+        "somnus.selfcheck",
+        "somnus.runtime",
+        "somnus.session",
+        "somnus.observability",
+        "somnus.errors",
+        "somnus.config",
+        # ``doctor`` imports the provider module only to answer "is the Windows
+        # UIA stack importable?" - a diagnostic, never an execution path.
+        "somnus.providers.windows",
+    ),
 }
 
 

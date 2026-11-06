@@ -246,6 +246,20 @@ somnus child-session setup       # (re)apply the system configuration
 somnus child-session close       # end it and clear leftovers
 ```
 
+The self-check commands use the session as their default sandbox:
+
+```bash
+somnus doctor                    # environment + observe/find/call smoke
+somnus eval                      # generic runtime-state verdict (JSON)
+somnus replay <trace>            # replay recorded calls, first divergence
+```
+
+They are read-only with respect to the session's lifecycle: `doctor` reports
+whether one is live but does not open it, and `eval` / `replay` refuse with the
+start command when none is live instead of falling back to the main desktop.
+`--real` is the explicit opt-in to the user's desktop; `--demo` / `--scenario`
+run offline on fixtures.
+
 `status` distinguishes the **raw** child-session id from a **live** one. They
 differ exactly when a session is half-dead - an attempt whose logon was refused,
 or one that has been reset. `WTSGetChildSessionId` keeps reporting an id in those
