@@ -17,11 +17,12 @@ from pathlib import Path
 import pytest
 
 from somnus.cli import main
+from somnus.ir.node import RawTree, WindowInfo
 from somnus.observability.jsonl import JsonlTraceSink
 from somnus.providers.mock import MockProvider
 from somnus.runtime.session import Session
-from somnus.selfcheck import nodes, sandbox
-from tests.fixtures.builders import demo_scripts, restaurant_demo_tree
+from somnus.selfcheck import heal, nodes, sandbox
+from tests.fixtures.builders import _n, demo_scripts, restaurant_demo_tree
 
 
 def run(argv: list[str]) -> tuple[int, str, str]:
@@ -209,6 +210,122 @@ def test_replay_refuses_a_trace_without_calls(tmp_path: Path):
     code, _, err = run(["--demo", "replay", str(tmp_path / "trace"), "--no-trace"])
     assert code == 1
     assert "no call to replay" in err
+
+
+# ---------------------------------------------------------------------------
+# heal
+# ---------------------------------------------------------------------------
+
+_BUTTON = frozenset({"invoke"})
+
+
+def _calc_tree(second_id: str) -> RawTree:
+    """Two invokable buttons; only the second one's identity can change."""
+    wid = "w1"
+    root = _n(
+        wid,
+        (),
+        "pane",
+        "面板",
+        children=[
+            _n(wid, (0,), "button", "七", patterns=_BUTTON, automation_id="seven"),
+            _n(wid, (1,), "button", "计算", patterns=_BUTTON,
+               automation_id=second_id),
+        ],
+    )
+    return RawTree(
+        window=WindowInfo(
+            window_id=wid, title="计算器", process="CalculatorApp.exe", pid=1,
+            active=True,
+        ),
+        root=root,
+    )
+
+
+def _calc_session(second_id: str = "compute_v1") -> Session:
+    provider = MockProvider(fixtures=[_calc_tree(second_id)])
+    session = Session(provider, allow_packs=False)
+    session.observe()
+    return session
+
+
+def _script_for(session: Session) -> str:
+    refs = {node.name: node.ref for node in session.result.root.walk() if node.name}
+    return (
+        f"CALL {refs['七']}.activate()\n"
+        f"CALL {refs['计算']}.activate()"
+    )
+
+
+def test_heal_relocates_a_stale_batch_step_and_reruns_it():
+    session = _calc_session()
+    script = _script_for(session)
+    # The second element was rebuilt under a new native id; the batch dry run
+    # now refuses before any step runs. The old ref is stale, its name is not.
+    session.provider._trees["w1"] = _calc_tree("compute_v2")
+    session.observe()
+
+    report = heal.heal_script(session, script)
+    session.close()
+
+    assert report.failed_at == 2, report.as_dict()
+    assert report.error_code == "STALE_TARGET", report.output
+    assert report.patched_script is not None
+    assert report.steps[1].healed_ref
+    assert report.steps[1].healed_ref != report.steps[1].ref
+    assert report.ok is True and report.rerun == "PASS", report.as_dict()
+    assert report.patched_script.splitlines()[1].startswith(
+        f"CALL {report.steps[1].healed_ref}."
+    )
+
+
+def test_heal_reports_a_step_it_cannot_relocate():
+    session = _calc_session()
+    script = _script_for(session)
+    # The second element is gone, and no same-named control exists to stand in.
+    gone = RawTree(
+        window=_calc_tree("unused").window,
+        root=_n(
+            "w1", (), "pane", "面板",
+            children=[
+                _n("w1", (0,), "button", "七", patterns=_BUTTON,
+                   automation_id="seven"),
+                # Keep a second child so the first button's sibling role-index
+                # (and therefore its fingerprint) does not change.
+                _n("w1", (1,), "text", "提示", patterns=frozenset({"text"}),
+                   automation_id="hint"),
+            ],
+        ),
+    )
+    session.provider._trees["w1"] = gone
+    session.observe()
+
+    report = heal.heal_script(session, script)
+    session.close()
+
+    assert report.failed_at == 2, report.as_dict()
+    assert report.error_code == "STALE_TARGET"
+    assert report.ok is False
+    assert report.patched_script is None
+    assert report.candidates == []
+
+
+def test_heal_offline_cli_passes_a_script_that_needs_no_heal(tmp_path: Path):
+    script = tmp_path / "script.txt"
+    script.write_text("CALL p1.add()\n", encoding="utf-8")
+
+    code, out, _ = run(["--demo", "heal", str(script), "--no-trace", "--json"])
+    assert code == 0, out
+    report = json.loads(out)
+    assert report["ok"] is True
+    assert report["healed"] is False
+    assert report["rerun"] == "not needed"
+
+
+def test_heal_offline_cli_reports_an_unreadable_script(tmp_path: Path):
+    code, _, err = run(["--demo", "heal", str(tmp_path / "missing.txt")])
+    assert code == 1
+    assert "SCRIPT_READ" in err
 
 
 # ---------------------------------------------------------------------------

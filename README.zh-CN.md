@@ -24,8 +24,9 @@ SUI-Text（节点、能力与属性），再通过 UI Automation 执行能力调
   原因：能映射 HWND 且承载可编辑文本的控件同时发布 Value 模式。
 - 编译器是确定性的。运行时与编译器内部不运行语言模型。
 - 不支持或不可读的内容如实报告。无视觉无法读取的内容渲染为
-  `? ref role reason=visual`。控件在执行时拒绝的 UIA 接口返回
-  `ACTION_NOT_SUPPORTED`，并附带恢复提示。
+  `? ref role reason=visual`。无名称、无子节点、无身份标识的图片视为装饰，
+  在编译前丢弃；带名称或自动化 id 的图片仍保留该行。控件在执行时拒绝的
+  UIA 接口返回 `ACTION_NOT_SUPPORTED`，并附带恢复提示。
 
 ## 开始使用
 
@@ -511,7 +512,7 @@ CLI：
 
 ## 自检与回放
 
-三个仅 CLI 的命令让 agent（或人）像模型一样实际驱动沙箱，运行时内不跑模型：
+四个仅 CLI 的命令让 agent（或人）像模型一样实际驱动沙箱，运行时内不跑模型：
 
 ```bash
 somnus doctor                 # 环境诊断 + observe/find/call 冒烟
@@ -520,6 +521,8 @@ somnus eval                   # JSON 判定，结论来自运行时状态
 somnus --scenario store eval  # 离线
 somnus replay <trace>         # 回放记录的调用，报告首个分歧
 somnus --demo replay <trace>  # 离线
+somnus heal script.sui        # 回放 run 脚本，修补一个失败步骤
+somnus --demo heal script.sui # 离线
 ```
 
 沙箱口径固定：默认是**子会话**；mock / scenario 是离线路径；操作用户主桌面必须
@@ -535,6 +538,12 @@ somnus --demo replay <trace>  # 离线
 本次的 ref；窗口 ref 按标题定位。它比较状态、错误码与 delta 计数，并在首个分歧处
 停止，因为之后的状态已经不同。`eval` 与 `replay` 默认各写一份自己的 trace，可用
 `--no-trace` 关闭。
+
+`heal` 运行一个 `run` 脚本，先观察目标窗口（让会话为每个 ref 保留定位配方）；
+某一步失败时，用配方中的角色、名称、实体以及这一步要调用的能力，通过运行时的
+定位器重建目标元素。只有唯一命中时才给出补丁并重跑一次；多个候选则如实列出，
+不猜测、不执行。运行时内部同样用这个定位器作为陈旧 ref 的第二重定位策略，但它
+不暴露成模型工具：工具面没有新增 `locate`。
 
 ## 文档索引
 
@@ -557,13 +566,13 @@ somnus/
 ├── ir/            节点 / 能力 / 动作值对象
 ├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard,workspace}.py
-├── compiler/      normalize → caps → relations → simplify → twins → match → compile
+├── compiler/      normalize → simplify/distill → names → twins → match → compile
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
-├── runtime/       registry resolver settle verifier delta policy session
+├── runtime/       registry locator resolver settle verifier delta policy session
 ├── session/       子会话：childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
-├── selfcheck/     doctor、eval、replay（host 侧，无模型）
+├── selfcheck/     doctor、eval、replay、heal（host 侧，无模型）
 ├── packs/         generic.py restaurant_demo.py
 ├── protocol/      tools.py policy.py help.py mcp_server.py jsonrpc.py
 │                  system_prompt.md agent/*.md

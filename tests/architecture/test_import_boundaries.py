@@ -105,6 +105,9 @@ ALLOWED_PREFIXES: dict[str, tuple[str, ...]] = {
         "somnus.observability",
         "somnus.errors",
         "somnus.config",
+        # ``heal`` reads a run script with the same parser the runtime uses, so
+        # the host-side loop exercises the syntax a model would actually send.
+        "somnus.sui",
         # ``doctor`` imports the provider module only to answer "is the Windows
         # UIA stack importable?" - a diagnostic, never an execution path.
         "somnus.providers.windows",

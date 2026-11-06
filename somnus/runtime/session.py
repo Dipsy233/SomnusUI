@@ -37,6 +37,7 @@ from somnus.projection.rules import apply_projection
 from somnus.providers.base import AccessibilityProvider
 from somnus.runtime.delta import Delta, diff_trees, index_by_fingerprint
 from somnus.runtime.policy import Policy
+from somnus.runtime import locator as locators
 from somnus.runtime import preflight
 from somnus.runtime.registry import SessionRegistry
 from somnus.runtime.resolver import Resolver
@@ -2620,7 +2621,15 @@ class Session:
             self._recompile()
             assert self.result is not None
             if self.result.find(action.ref or "") is None:
+                # Strategy 1: the fingerprint's last-seen structural evidence
+                # (role/name/index/depth/ancestors). Strategy 2: the re-resolvable
+                # locator, which can break a structural tie with evidence the
+                # caller already has (the capability it is about to run).
                 relocated = self.registry.relocate(action.ref or "", self.result)
+                if relocated is None:
+                    relocated = self._locate_stale(
+                        action.ref or "", action.capability
+                    )
                 if relocated is not None:
                     new_ref, evidence = relocated
                     stale_heal_note = (
@@ -2629,9 +2638,19 @@ class Session:
                     action = replace(action, ref=new_ref)
                 else:
                     # Tell the agent what the ref *was*, so it can decide whether
-                    # the element moved (find again) or is gone (give up).
+                    # the element moved (find again) or is gone (give up). When
+                    # the recipe still names several lookalikes, name them: the
+                    # agent can pick one instead of guessing from a bare error.
                     record = self.registry.records.get(action.ref or "")
                     if record is not None:
+                        candidates = self._locator_candidates(
+                            action.ref or "", action.capability
+                        )
+                        hint = (
+                            "; candidates: " + ", ".join(candidates)
+                            if candidates
+                            else ""
+                        )
                         raise SomnusError(
                             ErrorCode.STALE_TARGET,
                             ref=action.ref,
@@ -2639,6 +2658,7 @@ class Session:
                                 f"was {record.role} "
                                 + (f"{record.name!r} " if record.name else "")
                                 + "; refind by name (FIND) or observe"
+                                + hint
                             ),
                         )
                     raise SomnusError(ErrorCode.STALE_TARGET, ref=action.ref)
@@ -3221,6 +3241,63 @@ class Session:
             if fingerprint:
                 return fingerprint
         return self.registry.fingerprint_of(ref)
+
+    def _locate_stale(
+        self, ref: str, capability: str | None
+    ) -> tuple[str, str] | None:
+        """Second relocation strategy: the re-resolvable locator.
+
+        Only called after the registry's structural relocation declined (no
+        record, a tie, or no unique winner). The recipe is built from what the
+        record already carries - role, name, entity - plus the capability the
+        caller is about to run, which is the evidence available here and not to
+        the registry. A tie that survives that filter is still a tie: the
+        caller keeps STALE_TARGET rather than acting on a lookalike.
+        """
+        record = self.registry.records.get(ref)
+        if record is None or self.result is None:
+            return None
+        if record.window_id and record.window_id != self.target_window:
+            return None
+        if not record.name and not record.entity:
+            return None
+        if capability:
+            capped = locators.match(
+                self.result.root,
+                locators.from_record(record, capability=capability),
+            )
+            if capped.unique and capped.ref != ref:
+                return capped.ref, capped.locator.describe()
+        plain = locators.match(
+            self.result.root, locators.from_record(record)
+        )
+        if plain.unique and plain.ref != ref:
+            return plain.ref, plain.locator.describe()
+        return None
+
+    def _locator_candidates(
+        self, ref: str, capability: str | None, *, limit: int = 3
+    ) -> list[str]:
+        """Lookalikes the locator still finds for a ref that did not resolve."""
+        record = self.registry.records.get(ref)
+        if record is None or self.result is None:
+            return []
+        if record.window_id and record.window_id != self.target_window:
+            return []
+        result = locators.match(
+            self.result.root,
+            locators.from_record(record, capability=capability),
+        )
+        if result.found <= 1:
+            # Also offer the broader recipe when the capability filter emptied
+            # it: "these are the same-named elements that exist" is still
+            # useful evidence.
+            result = locators.match(
+                self.result.root, locators.from_record(record)
+            )
+        if result.found <= 1:
+            return []
+        return result.candidate_lines(limit)
 
     def _twin_candidates(self, ref: str) -> list[str]:
         """Live refs of *this* window that share ``ref``'s fingerprint.

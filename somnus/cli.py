@@ -10,6 +10,7 @@ Commands::
     somnus doctor                        diagnose the self-check environment
     somnus eval                          run generic self-checks (runtime verdict)
     somnus replay <trace>                replay a trace, report the first divergence
+    somnus heal <script>                 replay a run script, patch a failed step
     somnus repl                          interactive SUI-Text loop
     somnus bench   [--runs 100]          run the acceptance benchmark
     somnus mcp                           start the MCP server (stdio)
@@ -938,6 +939,79 @@ def _print_replay(report) -> None:
         print(f"trace -> {report.trace_out}")
 
 
+def cmd_heal(args: argparse.Namespace) -> int:
+    """Replay a ``run`` script on the sandbox desktop and patch one failed step."""
+    from pathlib import Path
+
+    from somnus.selfcheck import heal
+    from somnus.selfcheck.sandbox import SandboxError, enter
+
+    offline = _offline_mode(args)
+    if offline and args.real:
+        print(
+            "ERR INVALID_ARGUMENT hint=fix-syntax msg=\"--real cannot be used "
+            "with an offline provider (mock/scenario fixture)\"",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        script = Path(args.script).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"ERR SCRIPT_READ {exc}", file=sys.stderr)
+        return 1
+
+    session = build_session(args)
+    report = None
+    try:
+        _ensure_trace(session, args)
+        if offline:
+            desktop = "offline"
+        else:
+            try:
+                desktop = enter(session, real=args.real).desktop
+            except SandboxError as err:
+                print(err.render(), file=sys.stderr)
+                return 1
+        window = heal.window_ref(session, args.window)
+        if window is None:
+            target = f" {args.window}" if args.window else ""
+            print(
+                f'ERR TARGET_NOT_FOUND{target} hint=observe msg="no such '
+                'window on this desktop"',
+                file=sys.stderr,
+            )
+            return 1
+        # Observe before the script runs: the session's records for these refs
+        # are the recipes the healer needs when a later step goes stale.
+        session.observe(window)
+        try:
+            report = heal.heal_script(
+                session,
+                script,
+                source=args.script,
+                desktop=desktop,
+                retry=not args.no_retry,
+                trace_out=_trace_where(session),
+            )
+        except SomnusError as err:
+            print(err.render(), file=sys.stderr)
+            return 1
+    finally:
+        report_out = report
+        session.close()
+
+    if args.json:
+        print(
+            json.dumps(
+                report_out.as_dict(), ensure_ascii=False, indent=2, default=str
+            )
+        )
+    else:
+        print(heal.render(report_out))
+    return 0 if report_out.ok else 1
+
+
 def _offline_mode(args: argparse.Namespace) -> bool:
     """Whether this command should use fixtures rather than a live desktop.
 
@@ -1431,6 +1505,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-trace",
         action="store_true",
         help="do not record a trace of the replay (one is written otherwise)",
+    )
+
+    p = sub.add_parser("heal")
+    p.set_defaults(func=cmd_heal)
+    p.add_argument(
+        "script",
+        help="a file holding a run script (CALL / AWAIT lines, one per step)",
+    )
+    p.add_argument(
+        "--window",
+        default=None,
+        help="target window ref or title; default is the foreground window",
+    )
+    p.add_argument(
+        "--real",
+        action="store_true",
+        help=(
+            "heal against the user's main desktop. The default is the child "
+            "session; offline scripts heal against --demo/--scenario fixtures"
+        ),
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="print the heal report as JSON instead of a timeline",
+    )
+    p.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="print the patch only; do not re-run the corrected script",
+    )
+    p.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="do not record a trace of the heal (one is written otherwise)",
     )
 
     p = sub.add_parser("observe")

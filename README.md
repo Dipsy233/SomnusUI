@@ -34,8 +34,10 @@ match list, an `OK`/`ERR` line with a delta, a settings line, or a topic page.
   the compiler.
 - Unsupported or unreadable content is reported as such. The renderer emits
   `? ref role reason=visual` for content that cannot be read without vision.
-  A UIA interface that the control refuses at execution time produces
-  `ACTION_NOT_SUPPORTED`, with a recovery hint.
+  An image with no name, no children and no identity is treated as decoration
+  and dropped before compilation; one that carries a name or an automation id
+  keeps the line. A UIA interface that the control refuses at execution time
+  produces `ACTION_NOT_SUPPORTED`, with a recovery hint.
 
 ## Getting started
 
@@ -598,7 +600,7 @@ Design notes, measurements and rejected approaches are in
 
 ## Self-check and replay
 
-Three CLI-only commands let an agent (or a person) drive the sandbox the way a
+Four CLI-only commands let an agent (or a person) drive the sandbox the way a
 model would, without a language model in the loop:
 
 ```bash
@@ -608,6 +610,8 @@ somnus eval                   # JSON verdict, judged from runtime state
 somnus --scenario store eval  # offline
 somnus replay <trace>         # replay recorded calls, name the first divergence
 somnus --demo replay <trace>  # offline
+somnus heal script.sui        # replay a run script, patch one failed step
+somnus --demo heal script.sui # offline
 ```
 
 The sandbox rule is fixed: the **child session** is the default, mock/scenario
@@ -628,6 +632,14 @@ order for same-named rows), then `FIND` on the live desktop; window refs resolve
 by title. It compares status, error code and delta counts, and stops at the first
 divergence because later steps would then run against a different state. Both
 `eval` and `replay` write a trace of their own run unless `--no-trace` is given.
+
+`heal` runs a `run` script, observes the target window first (so the session
+holds the recipe for every ref), and when a step fails it rebuilds the intended
+element from that recipe - role, name, entity and the capability the step wants -
+through the runtime's locator. Exactly one match produces a patch and one re-run;
+a tie is reported with its candidates and nothing is acted on. The runtime uses
+the same locator internally as the second stale-ref strategy, but it stays
+internal: no `locate` tool is exposed on the model surface.
 
 ## Documentation
 
@@ -650,13 +662,13 @@ somnus/
 ├── ir/            node / capability / action value objects
 ├── providers/     base.py  mock.py
 │                  windows/{uia,cache,executor,events,keyboard,workspace}.py
-├── compiler/      normalize → caps → relations → simplify → twins → match → compile
+├── compiler/      normalize → simplify/distill → names → twins → match → compile
 ├── projection/    rules.py budget.py engine.py
 ├── sui/           serialize.py parse.py grammar.md
-├── runtime/       registry resolver settle verifier delta policy session
+├── runtime/       registry locator resolver settle verifier delta policy session
 ├── session/       child session: childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
-├── selfcheck/     doctor, eval and replay (host-side, no model)
+├── selfcheck/     doctor, eval, replay and heal (host-side, no model)
 ├── packs/         generic.py restaurant_demo.py
 ├── protocol/      tools.py policy.py help.py mcp_server.py jsonrpc.py
 │                  system_prompt.md agent/*.md

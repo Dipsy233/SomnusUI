@@ -24,6 +24,50 @@ def _btn(wid: str, path, name):
     return _n(wid, path, "button", name, patterns=_BUTTON)
 
 
+def _tie_tree(*, variant: str, second_patterns=frozenset({"expandcollapse"})) -> RawTree:
+    """Two same-named buttons under structurally identical groups.
+
+    The registry's structural score cannot tell them apart (same role, name,
+    depth, role-index and ancestor shape), which is exactly the tie the
+    locator is for. Only one of them exposes `activate`.
+    """
+    wid = "w1"
+    left_id = "seven_v2" if variant == "changed" else "seven"
+    body = [
+        _n(
+            wid,
+            (0,),
+            "group",
+            "数字键盘",
+            children=[
+                _n(wid, (0, 0), "button", "七", patterns=_BUTTON,
+                   automation_id=left_id),
+            ],
+        ),
+        _n(
+            wid,
+            (1,),
+            "group",
+            "数字键盘",
+            children=[
+                _n(wid, (1, 0), "button", "七", patterns=second_patterns,
+                   automation_id="seven_toggle"),
+            ],
+        ),
+    ]
+    return RawTree(
+        window=WindowInfo(
+            window_id=wid,
+            title="计算器",
+            process="CalculatorApp.exe",
+            pid=1,
+            active=True,
+        ),
+        root=_n(wid, (), "window", "计算器", children=body),
+    )
+
+
+
 def _tree(*, variant: str, window_id: str = "w1") -> RawTree:
     """Three layouts in which the same named button sits somewhere else."""
     wid = window_id
@@ -154,3 +198,43 @@ def test_relocation_never_crosses_windows():
 
     session.observe(window="w2")
     assert session.registry.relocate(old_ref, session.result) is None
+
+
+def test_the_locator_breaks_a_structural_tie_with_the_capability():
+    """Second strategy: the registry tied, the caller's capability decided."""
+    session = _session(_tie_tree(variant="standard"))
+    old_ref = _ref(session, "七")
+
+    session.provider._trees["w1"] = copy.deepcopy(_tie_tree(variant="changed"))
+    session._recompile()
+
+    # The registry really cannot pick: both buttons share role/name/depth/index
+    # and the same ancestor shape.
+    assert session.registry.relocate(old_ref, session.result) is None
+
+    out = session.dispatch(f"CALL {old_ref}.activate()")
+    assert out.startswith("OK"), out
+    assert "~ healed " in out and "via locator" in out, out
+    assert "cap=activate" in out, out
+    new_ref = next(
+        n.ref for n in session.result.root.walk()
+        if (n.name or "") == "七" and "activate" in n.cap_names()
+    )
+    assert new_ref != old_ref
+    assert session.provider.executed[-1][0] == session.result.sources[new_ref].native
+
+
+def test_a_tie_the_locator_cannot_break_keeps_stale_target_with_candidates():
+    """Two invokable lookalikes: no guess, but the candidates are named."""
+    session = _session(_tie_tree(variant="standard", second_patterns=_BUTTON))
+    old_ref = _ref(session, "七")
+
+    session.provider._trees["w1"] = copy.deepcopy(
+        _tie_tree(variant="changed", second_patterns=_BUTTON)
+    )
+    session._recompile()
+
+    out = session.dispatch(f"CALL {old_ref}.activate()")
+    assert out.startswith("ERR STALE_TARGET"), out
+    assert "candidates:" in out, out
+    assert session.provider.executed == [], "a tie must not silently retarget"
