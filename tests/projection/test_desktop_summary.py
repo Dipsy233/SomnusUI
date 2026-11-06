@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from somnus.compiler.compile import Compiler
 from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
-from somnus.projection.budget import ObservationBudget, count_tokens
+from somnus.projection.budget import ObservationBudget, count_tokens, estimate_tokens
 from somnus.projection.engine import ProjectionEngine
 from somnus.projection.rules import apply_projection
 from somnus.sui.serialize import render_document
@@ -129,5 +129,8 @@ def test_six_window_summary_stays_small():
         for i in range(1, 7)
     ]
     line = _text(desktop_summary=windows).splitlines()[1]
-    # The whole point: one line, tens of tokens, not a desktop dump.
-    assert count_tokens(line) <= 50, (count_tokens(line), line)
+    # The whole point: one line, tens of tokens, not a desktop dump. The
+    # threshold is pinned with the documented estimator (ASCII ~4 chars per
+    # token) so the number means the same thing with or without tiktoken,
+    # like the prompt-budget regression references do.
+    assert estimate_tokens(line) <= 50, (estimate_tokens(line), line)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from somnus.compiler.compile import Compiler
 from somnus.ir.node import NativeRef, RawNode, RawTree, WindowInfo
-from somnus.projection.budget import ObservationBudget
+from somnus.projection.budget import ObservationBudget, count_tokens
 from somnus.projection.engine import ProjectionEngine
 from somnus.projection.rules import apply_projection
 from somnus.sui.serialize import render_document
@@ -105,6 +105,23 @@ def _render(
     return render_document(plan.lines, rev=1)
 
 
+def _metadata_and_row_cost(result) -> tuple[int, int, int]:
+    """The engine-side counter values: after the forced lines, one row, marker.
+
+    The engine's counter tracks only the lines it plans (the ``@rev`` header
+    is rendered but never counted), and the row admissibility check re-adds
+    the row and marker costs per candidate row. Deriving the budgets from
+    these measured values keeps the contract identical under tiktoken and
+    the estimator.
+    """
+    lines = _render(result).splitlines()
+    meta_all = sum(count_tokens(l) for l in lines if '"Item ' not in l)
+    row = count_tokens(next(l for l in lines if '"Item ' in l))
+    marker = count_tokens(next(l for l in lines if "+more" in l))
+    rev = count_tokens(lines[0])
+    return meta_all - rev - marker, row, marker
+
+
 def test_240_rows_shows_summary_examples_and_a_more_marker():
     result, container = _compile_with_viewport(
         12, total=240, visible=12, truncated=True, scroll=5
@@ -172,13 +189,17 @@ def test_the_summary_survives_a_tight_token_budget_while_examples_shrink():
     result, _ = _compile_with_viewport(
         12, total=240, visible=12, truncated=True, scroll=5
     )
-    # `max_tokens=60` fits the summary + marker + two rows; `40` fits neither
-    # row but still gets both metadata lines. This is the documented priority:
-    # the container summary is never traded away for an example.
+    # The budgets are derived from the live engine counter (tiktoken when it
+    # is installed, the documented estimator otherwise) so the test states the
+    # same contract under either path: `meta + 2 rows + marker` admits exactly
+    # two example rows, while `meta` admits neither row but still gets both
+    # metadata lines. This is the documented priority: the container summary
+    # is never traded away for an example.
+    meta, row, marker = _metadata_and_row_cost(result)
     two_rows = _render(result, budget=ObservationBudget(
-        max_nodes=200, max_depth=8, max_tokens=60))
+        max_nodes=200, max_depth=8, max_tokens=meta + 2 * row + marker))
     no_rows = _render(result, budget=ObservationBudget(
-        max_nodes=200, max_depth=8, max_tokens=40))
+        max_nodes=200, max_depth=8, max_tokens=meta))
 
     for text, expected_rows in ((two_rows, 2), (no_rows, 0)):
         lines = text.splitlines()
