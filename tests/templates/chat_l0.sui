@@ -1,0 +1,12 @@
+@rev ?
+WINDOWS w? "Scenario Suite - chat" active
+WINDOW w? "Scenario Suite - chat" active
+  SCREEN s? "chat"
+    LIST l? "会话" count=12 +find +12 more
+    TEXT t? "群组 1"
+    LIST l? "消息" count=8 +find +8 more
+    INPUT q? "消息编辑器" value="" +set_text
+    BUTTON b? "发送"
+    SCREEN s? "发送记录"
+      LIST l? "发送记录"
+    ...

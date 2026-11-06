@@ -1,0 +1,11 @@
+@rev ?
+WINDOWS w? "Scenario Suite - console" active
+WINDOW w? "Scenario Suite - console" active
+  SCREEN s? "console"
+    LIST l? "联系人" count=10 entity=item +find +10 more
+    TEXT t? "联系人 1"
+    LIST l? "消息"
+      TEXT t? /与 联系人 1 的历史消息/
+    INPUT q? "输入" value="" +set_text
+    BUTTON b? "发送"
+    TEXT t? "就绪"

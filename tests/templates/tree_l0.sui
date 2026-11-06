@@ -1,0 +1,9 @@
+@rev ?
+WINDOWS w? "Scenario Suite - tree" active
+WINDOW w? "Scenario Suite - tree" active
+  SCREEN s? "tree"
+    BUTTON b? "全部展开"
+    BUTTON b? "全部折叠"
+    TEXT t? /节点总数/
+    TREE tr? "目录树" count=1 +find
+      TREEITEM ti? "根目录" collapsed +expand +collapse +select

@@ -1,0 +1,2 @@
+@rev ?
+LIST l? "商品" count=240 entity=item +find +240 more

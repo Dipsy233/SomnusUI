@@ -1,0 +1,13 @@
+@rev ?
+WINDOWS w? /^Scenario Suite - store$/ active
+WINDOW w? "Scenario Suite - store" active
+  SCREEN s? "store"
+    INPUT q? "搜索" value="" +set_text
+    BUTTON b? "搜索"
+    TEXT t? /^\d+ 件商品$/
+    LIST l? "商品" count=240 entity=item +find +240 more
+    SCREEN s? "购物车"
+      TEXT t? "0 items $0.00"
+      LIST l? "购物车明细"
+      BUTTON b? "结算"
+      TEXT t? "就绪"

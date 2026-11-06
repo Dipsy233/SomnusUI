@@ -1,0 +1,20 @@
+@rev ?
+WINDOWS w? "Scenario Suite - form" active
+WINDOW w? "Scenario Suite - form" active
+  SCREEN s? "form"
+    TEXT t? "姓名"
+    INPUT q? "姓名" value="" +set_text
+    TEXT t? "邮箱"
+    INPUT q? "邮箱" value="" +set_text
+    TEXT t? "备注"
+    INPUT q? "备注" value="" +set_text
+    TEXT t? "只读编号"
+    INPUT q? "只读编号" readonly
+    CHECKBOX c? "同意条款"
+    SELECT sel? "优先级" +select +expand +collapse
+    BUTTON b? "提交"
+    BUTTON b? "重置"
+    BUTTON b? "禁用按钮" disabled
+    TEXT t? "未提交"
+    SCREEN s? "提交记录"
+      LIST l? "提交记录" count=1 +find
