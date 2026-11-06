@@ -36,13 +36,22 @@ def session():
 # ---------------------------------------------------------------------------
 
 
-def test_the_eight_tools_are_advertised():
-    # The four perception/action tools, plus ``switch`` (moves the agent between
-    # the two Windows sessions), ``configure`` (tunes call timing), ``run``
-    # (a CALL/AWAIT script in one round trip) and ``launch`` (starts a program).
+def test_the_nine_tools_are_advertised():
+    # The five-tool perception/action loop, plus ``help`` (loads a topic page
+    # on demand), ``switch`` (moves the agent between the two Windows
+    # sessions), ``launch`` (starts a program) and ``configure`` (tunes call
+    # timing). Tier filtering decides which of them a client actually sees.
     names = {spec["name"] for spec in TOOL_SPECS}
     assert names == {
-        "observe", "find", "inspect", "call", "run", "switch", "launch", "configure"
+        "observe",
+        "find",
+        "inspect",
+        "call",
+        "run",
+        "help",
+        "switch",
+        "launch",
+        "configure",
     }
 
 
@@ -68,6 +77,7 @@ def test_only_find_and_call_require_an_argument():
     assert required["call"] == ["action"]
     assert required["run"] == ["script"]
     assert required["launch"] == ["command"]
+    assert required["help"] == []
 
 
 def test_no_tool_advertises_a_confirmation_switch():
@@ -188,8 +198,9 @@ def test_a_100kb_write_reply_stays_bounded():
 # ---------------------------------------------------------------------------
 
 
-def _server(session) -> JsonRpcServer:
-    return JsonRpcServer(session)
+def _server(session, capabilities=("core", "desktop", "docs")) -> JsonRpcServer:
+    # Explicit tiers keep the test independent of the caller's environment.
+    return JsonRpcServer(session, capabilities=capabilities)
 
 
 def test_tools_list_matches_the_specs(session):
@@ -277,15 +288,38 @@ def test_make_mcp_server_lists_the_same_tools(session):
 
     from somnus.protocol.mcp_server import _make_list_tools, make_mcp_server
 
-    make_mcp_server(session)
+    make_mcp_server(session, capabilities=("core", "desktop", "docs"))
     # mcp 2.x registers handlers as constructor callbacks taking (ctx, params);
     # call the list_tools handler directly - the closest check that does not
     # start a transport.
     import asyncio
 
-    listed = asyncio.run(_make_list_tools(session)(None, None))
+    listed = asyncio.run(
+        _make_list_tools(session, ("core", "desktop", "docs"))(None, None)
+    )
     tools = listed.tools
     assert [t.name for t in tools] == [spec["name"] for spec in TOOL_SPECS]
+
+
+def test_mcp_lists_only_the_core_tier(session):
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from somnus.protocol.mcp_server import _make_list_tools
+
+    listed = asyncio.run(_make_list_tools(session, ("core",))(None, None))
+    assert [tool.name for tool in listed.tools] == [
+        "observe", "find", "inspect", "call", "run"
+    ]
+
+
+def test_jsonrpc_tools_list_follows_the_selected_tier(session):
+    reply = _server(session, capabilities=("core",)).handle(
+        {"jsonrpc": "2.0", "id": 9, "method": "tools/list"}
+    )
+    assert [tool["name"] for tool in reply["result"]["tools"]] == [
+        "observe", "find", "inspect", "call", "run"
+    ]
 
 
 def test_build_session_honours_the_persistent_opt_ins(tmp_path):

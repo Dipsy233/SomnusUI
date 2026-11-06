@@ -250,11 +250,14 @@ def test_repl_stops_cleanly_on_eof(monkeypatch):
 
 def test_rpc_serves_line_delimited_requests(monkeypatch):
     """`somnus rpc` reads JSON-RPC from stdin and answers on stdout."""
+    from somnus.protocol.tools import TOOL_SPECS
+
     request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    monkeypatch.delenv("SOMNUS_CAPABILITIES", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO(request + "\n"))
     code, out, _ = run(["--demo", "rpc"])
     assert code == 0
     reply = json.loads(out.strip().splitlines()[0])
     assert {t["name"] for t in reply["result"]["tools"]} == {
-        "observe", "find", "inspect", "call", "run", "switch", "launch", "configure"
+        spec["name"] for spec in TOOL_SPECS
     }

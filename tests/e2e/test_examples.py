@@ -21,23 +21,28 @@ def test_example_parses(name):
     ast.parse(path.read_text(encoding="utf-8"))
 
 
-def test_agent_importable_without_model():
+def test_agent_importable_without_model(monkeypatch):
     from examples.agent import LlmClient, openai_tools, run_agent  # noqa: F401
 
+    from somnus.protocol import policy
+    from somnus.protocol.tools import TOOL_SPECS
+
+    monkeypatch.delenv("SOMNUS_CAPABILITIES", raising=False)
     tools = openai_tools()
-    # ``switch`` moves the agent between the two Windows sessions (and opens or
-    # closes the child one); ``configure`` tunes call timing; ``run`` executes a
-    # CALL/AWAIT script in one round trip; ``launch`` starts a program. All are
-    # part of the tool surface.
+    # The example host advertises the same surface as the MCP server: every
+    # tool in every tier when nothing is selected.
     assert {t["function"]["name"] for t in tools} == {
-        "observe",
-        "find",
-        "inspect",
-        "call",
-        "run",
-        "switch",
-        "launch",
-        "configure",
+        spec["name"] for spec in policy.filter_tool_specs(TOOL_SPECS)
+    }
+
+
+def test_agent_honours_the_capability_tier(monkeypatch):
+    """The example is a host like any other: it lists only the active tiers."""
+    from examples.agent import openai_tools
+
+    monkeypatch.setenv("SOMNUS_CAPABILITIES", "core")
+    assert {t["function"]["name"] for t in openai_tools()} == {
+        "observe", "find", "inspect", "call", "run"
     }
 
 

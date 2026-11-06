@@ -27,6 +27,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from somnus.protocol import policy  # noqa: E402
 from somnus.protocol.tools import TOOL_SPECS, call_tool  # noqa: E402
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8787/v1"
@@ -47,6 +48,11 @@ short final answer and no tool call.
 
 
 def openai_tools() -> list[dict[str, Any]]:
+    """The tools this host advertises.
+
+    Filtering goes through the same tier table as the MCP server, so
+    ``SOMNUS_CAPABILITIES=core`` gives this host the minimal surface too.
+    """
     return [
         {
             "type": "function",
@@ -56,7 +62,7 @@ def openai_tools() -> list[dict[str, Any]]:
                 "parameters": spec["inputSchema"],
             },
         }
-        for spec in TOOL_SPECS
+        for spec in policy.filter_tool_specs(TOOL_SPECS)
     ]
 
 

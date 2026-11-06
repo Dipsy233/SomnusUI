@@ -6,9 +6,9 @@ SomnusUI 把原生 GUI 编译为文本接口。运行时读取 Windows 无障碍
 SUI-Text（节点、能力与属性），再通过 UI Automation 执行能力调用；文本输入可选
 剪贴板与键盘通道。模型收到 SUI-Text，不收到截图、坐标或原生标识符。
 
-输入是八种工具调用之一：`observe`、`find`、`inspect`、`call`、`run`、`switch`、
-`launch`、`configure`。输出是 SUI-Text：一次观察、一份命中列表、一行带增量的 `OK`/`ERR`，
-或一行设置结果。
+输入是九种工具调用之一：`observe`、`find`、`inspect`、`call`、`run`、`help`、
+`switch`、`launch`、`configure`。输出是 SUI-Text：一次观察、一份命中列表、一行带增量
+的 `OK`/`ERR`、一行设置结果，或一篇主题文档。
 
 ## 概述
 
@@ -70,10 +70,11 @@ ref（`p1`、`w1`、`q1` …）只在一个会话内有效。`somnus observe` �
 }
 ```
 
-服务器暴露下列八个工具。provider 自动选择：安装 `[windows]` 扩展时使用
-UI Automation，否则回放录制的固件。`instructions` 在 `initialize` 时只发送一次，
-内容是当时的生效值快照：`settle_quiet_ms=40`、`settle_poll_ms=10`、
-`settle_timeout_s=3.0`、`post_action_enum=on`。`configure` 返回实时生效值。
+服务器暴露上表中的工具，并按所选能力档位过滤（默认九种全部暴露）。provider 自动
+选择：安装 `[windows]` 扩展时使用 UI Automation，否则回放录制的固件。`instructions`
+在 `initialize` 时只发送一次，内容是共享规则与当时的生效值快照：`settle_quiet_ms=40`、
+`settle_poll_ms=10`、`settle_timeout_s=3.0`、`post_action_enum=on`。`configure`
+返回实时生效值。
 
 ## 工具与协议
 
@@ -84,11 +85,40 @@ UI Automation，否则回放录制的固件。`instructions` 在 `initialize` �
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 细节 |
 | `call` | `CALL ref.cap(args)`；多行作为一次批处理执行 | `OK`/`ERR` 与增量 |
 | `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL`、每步一行、合并增量 |
+| `help` | `HELP [topic]`；不带主题时列出工具、档位与主题 | 一篇主题文档或发现摘要 |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` 与窗口清单 |
 | `launch` | 在当前桌面或子桌面启动程序；`wait_s` 默认 3 秒 | `OK pid=…` 与新增窗口行（最多六条，之后 `+ N more`） |
 | `configure` | 调整 `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
 
 `configure` 是节奏控制工具，不授予或拒绝能力。
+
+### 渐进式工具面
+
+工具按档位分组；宿主只列出当前生效档位内的工具，受限客户端无需为用不到的工具付
+schema 成本：
+
+| 档位 | 工具 |
+| --- | --- |
+| `core` | `observe`、`find`、`inspect`、`call`、`run` |
+| `desktop` | `switch`、`launch`、`configure` |
+| `docs` | `help` |
+
+```bash
+SOMNUS_CAPABILITIES=core somnus mcp               # 五个工具
+SOMNUS_CAPABILITIES=desktop somnus mcp            # core + desktop（八个）
+SOMNUS_CAPABILITIES=core,desktop,docs somnus mcp  # 全部（默认）
+```
+
+`core` 始终包含；未设置或值非法时使用全部档位。该表是 MCP `tools/list`、JSON-RPC
+传输与 `examples/agent.py` 的唯一数据源，由 `tests/protocol/test_tool_policy.py`
+锁定。
+
+提示词同样分层：每轮只注入简短的核心提示词（`somnus/protocol/system_prompt.md`），
+完整语法放在 `somnus/protocol/agent/*.md`，按需读取。`HELP` 不带主题时是发现入口：
+列出已启用档位及其工具、仍可开启的档位、主题列表。`HELP <topic>` 返回一篇文档
+（`format`、`gestures`、`batching`、`desktops`、`errors`、`settings`）；
+`somnus help <topic>` 打印相同内容。实测：核心提示词 699 token；仅 core 档位时
+1207 token（提示词 + 五个 schema）；九个工具完整表面 1680 token，拆分前为 2669。
 
 ### 切换桌面
 
@@ -496,7 +526,8 @@ somnus/
 ├── session/       子会话：childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
 ├── packs/         generic.py restaurant_demo.py
-├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
+├── protocol/      tools.py policy.py help.py mcp_server.py jsonrpc.py
+│                  system_prompt.md agent/*.md
 ├── config.py      持久设置
 └── cli.py
 apps/restaurant-demo/   WPF（.NET 8）验收应用

@@ -16,13 +16,25 @@ import json
 import sys
 from typing import Any, TextIO
 
+from somnus.protocol import policy
 from somnus.protocol.tools import TOOL_SPECS, call_tool
 from somnus.runtime.session import Session
 
 
 class JsonRpcServer:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        capabilities: tuple[str, ...] | None = None,
+    ) -> None:
         self.session = session
+        #: The tiers this transport lists. Resolved once, at construction, so
+        #: a listing and a ``help`` reply in the same server agree.
+        self.capabilities = (
+            policy.resolve_capabilities()
+            if capabilities is None
+            else tuple(capabilities)
+        )
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         req_id = request.get("id")
@@ -30,10 +42,18 @@ class JsonRpcServer:
         params = request.get("params") or {}
         try:
             if method == "tools/list":
-                return _ok(req_id, {"tools": TOOL_SPECS})
+                return _ok(
+                    req_id,
+                    {"tools": policy.filter_tool_specs(TOOL_SPECS, self.capabilities)},
+                )
             if method == "tools/call":
                 name = params.get("name")
-                text = call_tool(self.session, name, params.get("arguments"))
+                text = call_tool(
+                    self.session,
+                    name,
+                    params.get("arguments"),
+                    capabilities=self.capabilities,
+                )
                 return _ok(req_id, {"content": [{"type": "text", "text": text}]})
             if method == "sui":
                 text = self.session.dispatch(params.get("text", ""))

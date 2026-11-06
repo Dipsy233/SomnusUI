@@ -8,9 +8,9 @@ attributes), and executes capability calls through UI Automation, with optional
 clipboard and keyboard channels for text input. The model receives SUI-Text; it
 receives no screenshots, coordinates or native identifiers.
 
-Input is one of eight tool calls: `observe`, `find`, `inspect`, `call`, `run`,
-`switch`, `launch` or `configure`. Output is SUI-Text: an observation, a match list, an
-`OK`/`ERR` line with a delta, or a settings line.
+Input is one of nine tool calls: `observe`, `find`, `inspect`, `call`, `run`,
+`help`, `switch`, `launch` or `configure`. Output is SUI-Text: an observation, a
+match list, an `OK`/`ERR` line with a delta, a settings line, or a topic page.
 
 ## Overview
 
@@ -83,10 +83,11 @@ one-shot rule.
 }
 ```
 
-The server exposes the eight tools listed below. The provider is selected
-automatically: UI Automation when the `[windows]` extra is installed, recorded
-fixtures otherwise. The `instructions` field is sent once at `initialize`;
-it is a snapshot of the values in force at that time: `settle_quiet_ms=40`,
+The server exposes the tools listed above, filtered to the selected capability
+tiers (all nine by default). The provider is selected automatically: UI
+Automation when the `[windows]` extra is installed, recorded fixtures otherwise.
+The `instructions` field is sent once at `initialize`; it carries the shared
+rules plus a snapshot of the values in force at that time: `settle_quiet_ms=40`,
 `settle_poll_ms=10`, `settle_timeout_s=3.0` and `post_action_enum=on`.
 `configure` returns the live values.
 
@@ -99,11 +100,43 @@ it is a snapshot of the values in force at that time: `settle_quiet_ms=40`,
 | `inspect` | `INSPECT ref [depth=N] [range=A:B]` | L1/L2 detail |
 | `call` | `CALL ref.cap(args)`; several lines run as one batch | `OK`/`ERR` plus a delta |
 | `run` | `CALL` / `AWAIT [TYPE] "name" [in ref] [timeout=s]` / `CALL $it.cap(args)` | `RUN OK`/`RUN PARTIAL`, per-step lines and a merged delta |
+| `help` | `HELP [topic]`; no topic lists tools, tiers and topics | a topic page or the discovery summary |
 | `switch` | `SWITCH main` / `SWITCH child` / `SESSION open|close|detach` | `OK` plus a window list |
 | `launch` | start a program on the current or child desktop; `wait_s` defaults to 3 s | `OK pid=…` plus new window lines (max six, then `+ N more`) |
 | `configure` | tune `settle_quiet_ms` / `settle_poll_ms` / `settle_timeout_s` / `post_action_enum` | `SETTINGS …` |
 
 `configure` is a pacing control. It does not grant or deny capabilities.
+
+### Progressive tool surface
+
+Tools belong to tiers. A host lists only the tiers in force, so a constrained
+client never pays for a tool it cannot need:
+
+| Tier | Tools |
+| --- | --- |
+| `core` | `observe`, `find`, `inspect`, `call`, `run` |
+| `desktop` | `switch`, `launch`, `configure` |
+| `docs` | `help` |
+
+```bash
+SOMNUS_CAPABILITIES=core somnus mcp               # five tools
+SOMNUS_CAPABILITIES=desktop somnus mcp            # core + desktop (eight)
+SOMNUS_CAPABILITIES=core,desktop,docs somnus mcp  # every tool (default)
+```
+
+`core` is always included; unset or malformed means every tier. The table is the
+single source of truth for the MCP `tools/list`, the JSON-RPC transport and
+`examples/agent.py`, and `tests/protocol/test_tool_policy.py` pins it.
+
+The protocol is split the same way. Only a short core prompt
+(`somnus/protocol/system_prompt.md`) is injected every turn; the full syntax
+lives in `somnus/protocol/agent/*.md` and is read on demand. `HELP` without a
+topic is the discovery reply - enabled tiers, their tools, tiers that can still
+be enabled, and the topic list. `HELP <topic>` returns one page (`format`,
+`gestures`, `batching`, `desktops`, `errors`, `settings`); `somnus help <topic>`
+prints the same text. Measured: the core prompt is 699 tokens, a core-only host
+pays 1207 (prompt + five schemas), and the complete nine-tool surface 1680 -
+against 2669 before the split.
 
 ### Switching desktops
 
@@ -576,7 +609,8 @@ somnus/
 ├── session/       child session: childsession setup credentials rdp launch
 │                  bridge wire peerprovider peerstart lifecycle
 ├── packs/         generic.py restaurant_demo.py
-├── protocol/      tools.py mcp_server.py jsonrpc.py system_prompt.md
+├── protocol/      tools.py policy.py help.py mcp_server.py jsonrpc.py
+│                  system_prompt.md agent/*.md
 ├── config.py      persistent settings
 └── cli.py
 apps/restaurant-demo/   WPF (.NET 8) acceptance app

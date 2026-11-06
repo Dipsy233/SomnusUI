@@ -35,6 +35,11 @@ somnus-mcp = "somnus.protocol.mcp_server:main"
 [tool.setuptools.packages.find]
 include = ["somnus*"]
 
+[tool.setuptools.package-data]
+# The core prompt and the help topic pages are read at runtime, so an
+# installed wheel must carry them.
+"somnus.protocol" = ["*.md", "agent/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The default run is the portable suite. The S2 windows tests drive real

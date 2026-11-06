@@ -730,6 +730,18 @@ def cmd_call(args: argparse.Namespace) -> int:
     return 0 if not text.startswith("ERR") else 1
 
 
+def cmd_help(args: argparse.Namespace) -> int:
+    """Print the discovery summary or one topic page.
+
+    The same text backs the ``help`` tool, so a CLI user and a model cannot be
+    told different grammars.
+    """
+    from somnus.protocol.help import render_help
+
+    print(render_help(args.topic))
+    return 0
+
+
 def cmd_trace(args: argparse.Namespace) -> int:
     """Print a recorded trace as a readable timeline."""
     from somnus.observability.view import render_timeline
@@ -1107,6 +1119,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="the command and its arguments, after `--`",
     )
     run_parser.set_defaults(func=cmd_child_session)
+
+    p = sub.add_parser("help", help="print the discovery summary or one topic page")
+    p.add_argument(
+        "topic",
+        nargs="?",
+        default=None,
+        help="format, gestures, batching, desktops, errors or settings",
+    )
+    p.set_defaults(func=cmd_help)
 
     p = sub.add_parser("record")
     p.add_argument("window", nargs="?")

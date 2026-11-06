@@ -118,12 +118,29 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "help",
+        "description": (
+            "Topic documents on demand: format, gestures, batching, desktops, "
+            "errors, settings. No topic lists tools, enabled capabilities and "
+            "topics. Read-only; use it instead of guessing syntax."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "omitted = the capability/topic list",
+                }
+            },
+        },
+    },
+    {
         "name": "switch",
         "description": (
-            "Switch main/child. open stays off the user. main; child must be "
-            "open; open starts/moves in; close returns; detach keeps running. "
-            "Returns OK + windows; close/detach OK. ERR PERMISSION_DENIED if "
-            "missing."
+            "Switch the desktop main/child. open stays off the user. main; "
+            "child must be open; open starts/moves in; close returns; detach "
+            "keeps running. Returns OK + windows; close/detach OK. ERR "
+            "PERMISSION_DENIED if missing."
         ),
         "inputSchema": {
             "type": "object",
@@ -193,10 +210,31 @@ TOOL_SPECS: list[dict[str, Any]] = [
 ]
 
 
-def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = None) -> str:
-    """Execute one tool call and return SUI-Text (never raises to the caller)."""
+def call_tool(
+    session: Session,
+    name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    capabilities: tuple[str, ...] | None = None,
+) -> str:
+    """Execute one tool call and return SUI-Text (never raises to the caller).
+
+    ``capabilities`` only affects ``help``: it decides which tiers the
+    discovery reply reports as enabled. Listing is done by the transport,
+    because a model can only choose a tool that was listed.
+    """
     args = arguments or {}
     try:
+        if name == "help":
+            topic = args.get("topic")
+            if topic is not None and not isinstance(topic, str):
+                return SomnusError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    message="topic expected a string",
+                ).render()
+            from somnus.protocol.help import render_help
+
+            return render_help(topic, capabilities)
         if name == "observe":
             return session.observe(
                 args.get("window"),
