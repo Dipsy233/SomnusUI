@@ -8,8 +8,7 @@ gets a direct bonus. A rewritten description or a new tool that makes a task
 ambiguous fails here before it costs a model a turn.
 
 The table is also the tier contract: a task marked ``core`` must be completable
-with the five-tool loop alone, because that is the surface a minimal host
-advertises.
+with the core surface alone, because that is what a minimal host advertises.
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ TASKS: tuple[Selection, ...] = (
         "configure",
         core=False,
     ),
-    Selection("Which topics do you have? Show me the batching page.", "help", core=False),
+    Selection("Which topics do you have? Show me the batching page.", "help"),
 )
 
 

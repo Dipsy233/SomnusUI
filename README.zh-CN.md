@@ -99,14 +99,15 @@ schema 成本：
 
 | 档位 | 工具 |
 | --- | --- |
-| `core` | `observe`、`find`、`inspect`、`call`、`run` |
+| `core` | `observe`、`find`、`inspect`、`call`、`run`、`help` |
 | `desktop` | `switch`、`launch`、`configure` |
-| `docs` | `help` |
+
+`help` 保留在最小工具面内：无法列出缺失工具的模型只会猜测，而不是发问。
 
 ```bash
-SOMNUS_CAPABILITIES=core somnus mcp               # 五个工具
-SOMNUS_CAPABILITIES=desktop somnus mcp            # core + desktop（八个）
-SOMNUS_CAPABILITIES=core,desktop,docs somnus mcp  # 全部（默认）
+SOMNUS_CAPABILITIES=core somnus mcp        # 六个工具（循环 + help）
+SOMNUS_CAPABILITIES=desktop somnus mcp     # 全部工具（九个）
+SOMNUS_CAPABILITIES=core,desktop somnus mcp  # 同上，默认
 ```
 
 `core` 始终包含；未设置或值非法时使用全部档位。该表是 MCP `tools/list`、JSON-RPC
@@ -118,7 +119,7 @@ SOMNUS_CAPABILITIES=core,desktop,docs somnus mcp  # 全部（默认）
 列出已启用档位及其工具、仍可开启的档位、主题列表。`HELP <topic>` 返回一篇文档
 （`format`、`gestures`、`batching`、`desktops`、`errors`、`settings`）；
 `somnus help <topic>` 打印相同内容。实测：核心提示词 699 token；仅 core 档位时
-1207 token（提示词 + 五个 schema）；九个工具完整表面 1680 token，拆分前为 2669。
+1295 token（提示词 + 六个 schema）；九个工具完整表面 1680 token，拆分前为 2669。
 
 ### 切换桌面
 

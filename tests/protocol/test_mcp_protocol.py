@@ -198,7 +198,7 @@ def test_a_100kb_write_reply_stays_bounded():
 # ---------------------------------------------------------------------------
 
 
-def _server(session, capabilities=("core", "desktop", "docs")) -> JsonRpcServer:
+def _server(session, capabilities=("core", "desktop")) -> JsonRpcServer:
     # Explicit tiers keep the test independent of the caller's environment.
     return JsonRpcServer(session, capabilities=capabilities)
 
@@ -288,15 +288,13 @@ def test_make_mcp_server_lists_the_same_tools(session):
 
     from somnus.protocol.mcp_server import _make_list_tools, make_mcp_server
 
-    make_mcp_server(session, capabilities=("core", "desktop", "docs"))
+    make_mcp_server(session, capabilities=("core", "desktop"))
     # mcp 2.x registers handlers as constructor callbacks taking (ctx, params);
     # call the list_tools handler directly - the closest check that does not
     # start a transport.
     import asyncio
 
-    listed = asyncio.run(
-        _make_list_tools(session, ("core", "desktop", "docs"))(None, None)
-    )
+    listed = asyncio.run(_make_list_tools(session, ("core", "desktop"))(None, None))
     tools = listed.tools
     assert [t.name for t in tools] == [spec["name"] for spec in TOOL_SPECS]
 
@@ -309,7 +307,7 @@ def test_mcp_lists_only_the_core_tier(session):
 
     listed = asyncio.run(_make_list_tools(session, ("core",))(None, None))
     assert [tool.name for tool in listed.tools] == [
-        "observe", "find", "inspect", "call", "run"
+        "observe", "find", "inspect", "call", "run", "help"
     ]
 
 
@@ -318,7 +316,7 @@ def test_jsonrpc_tools_list_follows_the_selected_tier(session):
         {"jsonrpc": "2.0", "id": 9, "method": "tools/list"}
     )
     assert [tool["name"] for tool in reply["result"]["tools"]] == [
-        "observe", "find", "inspect", "call", "run"
+        "observe", "find", "inspect", "call", "run", "help"
     ]
 
 

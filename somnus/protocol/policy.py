@@ -8,10 +8,11 @@ the two apart means a metadata change can never alter a schema by accident.
 Tiers exist so a host can pay for the surface it needs:
 
 * ``core`` - the perception/action loop: ``observe``, ``find``, ``inspect``,
-  ``call``, ``run``. Always on.
+  ``call``, ``run`` - plus ``help``. Discovery is not optional: a surface that
+  cannot explain itself makes the model guess, so the topic entry point stays
+  in the smallest surface. Always on.
 * ``desktop`` - moving between desktops and starting programs: ``switch``,
   ``launch``, ``configure``.
-* ``docs`` - the ``help`` tool that loads a topic document on demand.
 
 Selection comes from ``SOMNUS_CAPABILITIES`` (comma-separated tier names, or
 ``all``). Unset means every tier, so an existing host keeps the surface it
@@ -28,10 +29,9 @@ from typing import Iterable, Mapping, Sequence
 
 CORE = "core"
 DESKTOP = "desktop"
-DOCS = "docs"
 
 #: Declaration order is also listing order: core first, optional tiers after.
-CAPABILITY_ORDER: tuple[str, ...] = (CORE, DESKTOP, DOCS)
+CAPABILITY_ORDER: tuple[str, ...] = (CORE, DESKTOP)
 
 #: What an unset or invalid selection means.
 DEFAULT_CAPABILITIES: tuple[str, ...] = CAPABILITY_ORDER
@@ -62,7 +62,7 @@ TOOL_POLICY: dict[str, ToolPolicy] = {
     "inspect": ToolPolicy(CORE, "read"),
     "call": ToolPolicy(CORE, "act", includes_delta=True),
     "run": ToolPolicy(CORE, "act", includes_delta=True),
-    "help": ToolPolicy(DOCS, "read"),
+    "help": ToolPolicy(CORE, "read"),
     "switch": ToolPolicy(DESKTOP, "act"),
     "launch": ToolPolicy(DESKTOP, "act"),
     "configure": ToolPolicy(DESKTOP, "config"),

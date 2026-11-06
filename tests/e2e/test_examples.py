@@ -42,7 +42,7 @@ def test_agent_honours_the_capability_tier(monkeypatch):
 
     monkeypatch.setenv("SOMNUS_CAPABILITIES", "core")
     assert {t["function"]["name"] for t in openai_tools()} == {
-        "observe", "find", "inspect", "call", "run"
+        "observe", "find", "inspect", "call", "run", "help"
     }
 
 

@@ -114,14 +114,16 @@ client never pays for a tool it cannot need:
 
 | Tier | Tools |
 | --- | --- |
-| `core` | `observe`, `find`, `inspect`, `call`, `run` |
+| `core` | `observe`, `find`, `inspect`, `call`, `run`, `help` |
 | `desktop` | `switch`, `launch`, `configure` |
-| `docs` | `help` |
+
+`help` stays in the smallest surface: a model that cannot list the tools it is
+missing will guess instead of asking.
 
 ```bash
-SOMNUS_CAPABILITIES=core somnus mcp               # five tools
-SOMNUS_CAPABILITIES=desktop somnus mcp            # core + desktop (eight)
-SOMNUS_CAPABILITIES=core,desktop,docs somnus mcp  # every tool (default)
+SOMNUS_CAPABILITIES=core somnus mcp        # six tools (the loop + help)
+SOMNUS_CAPABILITIES=desktop somnus mcp     # every tool (nine)
+SOMNUS_CAPABILITIES=core,desktop somnus mcp  # same, the default
 ```
 
 `core` is always included; unset or malformed means every tier. The table is the
@@ -135,7 +137,7 @@ topic is the discovery reply - enabled tiers, their tools, tiers that can still
 be enabled, and the topic list. `HELP <topic>` returns one page (`format`,
 `gestures`, `batching`, `desktops`, `errors`, `settings`); `somnus help <topic>`
 prints the same text. Measured: the core prompt is 699 tokens, a core-only host
-pays 1207 (prompt + five schemas), and the complete nine-tool surface 1680 -
+pays 1295 (prompt + six schemas), and the complete nine-tool surface 1680 -
 against 2669 before the split.
 
 ### Switching desktops

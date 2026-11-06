@@ -13,7 +13,7 @@ from somnus.protocol import policy
 from somnus.protocol.help import TOPICS, render_help, topic_text
 from somnus.protocol.tools import TOOL_SPECS, call_tool
 
-CORE_TOOLS = ["observe", "find", "inspect", "call", "run"]
+CORE_TOOLS = ["observe", "find", "inspect", "call", "run", "help"]
 DESKTOP_TOOLS = ["switch", "launch", "configure"]
 
 
@@ -26,16 +26,14 @@ def test_every_advertised_tool_has_metadata():
     assert set(policy.TOOL_POLICY) == {spec["name"] for spec in TOOL_SPECS}
 
 
-def test_the_core_tier_is_the_perception_action_loop():
+def test_the_core_tier_is_the_perception_action_loop_plus_discovery():
+    # ``help`` stays in the smallest surface: without it a core-only host
+    # cannot list what it is missing.
     assert listed(("core",)) == CORE_TOOLS
 
 
-def test_desktop_restores_the_eight_tool_surface():
+def test_desktop_adds_the_session_tools():
     assert listed(("core", "desktop")) == CORE_TOOLS + DESKTOP_TOOLS
-
-
-def test_docs_adds_help():
-    assert listed(("core", "docs")) == CORE_TOOLS + ["help"]
 
 
 def test_the_default_is_every_tier():
@@ -45,7 +43,6 @@ def test_the_default_is_every_tier():
 
 def test_core_is_implied_by_an_optional_tier():
     assert policy.parse_capabilities("desktop") == ("core", "desktop")
-    assert policy.parse_capabilities("docs") == ("core", "docs")
 
 
 def test_all_or_blank_means_every_tier():
@@ -85,8 +82,7 @@ def test_help_without_a_topic_lists_tiers_tools_and_topics():
     text = render_help(None, ("core",))
     assert "enabled: core" in text
     assert "available: desktop -> switch launch configure" in text
-    assert "available: docs -> help" in text
-    assert "tools: observe find inspect call run" in text
+    assert "tools: observe find inspect call run help" in text
     for name in TOPICS:
         assert name in text, name
 
