@@ -228,3 +228,30 @@ live 层用假模型冒烟通过：H0 与 H4 都能在真实 ScenarioSuite 窗�
 - 模型列表 id `deepseek-v4.1flash` 不可用，实际 id 为 `deepseek-v4.1-flash`；
 - 端点上游拒绝带点号的工具名（`tools.0.function.name`，`trae 4027`），H5 整批 502，标记 `NOT_RUNNABLE(endpoint)`，以 H5u 替代测量；
 - 网关偶发 502/503，`LlmClient.chat` 增加三次退避重试。
+
+## 11. 分支对比：main 出厂形态 vs play 默认（2026-11-08）
+
+问题：三批实验的结论落到分支上，`play` 相对 `main` 的黑盒表现差多少。
+
+装置：`git worktree` 检出 main（`6d21b42`），**main 原样出厂臂** = main 自己的运行时 + 它的 8 工具 `TOOL_SPECS`（当时还没有 help 工具与分档系统）+ 它自己的 system_prompt 原文；任务集、fixture、被测模型（deepseek-v4.1-flash）与 play 各臂完全一致。65 次（13 任务 × 5 reps），0 次基础设施错误。驱动脚本 `scratch/run_main_branch.py`，原始数据 `runs/exposure-main-branch/` 与 `runs/exposure-branch-compare/`。
+
+| 臂 | 工具数 | 成功率 | 回合中位 | token 中位 |
+| --- | --- | --- | --- | --- |
+| MAIN（main 出厂） | 8 | 84.6% | 4.0 | 21734 |
+| H0（play，9 工具 + 短核心提示） | 9 | 84.6% | 4.0 | 14615 |
+| T1（play 默认，core 档） | 6 | 84.6% | 4.0 | 11770 |
+
+配对对比（bootstrap 10k，95% CI，基线 = MAIN）：
+
+| 对比 | 成功率差 | 回合差 | token 差 |
+| --- | --- | --- | --- |
+| H0（play）vs MAIN | +0.0 | +13.5% 更省，CI 不含 0 | +32.7% 更省，CI 不含 0 |
+| T1（play 默认）vs MAIN | +0.0 [+0.0, +0.0] | +1.5% [−6.6, +9.5]，持平 | **+39.4% 更省 [+34.4, +44.1]** |
+
+三条读数：
+
+1. 成功率纹丝不动。三个臂的成功/失败集合完全一致（同为 chat-two-lines 与 tree-deep-find）。从 main 到 play 的全部改动——分层探测、短核心提示、T1 默认档——没有让模型多做成任何一条任务，也没有做坏任何一条。
+2. token 成本接近腰斩。play 默认相对 main 出厂每任务省 39.4% token（CI [+34.4, +44.1]），回合持平。来源两部分：play 的短核心提示与运行时优化（约 −33%），T1 默认收紧再叠加（约 −6pp）。
+3. 对照实验与出厂对比相互印证。受控 A/B（T1 对 H0，同分支）测得 −16.1%；出厂对比里 T1 的增量贡献约 −6pp，差值来自 MAIN 臂本身没有短提示，两段证据在各自口径内自洽。
+
+分支裁决：play 相对 main 是纯成本优化加行为持平，黑盒数据支持合入。
