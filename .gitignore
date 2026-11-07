@@ -56,6 +56,25 @@ recordings/
 # benchmark run evidence (transcripts + metric rows) stays on the machine
 runs/
 
+# Local scratch and tool state (documents in scratch/ were migrated to docs/)
+/scratch/
+/.zcode/
+/.screenshots/
+/NVIDIA Corporation/
+umdlogs/
+*.dmp
+
+# Secrets: never commit credentials, keys or local MCP wiring
+.env
+.env.*
+!.env.example
+*.credential.bin
+*.pem
+*.key
+*.pfx
+*.p12
+.mcp.json
+
 # Local scratch
 *.log
 /tmp/
