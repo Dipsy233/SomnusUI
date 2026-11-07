@@ -23,7 +23,7 @@ call a method on.
 Ownership
 ---------
 
-A session started and ``detach``\ed on purpose is meant to outlive the process
+A session started and ``detach``ed on purpose is meant to outlive the process
 that opened it - that is how the agent parks a desktop and comes back to it. An
 automatic cleanup at exit must therefore not kill it. So starting a session
 registers it here, detaching it *un*registers it, and :func:`cleanup_owned` at
