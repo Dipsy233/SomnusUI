@@ -1,113 +1,62 @@
-# Child session: a second desktop the agent can work in
+# 子会话
 
-The problem this exists to solve, the mechanism that turned out to work, and the
-two that did not.
+## 1. 问题
 
-## The problem
+应用通过自身发布的接口（`Invoke`、`Value`、`Toggle` 等）被驱动。对于没有可写接口的控件——自绘编辑器、终端面、只在回车时提交的地址栏——只能使用合成输入：剪贴板通道（`allow_clipboard`）或键盘通道（`allow_keyboard`）。
 
-An application is driven through the interfaces it publishes (`Invoke`,
-`Value`, `Toggle`, ...). For a control that publishes no writable interface -
-a self-drawn editor, a terminal surface, an omnibox that only commits on Enter -
-the only thing that lands is synthetic input: the clipboard channel
-(`allow_clipboard`) or the keyboard channel (`allow_keyboard`).
+每次写入都会先提升目标窗口，见 [text-input-channels.md](text-input-channels.md)。运行时不在无焦点状态下写入，因为落点取决于当时的前台状态，副作用无法归因。前台因此成为 agent 需要的资源，而一个桌面只有一个前台。agent 工作期间会与使用键盘的人竞争，任一方失去前台都会停止工作。子会话用于消除这种争用。
 
-Every write first raises the target window (see
-[text-input-channels.md](text-input-channels.md)); the runtime does not write
-without focus, because a write that lands wherever the focus happens to be is
-neither predictable nor attributable. That makes the foreground the resource the
-agent needs, and a desktop has exactly one. So while the agent works, it is
-competing with the person at the keyboard for it - and whoever loses stops
-working. That is the disturbance a child session removes.
+## 2. 子会话的作用
 
-## What works: a child session
+子会话是同一账户的第二次交互式登录。文件、注册表与程序相同，输入桌面、前台窗口与输入队列独立。
 
-A **child session** is a second interactive logon for the same account. Same
-files, same registry, same programs. But its own **input desktop**, its own
-foreground window and its own input queue.
+agent 在其中可以提升窗口、键入与粘贴。控制台会话中的用户不受影响，因为两个会话不共享输入资源。
 
-An agent parked there can raise windows, type and paste as much as it likes. The
-user, in the console session, is unaffected. Not because the agent is polite -
-because the two sessions do not share the resource they used to fight over.
+实测的双向结果：会话 1 中的进程枚举到会话 0 和 1；会话 2 中的进程枚举到会话 0 和 2。无障碍树遵循同样规则。
 
-Verified live, in both directions: a process in session 1 enumerates sessions 0
-and 1 and nothing else; a process in session 2 enumerates sessions 0 and 2. The
-accessibility tree behaves the same way. It is a kernel boundary.
+## 3. 桌面切换
 
-## For the agent: desktop switching
-
-The agent drives **one desktop at a time**. Desktop switching is one tool. The
-agent is not given both desktops, because every ref (`w1`, `b3`, `q1`) is a
-bare name that only means something relative to a desktop; two at once would
-make every call ambiguous, and asking the model to disambiguate each one would
-cost more than the feature is worth.
+agent 同一时间只驱动一个桌面。桌面切换是一个工具。运行时不向 agent 同时提供两个桌面，因为每个 ref（`w1`、`b3`、`q1`）只在某个桌面的命名空间内有效，同时暴露两个桌面会使每次调用产生歧义。
 
 ```
-SWITCH main          go to the user's desktop
-SWITCH child         go to the separate session (must be open)
-SESSION open         start the separate session and move there
-SESSION close        end it, and return
-SESSION detach       leave it running after this process exits
+SWITCH main          回到用户桌面
+SWITCH child         切到子会话（必须已打开）
+SESSION open         打开子会话并切过去
+SESSION close        结束子会话并返回
+SESSION detach       本进程退出后保留子会话
 ```
 
-A switch that changes desktop **assigns no refs**. The reply is
-`OK session=… windows=N` followed by `desktop changed; observe again`. Until a
-fresh `OBSERVE`, `CALL` and `INSPECT` that name an old node or window ref return
-`STALE_TARGET` with `hint=observe`. A switch that does not change desktop
-returns `OK session=… (already here)` and leaves the current refs valid.
+切换桌面时不分配 ref。回复为 `OK session=… windows=N`，随后一行 `desktop changed; observe again`。重新 `OBSERVE` 之前，`CALL` 与 `INSPECT` 引用旧节点或旧窗口 ref 时返回 `STALE_TARGET`，并带 `hint=observe`。未改变桌面的切换返回 `OK session=… (already here)`，当前 ref 继续有效。
 
-## Starting programs on the child desktop
+## 4. 在子桌面启动程序
 
-A program has to be started *inside* the child session to appear there. The
-peer already runs there, so it starts the program with its own token - no
-`CreateProcessAsUser`, no elevation, no token borrowing:
+程序必须在子会话内部启动才会出现在该桌面。peer 已在子会话中运行，使用自身令牌启动程序，不使用 `CreateProcessAsUser`、提权或令牌借用。
 
 ```bash
 somnus child-session run --cwd E:/0down/SomnusUI -- python.exe -m pytest -m windows
-somnus child-session run -- cmd /c start notepad.exe      # launcher exits, Notepad stays
+somnus child-session run -- cmd /c start notepad.exe
 ```
 
-`run` sends `process.start` to the peer, polls `process.status` until the child
-command exits (or `--timeout`, default 600 s, kills it), then prints the exit
-code and the full stdout/stderr. Output files live in
-`%TEMP%\somnusui-child-run\<timestamp>\`; the last run is kept and its paths are
-printed, older runs are removed.
+`run` 向 peer 发送 `process.start`，轮询 `process.status` 直到子进程退出，或达到 `--timeout`（默认 600 秒）后杀死该进程；随后打印退出码与完整 stdout/stderr。输出文件位于 `%TEMP%\somnusui-child-run\<timestamp>\`，只保留最近一次，旧运行会被删除。
 
-Wire methods (not agent-facing tools):
+peer 线方法（不对模型暴露）：
 
-| method | params | result |
+| 方法 | 参数 | 结果 |
 | --- | --- | --- |
-| `process.start` | `command`, `args[]`, `cwd`, `stdout_path`, `stderr_path` | `{pid}` |
-| `process.status` | `pid` | `{pid, alive, exit_code}` (`exit_code` null while alive) |
+| `process.start` | `command`、`args[]`、`cwd`、`stdout_path`、`stderr_path` | `{pid}` |
+| `process.status` | `pid` | `{pid, alive, exit_code}`；存活时 `exit_code` 为 null |
 | `process.kill` | `pid` | `{pid, killed}` |
 
-Errors are `PERMISSION_DENIED` / `INVALID_ARGUMENT` / `NATIVE_EXECUTION_FAILED`
-with a message. `process.kill` exists so `run --timeout` can end the command; a
-program started through a launcher (`cmd /c start ...`) is left running for the
-caller to observe.
+错误码为 `PERMISSION_DENIED`、`INVALID_ARGUMENT`、`NATIVE_EXECUTION_FAILED`，并带消息。`process.kill` 供 `run --timeout` 使用；通过启动器（`cmd /c start ...`）启动的程序留给调用方观察。
 
-Two switches decide who may start what:
+两个开关决定启动权限：
 
-- `child_allow_spawn` (default `true`) - the capability itself;
-- `allow_processes` (empty = any) - the executable's basename must be in it,
-  which is the same list that decides which processes may be *operated*. A
-  program that could not be operated is not allowed to be spawned either.
+- `child_allow_spawn`（默认 `true`）：是否允许启动能力本身；
+- `allow_processes`（空表示任意）：可执行文件基名必须在该列表中。该列表同时决定哪些进程可被操作；不能被操作的程序也不能被启动。
 
-`run` is CLI-only. The full model-facing surface has nine tools; a default MCP
-host lists the six `core` tools, and `switch` / `launch` / `configure` are the
-opt-in `desktop` tier. `launch` starts a
-program on the current desktop (local `CreateProcess` on main, the peer's
-`process.start` on child). Both paths apply `allow_processes`; the peer path
-also requires `child_allow_spawn`. `wait_s` defaults to 3 s. The reply carries
-`pid` and at most six `+ WINDOW` lines, then `+ N more`; more than one new
-window adds `~ N windows from one launch`. On the current desktop it assigns
-refs unless the session still awaits a fresh `OBSERVE` after a switch; then it
-adds `desktop changed; observe again`. From main, `window="child"` starts
-the program through the peer and reports titles only, followed by
-`~ on child; switch child to address them`. There is no `SESSION run` command
-in SUI-Text.
+`run` 仅提供 CLI。模型面完整工具为九个；默认 MCP 宿主列出六个 core 工具，`switch`、`launch`、`configure` 属于按需开启的 `desktop` 档。`launch` 在当前桌面（main 上本地 `CreateProcess`，子桌面上 peer 的 `process.start`）启动程序。两条路径都应用 `allow_processes`；peer 路径还要求 `child_allow_spawn`。`wait_s` 默认 3 秒。回复携带 `pid` 与最多六条 `+ WINDOW` 行，之后为 `+ N more`；新增窗口多于一个时追加 `~ N windows from one launch`。在当前桌面启动时分配 ref，若会话在切换后仍等待新的 `OBSERVE`，则追加 `desktop changed; observe again`。从 main 使用 `window="child"` 时，程序通过 peer 启动，回复只列标题，并追加 `~ on child; switch child to address them`。SUI-Text 中没有 `SESSION run`。
 
-
-## Architecture
+## 5. 架构
 
 ```
 main session                              child session
@@ -121,161 +70,93 @@ Somnus Runtime
                    │  named pipe  \\.\pipe\somnus-peer-<id>
                    └──────────────►  peer: Session + UiaProvider
                                         │
-                                        └─► the windows the agent drives
+                                        └─►  agent 驱动的窗口
 ```
 
-Everything intelligent stays on the main side: the compiler, projection,
-registry, resolver, policy and the ref namespace. The far side runs a **thin
-peer** that owns a `Session` and answers tool calls - perception and actuation,
-no model, no policy of its own.
+编译器、投影、注册表、解析器、策略与 ref 命名空间全部留在主侧。远侧运行一个瘦 peer，持有 `Session` 并响应工具调用，负责感知与执行，不含模型，也没有自己的策略。
 
-That keeps the design at one agent. A switch has low cost: `Session` is written
-against `AccessibilityProvider`, so the far session is another provider
-(`peerprovider.py`). Switching swaps the provider, resets the ref namespace and
-assigns no refs; the compiler and runtime do not detect that the provider is
-remote.
+`Session` 针对 `AccessibilityProvider` 编写，远侧会话因此是另一个 provider（`peerprovider.py`）。切换替换 provider，重置 ref 命名空间，不分配 ref；编译器与运行时不需要识别 provider 是远程的。
 
-The transport is a named pipe, chosen after measuring what crosses the boundary
-(see below). It carries the provider interface directly - `list_windows`,
-`snapshot`, `execute` - serialized field by field in `wire.py`.
+传输使用命名管道。它直接承载 provider 接口——`list_windows`、`snapshot`、`execute`——由 `wire.py` 逐字段序列化。
 
-## Signing in
+## 6. 登录
 
-The loopback is still a logon, and Windows will not create the session without a
-credential. Two routes, tried in this order:
+RDP 环回仍需一次登录。凭据按以下顺序尝试：
 
-1. **Credential delegation** (the setup's job). Windows reuses the credentials
-   the user already signed in with. No password is typed and none is stored.
-   This is the normal path.
-2. **A stored password** (`somnus child-session credential --save`), for when
-   policy refuses delegation. DPAPI-encrypted, CurrentUser scope, with extra
-   entropy - decryptable only on this machine, by this account. Never in
-   `config.toml`: that file gets pasted into bug reports.
+1. 凭据委托（由 `setup` 配置）。Windows 复用用户已登录的凭据，不输入密码，不存储密码。这是常规路径。
+2. 存储密码（`somnus child-session credential --save`），用于策略拒绝委托的情况。密码由 DPAPI 加密，CurrentUser 作用域，附加额外熵，只能由本机当前账户解密。密码不写入 `config.toml`。
 
-Delegation was measured to be refused on a local account marked *"password not
-required"* (`UF_PASSWD_NOTREQD`), even with the allow-list correct. Clearing the
-flag was not enough on its own; the stored password is what made it work there.
-The setup does not guess which route a machine needs - it configures delegation
-and reports what it did, and the stored password is the explicit fallback.
+在一台标记为“password not required”（`UF_PASSWD_NOTREQD`）的本地账户上，即使允许列表正确，委托仍会被拒绝。仅清除该标记不足以解决问题；存储密码使该机器的登录成功。`setup` 不猜测机器需要哪条路径，它配置委托并报告结果；存储密码是显式回退。
 
-A Windows Hello PIN cannot be used for this logon. It is not a password and the
-loopback logon cannot take it.
+Windows Hello PIN 不能用于该登录。PIN 不是密码，环回登录不接受 PIN。
 
-## Requirements and costs
+## 7. 前置条件与代价
 
-- Windows **Pro / Enterprise / Education**. Home has no child sessions and cannot
-  be made to have them.
-- One elevated `child-session setup`, which enables the feature, enables the RDP
-  listener, configures delegation and sets `TermService` to automatic.
-- **One child session at a time**, system-wide. That is Windows' limit, not this
-  program's.
-- **No security isolation.** The two sessions are the same account, so the agent
-  can read and write every file the user can. This separates *input*, not
-  *privilege*.
-- A session exists **only as long as its RDP connection does**. Closing the
-  loopback ends the session and the programs in it.
+- Windows 专业版 / 企业版 / 教育版。家庭版没有子会话。
+- 一次管理员权限的 `somnus child-session setup`，启用功能、启用 RDP 监听、配置凭据委托，并把 `TermService` 设为自动。
+- 全系统同时只允许一个子会话。这是 Windows 的限制。
+- 没有安全隔离。两个会话使用同一账户，agent 可以读写用户可读写的所有文件。子会话分离输入，不分离权限。
+- 子会话只在 RDP 连接存在期间存在。关闭环回会结束会话及其中运行的程序。
 
-## Cleanup
+## 8. 清理
 
-An orphaned loopback holds a session open, so a later start attaches to it and
-does not create a new one. This appears as "the settings did not take effect".
+孤立的环回会保持会话打开，后续 `start` 会附着到该会话，不创建新会话。该现象表现为“设置没有生效”。
 
-- A session this process opened is cleaned up **when the process exits**
-  (`atexit`), unless `SESSION detach` said otherwise.
-- `SESSION close` cleans up immediately: the loopback, the peer, and the
-  session.
-- A session left by a crash is detected and cleared by the next `close` or
-  `status`.
+- 本进程打开的会话在进程退出时清理（`atexit`），除非执行了 `SESSION detach`。
+- `SESSION close` 立即清理环回、peer 与会话。
+- 崩溃留下的会话由下一次 `close` 或 `status` 检测并清理。
+- `SESSION detach` 放弃会话所有权，退出钩子不再处理它。
 
-Detaching a session *disowns* it, so the exit hook leaves it alone - the whole
-point of detaching is that the desktop keeps running for a later run.
+## 9. 评估过的其他方案
 
-## What was tried first, and why it is not here
+### 同时提供两个桌面
 
-### Giving the agent both desktops at once
+未采用。每个 ref 只在某个桌面命名空间内有效，同时暴露两个桌面会使每次调用产生歧义；要求模型逐次消歧的成本高于该功能收益。`SWITCH` 替换 provider，不合并两棵树。
 
-Not done, by design: the agent drives **one desktop at a time**. Every ref
-(`w1`, `b3`, `q1`) is a bare name that only means something relative to a
-desktop, so exposing two at once would make every call ambiguous, and asking
-the model to disambiguate each one would cost more than the feature is worth.
-`SWITCH` swaps the provider; it does not merge the two trees.
+### `Windows.UI.UIAutomation.Core`
 
-### `Windows.UI.UIAutomation.Core` - the documented way
+这是微软文档中用于跨会话桥接 UIA 的受支持 API。实现在真实环回上运行的结果：
 
-This is the supported API for bridging UIA across a session boundary, and the
-documentation names the intended user: *"a host application (such as the remote
-desktop app running on the local machine)"* - which is what this program is,
-since it holds the RDP connection.
+- `RemoteAutomationClientSession` 可以从 RDP 宿主构造并 `Start()`，`SessionId` 可读回；
+- `ConnectionRequested` 不触发；
+- `RemoteAutomationServer.ReportSession` 返回“class not registered”，在主会话与子会话内均如此，且连接已建立。
 
-It was implemented against a live loopback. The result:
+该 API 依赖微软远程桌面栈建立的私有 provider 上下文，第三方宿主无法复现。该结论记录在 `somnus/session/bridge.py` 中原本使用该接口的位置。
 
-- `RemoteAutomationClientSession` **constructs and `Start()`s** from the RDP
-  host, with `SessionId` reading back;
-- `ConnectionRequested` **does not fire**;
-- and `RemoteAutomationServer.ReportSession` answers **"class not registered"** -
-  in the main session *and* inside the child session, with the connection up.
+### 虚拟桌面
 
-It pairs with a private provider context that Microsoft's own remote-desktop
-stack sets up and a third-party host cannot reproduce. This finding is recorded
-in `somnus/session/bridge.py` at the point where it would have been used.
+虚拟桌面与同会话的其他虚拟桌面共享输入桌面、前台窗口与输入队列，无法分离 agent 输入与用户输入。合成按键可能发送到错误的虚拟桌面；把目标移到当前虚拟桌面则会把 agent 的窗口带到用户桌面。虚拟桌面适用于“不显示在屏幕上”，不适用于“不触碰用户输入”。
 
-### A virtual desktop
+### 将元素报告为不支持
 
-A virtual desktop shares the session's input desktop, foreground window and
-input queue with every other virtual desktop. It therefore cannot separate the
-agent's input from the user's: a synthetic keystroke either goes to the wrong
-virtual desktop, or - by moving the target to the current one - brings the
-agent's window onto the user's, which is exactly the disturbance it was supposed
-to avoid.
+运行时默认在无可用合成输入时返回 `ACTION_NOT_SUPPORTED`。该行为适用于无法验证输入效果的场景。子会话提供另一种取舍：合成通道在用户不使用的桌面中执行。
 
-It is a good fit for "do not put it on screen"; it is not a fit for "do not
-touch the user's input".
-
-### Just reporting the element as unsupported
-
-Rejected, but worth stating: it is what the runtime does by default (the
-"No Synthetic Input" principle), and it is the right answer when the alternative
-is unverifiable input into a stranger's window. A child session is the opposite
-trade - it makes the synthetic channels safe by giving them somewhere to happen
-that the user is not.
-
-## Diagnostics
+## 10. 诊断
 
 ```bash
-somnus child-session status      # feature available? is a session live?
-somnus child-session probe       # ask the peer what it can see
-somnus child-session setup       # (re)apply the system configuration
-somnus child-session close       # end it and clear leftovers
+somnus child-session status      # 功能是否可用、会话是否存活
+somnus child-session probe       # 向 peer 查询可见内容
+somnus child-session setup       # 重新应用系统配置
+somnus child-session close       # 结束会话并清理残留
 ```
 
-The self-check commands use the session as their default sandbox:
+自检命令默认使用子会话作为沙箱：
 
 ```bash
-somnus doctor                    # environment + observe/find/call smoke
-somnus eval                      # generic runtime-state verdict (JSON)
-somnus replay <trace>            # replay recorded calls, first divergence
+somnus doctor                    # 环境与 observe/find/call 冒烟
+somnus eval                      # 运行时状态判定（JSON）
+somnus replay <trace>            # 回放记录的调用，报告首个分歧
 ```
 
-They are read-only with respect to the session's lifecycle: `doctor` reports
-whether one is live but does not open it, and `eval` / `replay` refuse with the
-start command when none is live instead of falling back to the main desktop.
-`--real` is the explicit opt-in to the user's desktop; `--demo` / `--scenario`
-run offline on fixtures.
+这些命令对会话生命周期只读：`doctor` 报告会话是否存活，不主动打开；`eval` / `replay` 在没有存活会话时给出启动命令并拒绝运行，不回退主桌面。`--real` 显式选择用户桌面；`--demo` / `--scenario` 在固件上离线运行。
 
-`status` distinguishes the **raw** child-session id from a **live** one. They
-differ exactly when a session is half-dead - an attempt whose logon was refused,
-or one that has been reset. `WTSGetChildSessionId` keeps reporting an id in those
-cases, for a session that is not in the session list; acting on it produced "the
-session exists but has no peer" when there was no session at all.
+`status` 区分原始子会话 id 与存活 id。两者在会话半死时不同：登录被拒绝的尝试，或已被重置的会话。`WTSGetChildSessionId` 在这些情况下仍返回 id，但会话不在会话列表中；据此执行会得到“会话存在但没有 peer”，而实际没有会话。
 
-## If it does not work
+## 11. 故障处理
 
-Check `somnus child-session status` first.
+先运行 `somnus child-session status`。
 
-- **"not available"** - the feature is off: run the elevated `setup`.
-- **The window shows a sign-in screen** and stays there: delegation was refused.
-  Store the password (`child-session credential --save`) and use `--auto`.
-- **"the hint names a session that is gone"** - a leftover from a failed attempt;
-  `child-session close` clears it.
-- **A display name of "other user" at the sign-in screen** means no credential
-  was handed over at all - the same delegation problem.
+- 显示 `not available`：功能未启用，运行管理员权限的 `setup`。
+- 窗口停在登录界面：凭据委托被拒绝。使用 `child-session credential --save` 存储密码，并使用 `--auto`。
+- 提示指向一个已消失的会话：失败尝试留下的残留；`child-session close` 清理。
+- 登录界面显示“其他用户”：没有交付任何凭据，属于委托问题。

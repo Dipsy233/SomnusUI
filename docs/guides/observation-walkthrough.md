@@ -1,18 +1,12 @@
-# 一个窗口，LLM 能看到什么
+# 观察示例：一个窗口与四次工具调用
 
-以一个真实的 Windows 属性对话框为例，逐步展示 LLM 在实际收到的内容。
+本文以一个真实的 Windows 属性对话框为例，展示模型收到的 SUI-Text。
 
-（本文聚焦四个"看和做"的工具：`observe` / `find` / `inspect` / `call`。
-完整工具面是九个：另外五个是 `run`、`help`、`switch`、`launch`、`configure`；
-默认 MCP 宿主只暴露六个 core 工具。`switch` 用于在两个 Windows 会话之间移动
-agent，见 [child-session.md](../reference/child-session.md)。）
+完整工具面为九个：`observe`、`find`、`inspect`、`call`、`run`、`help`、`switch`、`launch`、`configure`。默认 MCP 宿主暴露六个 core 工具。`switch` 用于在 Windows 会话之间移动 agent，见 [../reference/child-session.md](../reference/child-session.md)。
 
----
+## 1. `observe`
 
-## ① `observe` — 概览
-
-`observe` 返回目标窗口的内容，并以一行 `WINDOWS` 给出桌面上下文（其他窗口的
-内容不展开；只要窗口清单时用 `OBSERVE windows`）：
+`observe` 返回目标窗口的内容，并以一行 `WINDOWS` 给出桌面上下文。其他窗口的内容不展开；只需要窗口清单时使用 `OBSERVE windows`。
 
 ```
 @rev 1
@@ -46,29 +40,26 @@ WINDOW w1 "agent 属性" +scroll_into_view
     BUTTON b6 "关闭"
 ```
 
-**LLM 从这里能直接读出的信息**：
+从这次观察可以直接得到的信息：
 
 | 信息 | 来源 |
-|---|---|
-| 界面是否就绪、目标窗口是否就位 | `WINDOW` 行（`+scroll_into_view` 表示已就绪） |
+| --- | --- |
+| 界面已就绪、目标窗口在位 | `WINDOW` 行与 `+scroll_into_view` |
 | 界面的语义分区 | `SCREEN s1 "网络文件和文件夹共享"` 等 |
-| 哪些是输入框 | `INPUT q1`（`+set_text(text)` 表示可写；只读字段会显示 `readonly` 且**不带** `+set_text`） |
-| 哪些能点 | `BUTTON b1 "共享(S)..."` |
-| 哪个按钮当前不可用 | `BUTTON b5 "应用(A)" disabled` |
-| 可用的操作 | 行内 `+set_text(text)`、`+select`（`+activate` 按角色隐含） |
-| 折叠的集合 | 无（这个窗口的 tab 全展开） |
-| 长文本被截断 | `…` 表示超 80 字被裁剪 |
+| 哪些是输入框 | `INPUT q1`；`+set_text(text)` 表示可写，只读字段显示 `readonly` 且没有 `+set_text` |
+| 哪些可以点击 | `BUTTON b1 "共享(S)..."` |
+| 当前不可用的按钮 | `BUTTON b5 "应用(A)" disabled` |
+| 可用的操作 | 行内 `+set_text(text)`、`+select`；`activate` 按角色隐含 |
+| 折叠的集合 | 本窗口的 tab 全部展开，没有折叠 |
+| 长文本被截断 | `…` 表示超过 80 字符被裁剪 |
 
-**LLM 永远看不到的**：控件句柄、坐标、`AutomationId`、进程 pid、COM 指针、
-原始 UIA 的 `control_type` 字符串、8 层空 `Pane` 包装。
+以下信息不出现在模型输入中：控件句柄、坐标、`AutomationId`、进程 ID、COM 指针、原始 UIA `control_type` 字符串、无名的 `Pane` 包装节点。
 
----
-
-## ② `find` — 按关键词定位（7 条命中）
+## 2. `find`
 
 ```
 FIND "共享"
-→ FOUND 7
+FOUND 7
 SCREEN s1 "网络文件和文件夹共享"
 INPUT q1 "网络路径(N):" +set_text(text)
 BUTTON b1 "共享(S)..."
@@ -78,43 +69,36 @@ SCREEN s4 "用户必须具有此计算机的用户帐户和密码，才能访问
 LINK lnk1 "网络和共享中心"
 ```
 
-返回的是**完整实体行**，不只给 ref，可省掉一次 `inspect`。
+每条命中是完整实体行，包含 ref、属性与能力，可以直接用于后续调用。
 
----
-
-## ③ `inspect` — 展开一个节点
+## 3. `inspect`
 
 ```
 INSPECT b2
-→ @rev 1
-  BUTTON b2 "高级共享(D)..." +activate +focus +read
+@rev 1
+BUTTON b2 "高级共享(D)..." +activate +focus +read
 ```
 
-`inspect` 会显示**隐含能力**（`+focus`、`+read` 平时省略）和**关系**
-（`acts_on=` / `label_for=` / `opens=`，如果有）。
+`inspect` 显示平时省略的隐含能力（如 `+focus`、`+read`）与关系（`acts_on=`、`label_for=`、`opens=`），并给出参数。
 
----
+## 4. `call`
 
-## ④ `call` — 操作，并返回 delta
-
-### 操作被拒绝的三种情况
+### 失败示例
 
 ```
-CALL b5.activate()     # 点一个 disabled 的按钮
-→ ERR TARGET_DISABLED b5 hint=inspect
+CALL b5.activate()     # 点击禁用按钮
+ERR TARGET_DISABLED b5 hint=inspect
 
 CALL b2.submit()       # 该按钮没有 submit 能力
-→ ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
+ERR CAPABILITY_NOT_FOUND b2 hint=inspect msg="no submit"
 
-CALL b2.click()        # 原语动词，禁止
-→ ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
+CALL b2.click()        # 原语动词被禁止
+ERR PARSE_ERROR hint=fix-syntax msg="primitive verb 'click' is not allowed"
 ```
 
-每种错误都带 `hint=`，告诉 LLM 该怎么恢复。`activate` 以
-`ACTION_NOT_SUPPORTED` 失败、且节点仍暴露 `select` 时，同一行写
-`hint=try select`；运行时不会自动改调 `select`。
+错误行携带 `hint=`，指向恢复动作。`activate` 以 `ACTION_NOT_SUPPORTED` 失败且节点仍暴露 `select` 时，错误行写 `hint=try select`；运行时不会自动改调 `select`。
 
-### 成功的操作会产生 delta
+### 成功示例
 
 ```
 OBSERVE
@@ -133,28 +117,23 @@ WINDOW w1 "无标题 - Notepad"
 
 ```
 CALL tx1.set_text("Hello SomnusUI")
-→ OK rev=2
-  ~ tx1 value →Hello SomnusUI          ← 值变了
-  + TAB t4 "Hello SomnusUI. 已修改。" +close!   ← 标题跟着变
+OK rev=2
+  ~ tx1 value ->Hello SomnusUI
+  + TAB t4 "Hello SomnusUI. 已修改。" +close!
   + TEXT tx9 "Hello SomnusUI"
-  - t2                                  ← 旧 tab 消失
+  - t2
   - tx2
   - b1
 ```
 
-**delta 是本响应中信息量最大的部分**：LLM 不重新 `observe` 也能知道发生了什么。
-`~` 改了、`+` 新增、`-` 消失。
+增量是回复中信息密度最高的部分：`~` 表示值变化，`+` 表示新增节点，`-` 表示节点消失。模型无需重新 `observe` 就能知道发生了什么。
 
-`OK` 表示动作执行且产生了可见变化（或声明的 effects 全部满足）。
-`OK_UNVERIFIED` 表示动作执行了、但没有观察到任何可见变化，也没有声明的
-effects 可验证；`EFFECT_NOT_CONFIRMED` 则是声明了 effects 但没有满足。
+`OK` 表示动作执行且产生可见变化，或声明的 effects 全部满足。`OK_UNVERIFIED` 表示动作执行、没有观察到可见变化，也没有可验证的声明效果。`EFFECT_NOT_CONFIRMED` 表示声明了 effects 但没有满足。
 
----
-
-## 复现
+## 5. 复现
 
 ```bash
-# 通用模式（不应用 App Pack，任意窗口）
+# 通用模式，任意窗口
 somnus --no-pack observe
 
 # 指定窗口
@@ -164,19 +143,19 @@ somnus observe w1
 # 交互式
 somnus --no-pack repl
 
-# 应用某个 pack（如内置的 restaurant-demo，需先启动演示应用）
+# 应用内置 pack；需先启动餐厅演示应用
 somnus --pack restaurant-demo observe
 ```
 
-或在 Python 里：
+在 Python 中：
 
 ```python
 from somnus.providers.windows.uia import UiaProvider
 from somnus.runtime.session import Session
 
 session = Session(UiaProvider(), allow_packs=False)
-print(session.observe().text)                  # ① 概览
-print(session.dispatch('FIND "共享"'))          # ② 查找
-print(session.dispatch("INSPECT b2"))           # ③ 详情
-print(session.dispatch("CALL b2.activate()"))   # ④ 操作 + delta
+print(session.observe().text)                  # 1. 概览
+print(session.dispatch('FIND "共享"'))          # 2. 查找
+print(session.dispatch("INSPECT b2"))           # 3. 详情
+print(session.dispatch("CALL b2.activate()"))   # 4. 操作与增量
 ```
