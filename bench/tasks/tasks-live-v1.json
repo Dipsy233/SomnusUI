@@ -1,0 +1,54 @@
+{
+  "version": "live-v1",
+  "notes": [
+    "Live confirmation layer: one ScenarioSuite.exe window per task, launched",
+    "by the runner (except launch-type tasks, where the agent starts a second",
+    "scenario itself). Assertions are evaluated by an INDEPENDENT session that",
+    "observes after the loop finishes - never on the agent's refs, never on",
+    "mock state. {app} in an instruction is substituted with the exe path.",
+    "Assertion kinds: the mock kinds, plus children_count_min and",
+    "window_title_contains (checked against the assertion session's windows)."
+  ],
+  "tasks": [
+    {
+      "id": "live-store-find-add",
+      "screen": "store",
+      "instruction": "在商品列表里找到 \"Special Item 17\"，把它加入购物车。",
+      "assertions": [
+        {"aid": "store_cart_items", "children_contain_sub": ["Special Item 17"]}
+      ]
+    },
+    {
+      "id": "live-form-submit",
+      "screen": "form",
+      "instruction": "在表单里把姓名填为 测试员，勾选\"同意条款\"，然后点提交。",
+      "assertions": [
+        {"aid": "form_records_list", "children_count_min": 1}
+      ]
+    },
+    {
+      "id": "live-menu-new",
+      "screen": "menu",
+      "instruction": "通过菜单栏的\"文件\"菜单执行\"新建\"。",
+      "assertions": [
+        {"aid": "menu_status", "text_equals": "已执行: 新建"}
+      ]
+    },
+    {
+      "id": "live-dialog-delete",
+      "screen": "dialog",
+      "instruction": "删除列表的最后一项，在出现的确认框里点\"确定\"。",
+      "assertions": [
+        {"aid": "dialog_status", "text_equals": "已删除"}
+      ]
+    },
+    {
+      "id": "live-launch-form",
+      "screen": "store",
+      "instruction": "用 launch 工具启动一个新程序：命令是 \"{app}\"，参数是 [\"form\"]。等它的窗口出现后，告诉我启动是否成功。",
+      "assertions": [
+        {"window_title_contains": "Scenario Suite - form"}
+      ]
+    }
+  ]
+}

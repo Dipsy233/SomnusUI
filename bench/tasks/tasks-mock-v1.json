@@ -1,0 +1,125 @@
+{
+  "version": "mock-v1",
+  "notes": [
+    "One task = (screen, instruction, assertions). The runner builds the mock",
+    "session from tests.fixtures.scenarios.make_provider, runs the loop, then",
+    "asserts on runtime state by automation_id — never on the transcript.",
+    "Assertion kinds: text_equals, text_contains, value_equals, value_contains,",
+    "children_contain, children_not_contain, children_count, exists, not_exists.",
+    "child assertion compares names as a multiset (order never matters)."
+  ],
+  "tasks": [
+    {
+      "id": "mock-store-find-add",
+      "screen": "store",
+      "instruction": "在商品列表里找到 \"Special Item 17\"，把它加入购物车。",
+      "assertions": [
+        {"aid": "store_cart_items", "children_contain": ["Special Item 17"]},
+        {"aid": "store_last_action", "text_contains": "Special Item 17"}
+      ]
+    },
+    {
+      "id": "mock-store-search-add",
+      "screen": "store",
+      "instruction": "在搜索框输入 \"Special Item 5\"，点搜索按钮，然后把搜索结果里的第一个商品加入购物车。",
+      "assertions": [
+        {"aid": "store_cart_items", "children_contain_sub": ["Special Item 5"]},
+        {"aid": "store_result_summary", "text_contains": "件商品"}
+      ]
+    },
+    {
+      "id": "mock-store-batch-two",
+      "screen": "store",
+      "instruction": "把 \"Item 3\" 和 \"Item 5\" 两个商品都加入购物车。",
+      "assertions": [
+        {"aid": "store_cart_count", "text_contains": "2 items"},
+        {"aid": "store_cart_items", "children_contain": ["Item 3", "Item 5"]}
+      ]
+    },
+    {
+      "id": "mock-store-checkout",
+      "screen": "store",
+      "instruction": "把 \"Item 1\" 加入购物车，然后点结算。",
+      "assertions": [
+        {"aid": "store_cart_count", "text_contains": "0 items"},
+        {"aid": "store_last_action", "text_equals": "已结算"}
+      ]
+    },
+    {
+      "id": "mock-form-submit",
+      "screen": "form",
+      "instruction": "在表单里把姓名填为 张三，邮箱填为 zhang@example.com，勾选\"同意条款\"，然后点提交。",
+      "assertions": [
+        {"aid": "form_records_list", "children_contain": ["#1 张三 <zhang@example.com> 优先级=低"]},
+        {"aid": "form_validation", "text_equals": "未提交"}
+      ]
+    },
+    {
+      "id": "mock-form-empty-submit",
+      "screen": "form",
+      "instruction": "直接点提交按钮，然后告诉我提交记录和校验提示的状态。",
+      "assertions": [
+        {"aid": "form_validation", "text_equals": "姓名不能为空"},
+        {"aid": "form_records_list", "children_count": 0}
+      ]
+    },
+    {
+      "id": "mock-form-readonly-note",
+      "screen": "form",
+      "instruction": "把\"只读编号\"字段的当前值写进备注，姓名填 王五，勾选同意条款，然后提交。",
+      "assertions": [
+        {"aid": "form_notes", "value_contains": "REQ-0001"},
+        {"aid": "form_records_list", "children_contain": ["#1 王五 <> 优先级=低"]}
+      ]
+    },
+    {
+      "id": "mock-chat-send",
+      "screen": "chat",
+      "instruction": "给当前会话发送一条消息：你好世界",
+      "assertions": [
+        {"aid": "chat_outbox_list", "children_contain_sub": ["你好世界"]}
+      ]
+    },
+    {
+      "id": "mock-chat-two-lines",
+      "screen": "chat",
+      "instruction": "发送一条包含换行的两行消息：第一行是\"甲\"，第二行是\"乙\"。",
+      "assertions": [
+        {"aid": "chat_messages", "children_contain": ["甲\n乙"]}
+      ]
+    },
+    {
+      "id": "mock-menu-new",
+      "screen": "menu",
+      "instruction": "通过菜单栏的\"文件\"菜单执行\"新建\"。",
+      "assertions": [
+        {"aid": "menu_status", "text_equals": "已执行: 新建"}
+      ]
+    },
+    {
+      "id": "mock-dialog-delete",
+      "screen": "dialog",
+      "instruction": "删除列表的最后一项，在出现的确认框里点\"确定\"。",
+      "assertions": [
+        {"aid": "dialog_status", "text_equals": "已删除"},
+        {"aid": "dialog_confirm", "not_exists": true}
+      ]
+    },
+    {
+      "id": "mock-tree-deep-find",
+      "screen": "tree",
+      "instruction": "逐层展开目录树，直到能看到\"根目录.0.0.1\"这个节点（先展开根目录，再展开它的子节点，按需要继续）。",
+      "assertions": [
+        {"aid": "tree_root_0_0_1", "exists": true}
+      ]
+    },
+    {
+      "id": "mock-console-send",
+      "screen": "console",
+      "instruction": "在输入框输入 hello，然后点发送。",
+      "assertions": [
+        {"aid": "console_status", "text_contains": "hello"}
+      ]
+    }
+  ]
+}

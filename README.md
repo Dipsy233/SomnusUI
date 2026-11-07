@@ -129,14 +129,18 @@ client never pays for a tool it cannot need:
 missing will guess instead of asking.
 
 ```bash
-SOMNUS_CAPABILITIES=core somnus mcp        # six tools (the loop + help)
-SOMNUS_CAPABILITIES=desktop somnus mcp     # every tool (nine)
-SOMNUS_CAPABILITIES=core,desktop somnus mcp  # same, the default
+somnus mcp                                 # default: the six core tools
+SOMNUS_CAPABILITIES=desktop somnus mcp     # core + the desktop tier (nine)
+SOMNUS_CAPABILITIES=all somnus mcp         # same, spelled out
 ```
 
-`core` is always included; unset or malformed means every tier. The table is the
-single source of truth for the MCP `tools/list`, the JSON-RPC transport and
-`examples/agent.py`, and `tests/protocol/test_tool_policy.py` pins it.
+`core` is always included; **unset or malformed means core only** — the exposure
+benchmark ([docs/exposure-benchmark.md](docs/exposure-benchmark.md), round 3 /
+T1) measured the desktop tier's three tools at ~400 extra schema tokens on
+*every* request (~19% of a task's tokens) with no upside when they go unused,
+so they are opt-in. The table is the single source of truth for the MCP
+`tools/list`, the JSON-RPC transport and `examples/agent.py`, and
+`tests/protocol/test_tool_policy.py` pins it.
 
 The protocol is split the same way. Only a short core prompt
 (`somnus/protocol/system_prompt.md`) is injected every turn; the full syntax

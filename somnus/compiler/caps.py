@@ -28,6 +28,25 @@ def _cap(name: str, params: dict[str, ParamSpec] | None = None) -> Capability:
     )
 
 
+#: Whether the default-action capability is exposed under the **pattern's own
+#: name** (``invoke``, no alias) instead of the intent verb ``activate``.
+#: Off by default — the alias is the shipped behaviour. The benchmark's
+#: naming round flips this per scheme to measure what the alias costs or
+#: saves; everything downstream (executor, provider scripts) speaks
+#: primitives, so only this naming decision changes.
+NATIVE_CAP_NAMES = False
+
+
+def set_native_cap_names(enabled: bool) -> None:
+    """Switch the default-action capability name (process-global)."""
+    global NATIVE_CAP_NAMES
+    NATIVE_CAP_NAMES = bool(enabled)
+
+
+def _default_action_cap() -> str:
+    return "invoke" if NATIVE_CAP_NAMES else "activate"
+
+
 #: Roles that are inherently text-entry surfaces.
 #:
 #: ``select`` is deliberately **absent**: a combo box is a *selection* control,
@@ -265,19 +284,26 @@ def primitive_capabilities(node: RawNode) -> list[Capability]:
     patterns = node.patterns
     role = node.role
 
-    # `activate` runs the element's default action, so it exists exactly when
-    # the platform offers one: an `Invoke` pattern, or the `LegacyIAccessible`
-    # bridge the executor falls back to. The role is *not* evidence - a
-    # `role=button` element with no Invoke (a title-bar button, a self-drawn
-    # fake, a control that only exposes ExpandCollapse) would otherwise be
-    # handed a capability whose only possible outcome is ACTION_NOT_SUPPORTED,
-    # while the gesture that really works went unmentioned.
+    # The default-action capability exists exactly when the platform offers
+    # one: an `Invoke` pattern, or the `LegacyIAccessible` bridge the executor
+    # falls back to. The role is *not* evidence - a `role=button` element with
+    # no Invoke (a title-bar button, a self-drawn fake, a control that only
+    # exposes ExpandCollapse) would otherwise be handed a capability whose only
+    # possible outcome is ACTION_NOT_SUPPORTED, while the gesture that really
+    # works went unmentioned.
     #
     # `link` and `menuitem` keep an implicit default action: a hyperlink and a
     # menu row are activated by the accessibility layer itself even without an
     # explicit Invoke, which is what makes them navigable at all.
     if _has_default_action(node) or role in ("link", "menuitem"):
-        caps.setdefault("activate", _cap("activate"))
+        name = _default_action_cap()
+        cap = _cap(name)
+        if name != "activate":
+            # Native naming (`invoke`) aliases nothing: the capability carries
+            # the pattern's own name, but the executor's verb for the default
+            # action is still `activate`, so the route names that primitive.
+            cap.via = [PrimitiveStep(primitive="activate", target="$self")]
+        caps.setdefault(name, cap)
 
     # set_text is granted to *every* text-entry surface. The route it takes is
     # decided by the control's own interface, not by its class name or role.

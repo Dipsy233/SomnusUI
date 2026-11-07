@@ -111,14 +111,17 @@ schema 成本：
 `help` 保留在最小工具面内：无法列出缺失工具的模型只会猜测，而不是发问。
 
 ```bash
-SOMNUS_CAPABILITIES=core somnus mcp        # 六个工具（循环 + help）
-SOMNUS_CAPABILITIES=desktop somnus mcp     # 全部工具（九个）
-SOMNUS_CAPABILITIES=core,desktop somnus mcp  # 同上，默认
+somnus mcp                                 # 默认：core 六个工具
+SOMNUS_CAPABILITIES=desktop somnus mcp     # core + 桌面档（九个）
+SOMNUS_CAPABILITIES=all somnus mcp         # 同上，显式写法
 ```
 
-`core` 始终包含；未设置或值非法时使用全部档位。该表是 MCP `tools/list`、JSON-RPC
-传输与 `examples/agent.py` 的唯一数据源，由 `tests/protocol/test_tool_policy.py`
-锁定。
+`core` 始终包含；**未设置或值非法时只有 core**——暴露基准
+（[docs/exposure-benchmark.md](docs/exposure-benchmark.md) 第 3 批 / T1）实测
+桌面档三工具在每次请求里固定多注入 ~400 schema token（约占任务总 token 的
+19%），任务用不到时是纯成本，因此改为按需开启。该表是 MCP `tools/list`、
+JSON-RPC 传输与 `examples/agent.py` 的唯一数据源，由
+`tests/protocol/test_tool_policy.py` 锁定。
 
 提示词同样分层：每轮只注入简短的核心提示词（`somnus/protocol/system_prompt.md`），
 完整语法放在 `somnus/protocol/agent/*.md`，按需读取。`HELP` 不带主题时是发现入口：

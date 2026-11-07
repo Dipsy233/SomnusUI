@@ -15,10 +15,12 @@ Tiers exist so a host can pay for the surface it needs:
   ``launch``, ``configure``.
 
 Selection comes from ``SOMNUS_CAPABILITIES`` (comma-separated tier names, or
-``all``). Unset means every tier, so an existing host keeps the surface it
-already had. ``core`` is implied: selecting ``desktop`` adds to the core loop
-rather than replacing it. An unknown tier name is ignored and the defaults are
-used; a wrong selection must not silently take tools away.
+``all``). Unset means **core only**: the exposure benchmark measured that the
+three desktop-tier tools cost ~400 schema tokens on *every* request (~19% of
+a task's total) with zero behavioural upside when unused, so they are opt-in
+(``SOMNUS_CAPABILITIES=desktop`` adds them). ``core`` is always implied: a
+selection chooses what to **add** to the core loop, never what to remove.
+``all`` is the explicit way to get every tier back.
 """
 
 from __future__ import annotations
@@ -33,8 +35,11 @@ DESKTOP = "desktop"
 #: Declaration order is also listing order: core first, optional tiers after.
 CAPABILITY_ORDER: tuple[str, ...] = (CORE, DESKTOP)
 
-#: What an unset or invalid selection means.
-DEFAULT_CAPABILITIES: tuple[str, ...] = CAPABILITY_ORDER
+#: What an unset (or malformed) selection means: the core loop only. The
+#: desktop tiers are opt-in -- the exposure benchmark (docs/exposure-benchmark.md,
+#: round 3 / T1) measured the always-on cost at ~19% of a task's tokens with no
+#: behavioural upside when the tools go unused.
+DEFAULT_CAPABILITIES: tuple[str, ...] = (CORE,)
 
 ENV_CAPABILITIES = "SOMNUS_CAPABILITIES"
 
@@ -76,16 +81,19 @@ def tool_policy(name: str) -> ToolPolicy | None:
 def parse_capabilities(value: str) -> tuple[str, ...]:
     """Turn ``"core,desktop"`` into an ordered, de-duplicated tier tuple.
 
-    ``all`` (or an empty value) means every tier. ``core`` is always included,
-    because a selection chooses what to **add** to the core loop, not what to
-    remove from it.
+    ``all`` means every tier (the explicit opt back in). An empty value means
+    the default, core-only selection. ``core`` is always included, because a
+    selection chooses what to **add** to the core loop, not what to remove
+    from it.
     """
     tokens = [
         token.strip().lower()
         for token in value.replace(";", ",").split(",")
         if token.strip()
     ]
-    if not tokens or "all" in tokens:
+    if "all" in tokens:
+        return CAPABILITY_ORDER
+    if not tokens:
         return DEFAULT_CAPABILITIES
     unknown = sorted({token for token in tokens if token not in CAPABILITY_ORDER})
     if unknown:
@@ -105,8 +113,9 @@ def resolve_capabilities(
     """The tiers in force for this process.
 
     A malformed ``SOMNUS_CAPABILITIES`` falls back to the defaults instead of
-    raising: the MCP server has no place to show a startup error, and losing
-    ``call`` because of a typo would be worse than ignoring the typo.
+    raising: the MCP server has no place to show a startup error, and the
+    core loop can never be lost to a typo -- only the opt-in tiers can, which
+    is the same state as not having set them.
     """
     env = os.environ if environ is None else environ
     raw = env.get(ENV_CAPABILITIES)

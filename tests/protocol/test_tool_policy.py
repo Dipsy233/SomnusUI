@@ -36,17 +36,21 @@ def test_desktop_adds_the_session_tools():
     assert listed(("core", "desktop")) == CORE_TOOLS + DESKTOP_TOOLS
 
 
-def test_the_default_is_every_tier():
+def test_the_default_is_core_only():
+    """The exposure benchmark measured the desktop tier's always-on schema
+    cost at ~19% of a task's tokens with no upside when unused, so unset
+    means core; desktop is opt-in."""
     assert policy.resolve_capabilities({}) == policy.DEFAULT_CAPABILITIES
-    assert listed(policy.DEFAULT_CAPABILITIES) == [s["name"] for s in TOOL_SPECS]
+    assert policy.DEFAULT_CAPABILITIES == ("core",)
+    assert listed(policy.DEFAULT_CAPABILITIES) == CORE_TOOLS
 
 
 def test_core_is_implied_by_an_optional_tier():
     assert policy.parse_capabilities("desktop") == ("core", "desktop")
 
 
-def test_all_or_blank_means_every_tier():
-    assert policy.parse_capabilities("all") == policy.DEFAULT_CAPABILITIES
+def test_all_means_every_tier_and_blank_means_the_default():
+    assert policy.parse_capabilities("all") == policy.CAPABILITY_ORDER
     assert policy.parse_capabilities("   ") == policy.DEFAULT_CAPABILITIES
 
 
@@ -88,7 +92,7 @@ def test_help_without_a_topic_lists_tiers_tools_and_topics():
 
 
 def test_help_with_every_tier_has_nothing_to_enable():
-    assert "available:" not in render_help(None, policy.DEFAULT_CAPABILITIES)
+    assert "available:" not in render_help(None, policy.CAPABILITY_ORDER)
 
 
 def test_a_topic_renders_the_document_verbatim():

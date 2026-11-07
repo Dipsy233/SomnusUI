@@ -53,6 +53,8 @@ apps/restaurant-demo/obj/
 !tests/fixtures/*.json
 somnus_record*.json
 recordings/
+# benchmark run evidence (transcripts + metric rows) stays on the machine
+runs/
 
 # Local scratch
 *.log

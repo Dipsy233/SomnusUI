@@ -89,9 +89,14 @@ def pick(task: str, specs: list[dict]) -> str:
     return max(docs, key=lambda name: scores(task, docs)[name])
 
 
-def test_every_expected_tool_exists_in_the_default_surface():
-    default = {spec["name"] for spec in policy.filter_tool_specs(TOOL_SPECS)}
-    missing = [case.tool for case in TASKS if case.tool not in default]
+def test_every_expected_tool_exists_in_the_advertised_surface():
+    """The full tier set advertises every tool a task needs; the *default*
+    surface is core-only and needs only the core cases (checked below)."""
+    advertised = {
+        spec["name"]
+        for spec in policy.filter_tool_specs(TOOL_SPECS, policy.CAPABILITY_ORDER)
+    }
+    missing = [case.tool for case in TASKS if case.tool not in advertised]
     assert not missing, missing
 
 
@@ -102,11 +107,11 @@ def test_core_tasks_stay_inside_the_core_tier():
 
 
 def test_the_descriptions_still_point_at_the_right_tool():
-    default = policy.filter_tool_specs(TOOL_SPECS)
+    advertised = policy.filter_tool_specs(TOOL_SPECS, policy.CAPABILITY_ORDER)
     wrong = [
-        (case.task, case.tool, pick(case.task, default))
+        (case.task, case.tool, pick(case.task, advertised))
         for case in TASKS
-        if pick(case.task, default) != case.tool
+        if pick(case.task, advertised) != case.tool
     ]
     assert not wrong, wrong
 

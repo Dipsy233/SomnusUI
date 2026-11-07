@@ -274,7 +274,13 @@ def test_repl_stops_cleanly_on_eof(monkeypatch):
 
 
 def test_rpc_serves_line_delimited_requests(monkeypatch):
-    """`somnus rpc` reads JSON-RPC from stdin and answers on stdout."""
+    """`somnus rpc` reads JSON-RPC from stdin and answers on stdout.
+
+    With no SOMNUS_CAPABILITIES set the default surface is core-only
+    (docs/exposure-benchmark.md, round 3 / T1), so tools/list shows the six
+    core tools, not the full spec list.
+    """
+    from somnus.protocol import policy
     from somnus.protocol.tools import TOOL_SPECS
 
     request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
@@ -284,5 +290,5 @@ def test_rpc_serves_line_delimited_requests(monkeypatch):
     assert code == 0
     reply = json.loads(out.strip().splitlines()[0])
     assert {t["name"] for t in reply["result"]["tools"]} == {
-        spec["name"] for spec in TOOL_SPECS
+        spec["name"] for spec in policy.filter_tool_specs(TOOL_SPECS)
     }
