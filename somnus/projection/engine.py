@@ -20,7 +20,7 @@ from somnus.projection.rules import Projection, Rule
 _L0_KEEP_ROLES = frozenset({"input", "document", "list", "tree", "table"})
 
 #: The fields the viewport collector attaches to a container it had to cut at
-#: the viewport edge (docs/viewport-capture-proposal.md, "数据契约"). They are
+#: the viewport edge (docs/archive/performance-2026-11.md, "数据契约"). They are
 #: *metadata about what was not captured*, never rendered as raw attributes:
 #: projection turns them into the `rows=/visible=/scroll=` summary and the
 #: `+more` marker. A node without them renders exactly as it always has.

@@ -270,7 +270,7 @@ def test_tiers_are_the_documented_sets():
     peek_props = set(cache_module.properties_for("peek"))
 
     # 14 consumed fields + BoundingRectangle (30001), added for the viewport
-    # capture's visibility decision (docs/viewport-capture-proposal.md).
+    # capture's visibility decision (docs/archive/performance-2026-11.md).
     assert len(full_props) == 15 and 30001 in full_props
     assert len(full_patterns) == 16
     assert full_patterns - lean_patterns == cache_module.LEAN_DROPPED_PATTERNS

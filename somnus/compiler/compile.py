@@ -79,7 +79,7 @@ ROLE_REF_PREFIX = {
 REVERSED_REF_PREFIX = {v: k for k, v in {**ROLE_REF_PREFIX, **REF_PREFIX}.items()}
 
 #: Viewport-capture metadata carried by a container the provider had to cut at
-#: the viewport edge (docs/viewport-capture-proposal.md). Copied onto the
+#: the viewport edge (docs/archive/performance-2026-11.md). Copied onto the
 #: semantic node so :mod:`somnus.projection` is the only consumer; the
 #: projection strips them from rendering and turns them into the
 #: `rows=/visible=/scroll=` summary. Supporting both the raw-node fields and a
@@ -160,7 +160,7 @@ class Compiler:
         self.allocator = allocator or RefAllocator()
         #: Name synthesis (:mod:`somnus.compiler.names`). On by default; the
         #: switch exists so the token cost can be measured against the same
-        #: scenario suite (see docs/optimization-plan.md's A/B convention).
+        #: scenario suite (see docs/archive/performance-2026-11.md's A/B convention).
         self.synthesize_names = synthesize_names
 
     def compile(

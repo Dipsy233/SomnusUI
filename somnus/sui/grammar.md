@@ -320,6 +320,7 @@ Delta line kinds:
 | `INVALID_ARGUMENT` | bad/missing argument | `inspect` |
 | `ACTION_NOT_SUPPORTED` | no native pattern | `report-user`; `try select` after a failed `activate` when the node exposes `select` |
 | `TARGET_DISABLED` | target disabled | `inspect` |
+| `NOT_ACTIONABLE` | still blocked after the short wait | `wait`; do not retry |
 | `PERMISSION_DENIED` | allow-list / UIPI | `report-user` |
 | `NATIVE_EXECUTION_FAILED` | pattern raised | `retry-once` |
 | `TIMEOUT` | exec/settle timed out | `observe` |

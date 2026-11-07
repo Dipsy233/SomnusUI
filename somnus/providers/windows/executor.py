@@ -138,7 +138,7 @@ def run_primitive(
             # because the text is read by the application's own WM_PASTE handler
             # rather than pushed through the input queue - measured constant
             # ~37 ms from 10 to 3000 characters, where per-character SendInput
-            # parks most of a fast burst (docs/text-input-channels.md 3.3).
+            # parks most of a fast burst (docs/reference/text-input-channels.md 3.2 and 3.3).
             #
             # It needs the foreground and it disturbs the user's clipboard, so it
             # is gated on --allow-clipboard and ordered *after* the native value

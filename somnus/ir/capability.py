@@ -43,7 +43,7 @@ PRIMITIVE_CAPABILITIES: frozenset[str] = frozenset(
         # application's own WM_PASTE handler. Gated on `--allow-clipboard`: it
         # needs the foreground and it borrows the user's clipboard. Like
         # `type_text` it is a routing detail, never a capability the LLM calls
-        # (docs/text-input-channels.md 3.3).
+        # (docs/reference/text-input-channels.md 3.2).
         "paste_text",
         "toggle",
         "select",

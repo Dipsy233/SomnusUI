@@ -82,7 +82,7 @@
 
 `ValuePattern.SetValue`。应用在自己的线程上完成写入：**原子、不产生任何合成
 输入、不借用户的剪贴板**。它仍然要求目标窗口在前台（运行时会把窗口提上来），
-但在四条通道里代价最低，只要控件实现了它就一定用它。
+但在三条通道里代价最低，只要控件实现了它就一定用它。
 
 **实测**（Windows 11 24H2 记事本 RichEdit）：20/20 成功，含 CJK 与长字符串。
 
@@ -148,7 +148,7 @@ HWND。够得着它们的是 `Ctrl+V`：文本走**剪贴板**，由应用自己
 **授权**：`allow_clipboard`，本构建中**默认开启**，可用 `--no-allow-clipboard`
 或 `allow_clipboard = false` 关闭。
 
-### 3.4 `type_text` — 合成键盘（最后手段）
+### 3.3 `type_text` — 合成键盘（最后手段）
 
 `SendInput` + `KEYEVENTF_UNICODE`（与键盘布局无关）。
 

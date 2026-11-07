@@ -1451,7 +1451,7 @@ class Session:
         tree until it is: the observation would silently be missing most of the
         UI. Taking the foreground is the price of a complete tree; an agent
         that must not disturb the user belongs in the child session, which has
-        its own foreground window (see docs/child-session.md).
+        its own foreground window (see docs/reference/child-session.md).
 
         Observation is read-only and side-effect free, so an unknown window ref
         must not dead-end the agent: fall back to the default window and let the

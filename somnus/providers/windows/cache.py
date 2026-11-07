@@ -48,7 +48,7 @@ CACHED_PROPERTIES: dict[int, str] = {
     # The element's own Win32 HWND (0 when it maps none). Needed because the
     # WM_SETTEXT / EM_REPLACESEL write channel is gated on *this* value, not on
     # whether the process owns an Edit child window. See
-    # docs/text-input-channels.md 3.2 and NativeRef.native_window_handle.
+    # docs/reference/text-input-channels.md 3.2 and NativeRef.native_window_handle.
     30020: "native_window_handle",
     # Screen rectangle. Read only by the viewport capture (docs/viewport-capture
     # -proposal.md): `IsOffscreen` is not trustworthy for scrolled-out rows

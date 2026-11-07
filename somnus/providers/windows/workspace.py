@@ -23,7 +23,7 @@ Raising a window takes the user's focus. That is the deliberate trade: a
 complete tree beats an invisible agent. ``peek`` is the exception - the window
 list does not need any window raised, so listing windows never steals focus.
 Using the *child session* is what restores non-interference (see
-docs/child-session.md).
+docs/reference/child-session.md).
 """
 
 from __future__ import annotations

@@ -92,7 +92,9 @@ Two switches decide who may start what:
   which is the same list that decides which processes may be *operated*. A
   program that could not be operated is not allowed to be spawned either.
 
-`run` is CLI-only. The model-facing surface has eight tools. `launch` starts a
+`run` is CLI-only. The full model-facing surface has nine tools; a default MCP
+host lists the six `core` tools, and `switch` / `launch` / `configure` are the
+opt-in `desktop` tier. `launch` starts a
 program on the current desktop (local `CreateProcess` on main, the peer's
 `process.start` on child). Both paths apply `allow_processes`; the peer path
 also requires `child_allow_spawn`. `wait_s` defaults to 3 s. The reply carries

@@ -2,18 +2,21 @@
 
 以一个真实的 Windows 属性对话框为例，逐步展示 LLM 在实际收到的内容。
 
-（本文只涉及四个"看和做"的工具：`observe` / `find` / `inspect` / `call`。
-第五个工具 `switch` 用于在两个 Windows 会话之间移动 agent，见
-[child-session.md](child-session.md)。）
+（本文聚焦四个"看和做"的工具：`observe` / `find` / `inspect` / `call`。
+完整工具面是九个：另外五个是 `run`、`help`、`switch`、`launch`、`configure`；
+默认 MCP 宿主只暴露六个 core 工具。`switch` 用于在两个 Windows 会话之间移动
+agent，见 [child-session.md](../reference/child-session.md)。）
 
 ---
 
 ## ① `observe` — 概览
 
-`observe` 只返回目标窗口的内容（其他桌面窗口用 `OBSERVE windows` 单独列出）：
+`observe` 返回目标窗口的内容，并以一行 `WINDOWS` 给出桌面上下文（其他窗口的
+内容不展开；只要窗口清单时用 `OBSERVE windows`）：
 
 ```
 @rev 1
+WINDOWS w1 "agent 属性" active
 WINDOW w1 "agent 属性" +scroll_into_view
   SCREEN s1 "网络文件和文件夹共享"
   IMAGE im1 "网络文件和文件夹共享"
@@ -37,7 +40,7 @@ WINDOW w1 "agent 属性" +scroll_into_view
     TAB t4 "安全"
     TAB t5 "以前的版本"
     TAB t6 "自定义"
-  PANE pn1 +set_text(text)
+  PANE pn1
     MENU mn1 "系统"
       MENUITEM mi1 "系统" +collapse +expand
     BUTTON b6 "关闭"
@@ -130,7 +133,7 @@ WINDOW w1 "无标题 - Notepad"
 
 ```
 CALL tx1.set_text("Hello SomnusUI")
-→ OK_UNVERIFIED rev=2
+→ OK rev=2
   ~ tx1 value →Hello SomnusUI          ← 值变了
   + TAB t4 "Hello SomnusUI. 已修改。" +close!   ← 标题跟着变
   + TEXT tx9 "Hello SomnusUI"
@@ -142,8 +145,9 @@ CALL tx1.set_text("Hello SomnusUI")
 **delta 是本响应中信息量最大的部分**：LLM 不重新 `observe` 也能知道发生了什么。
 `~` 改了、`+` 新增、`-` 消失。
 
-`OK_UNVERIFIED` 表示"动作执行了，但应用没声明可验证的效果"。对比 `OK`
-（effects 全部满足）和 `EFFECT_NOT_CONFIRMED`（声明了但没满足）。
+`OK` 表示动作执行且产生了可见变化（或声明的 effects 全部满足）。
+`OK_UNVERIFIED` 表示动作执行了、但没有观察到任何可见变化，也没有声明的
+effects 可验证；`EFFECT_NOT_CONFIRMED` 则是声明了 effects 但没有满足。
 
 ---
 

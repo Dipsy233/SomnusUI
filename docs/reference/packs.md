@@ -9,10 +9,13 @@ generically and can reach and operate it; a pack adds a vocabulary the generic
 path cannot infer (which button means "add to cart", what a row's price is).
 Use `--no-pack` to drive an application with no pack at all.
 
-A pack can be written as a **single YAML file** (loaded with
-`somnus.compiler.yaml_pack.load_pack_file`) or as a Python module (the built-in
-`restaurant-demo` pack is one). The YAML loader is a soft dependency: it needs
-PyYAML.
+A pack can be written as a **single YAML file** or as a Python module (the
+built-in `restaurant-demo` pack is one). `somnus.compiler.yaml_pack.load_pack_file`
+parses one file and registers it in the current process; YAML files placed in
+`somnus/packs/*.pack.yaml` are also loaded at startup. PyYAML is declared as a
+project dependency in `pyproject.toml`, and the loader tolerates its absence
+(the built-in Python packs still load). The CLI's `--pack` accepts only an
+already-registered pack id, not a file path.
 
 ## File shape
 
@@ -188,7 +191,9 @@ control that exposes no pattern gets no capability.
 - the same control type must be told apart by class (a WinUI `ToggleSwitch`
   next to a plain `Button`),
 - a capability needs several steps or an effect to verify,
-- an action is dangerous and must be gated (`risk: critical`).
+- an action is semantically critical and should be marked (`risk: critical`);
+  this build prints `!` as metadata and executes it directly, because there is
+  no confirmation gate.
 
 ### Steps
 
@@ -209,9 +214,13 @@ control that exposes no pattern gets no capability.
        print(n.role, n.native.automation_id, n.name, sorted(n.patterns))
    ```
 
-3. Write the pack, then check it without a desktop:
+3. Write the pack, then check it without a desktop. The pack must be registered
+   in the process first: call `load_pack_file("my-app.pack.yaml")`, or place the
+   file under `somnus/packs/` so startup loads it. `--pack` only accepts that
+   registered id.
 
    ```bash
+   # after the pack is registered (load_pack_file) or placed in somnus/packs/
    somnus --provider mock --fixture app.json --pack my-app observe
    ```
 

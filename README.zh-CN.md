@@ -6,9 +6,11 @@ SomnusUI 把原生 GUI 编译为文本接口。运行时读取 Windows 无障碍
 SUI-Text（节点、能力与属性），再通过 UI Automation 执行能力调用；文本输入可选
 剪贴板与键盘通道。模型收到 SUI-Text，不收到截图、坐标或原生标识符。
 
-输入是九种工具调用之一：`observe`、`find`、`inspect`、`call`、`run`、`help`、
-`switch`、`launch`、`configure`。输出是 SUI-Text：一次观察、一份命中列表、一行带增量
-的 `OK`/`ERR`、一行设置结果，或一篇主题文档。
+完整工具面是九种调用：`observe`、`find`、`inspect`、`call`、`run`、`help`、
+`switch`、`launch`、`configure`。默认 MCP 宿主只暴露六个 core 工具；
+`switch`、`launch`、`configure` 需要按需开启（见“渐进式工具面”）。输出是
+SUI-Text：一次观察、一份命中列表、一行带增量的 `OK`/`ERR`、一行设置结果，
+或一篇主题文档。
 
 ## 概述
 
@@ -62,6 +64,21 @@ ref（`p1`、`w1`、`q1` …）只在一个会话内有效。`somnus observe` �
 `run` 工具（一次调用执行完整流程）。`somnus --demo` 与 `somnus --scenario`
 遵循相同的单次规则。
 
+### REPL、单次 CLI 与脚本
+
+`somnus repl` 保持一个会话存活，先打印窗口清单，然后在 `sui>` 提示符读取
+SUI-Text；`quit`、`exit`、`:q` 退出。`somnus observe` / `somnus call` 这类
+单次命令是无状态的：ref 随进程失效，多步操作应使用 REPL、MCP 服务器或一次
+`run` 调用。`somnus --no-pack repl` 用于没有 App Pack 的窗口。
+
+三个手势互不替代：`select` 表示高亮（单击），`activate` 表示元素的默认动作
+（双击；对列表行通常是“打开”），`context_menu` 表示打开上下文菜单（右键）。
+有些应用对 `activate` 只做高亮，此时先用 `context_menu` 打开菜单，再对菜单项
+`activate`。`context_menu` 走 UIA `ShowContextMenu`，不移动指针、不发送按键；
+但 XAML 里声明的 WPF `ContextMenu` 无法这样触发，运行时会如实报告。完整的
+REPL 记录与 WPF 平台问题归档在
+[docs/archive/interactive-usage.md](docs/archive/interactive-usage.md)。
+
 ### MCP 服务器
 
 ```json
@@ -72,7 +89,8 @@ ref（`p1`、`w1`、`q1` …）只在一个会话内有效。`somnus observe` �
 }
 ```
 
-服务器暴露上表中的工具，并按所选能力档位过滤（默认九种全部暴露）。provider 自动
+服务器暴露上表中的工具，并按所选能力档位过滤（默认只暴露六个 `core` 工具，
+三个 `desktop` 工具需通过 `SOMNUS_CAPABILITIES` 开启）。provider 自动
 选择：安装 `[windows]` 扩展时使用 UI Automation，否则回放录制的固件。`instructions`
 在 `initialize` 时只发送一次，内容是共享规则与当时的生效值快照：`settle_quiet_ms=40`、
 `settle_poll_ms=10`、`settle_timeout_s=3.0`、`post_action_enum=on`。`configure`
@@ -117,7 +135,7 @@ SOMNUS_CAPABILITIES=all somnus mcp         # 同上，显式写法
 ```
 
 `core` 始终包含；**未设置或值非法时只有 core**——暴露基准
-（[docs/exposure-benchmark.md](docs/exposure-benchmark.md) 第 3 批 / T1）实测
+（[docs/benchmarks/tool-surface.md](docs/benchmarks/tool-surface.md) 第 3 批 / T1）实测
 桌面档三工具在每次请求里固定多注入 ~400 schema token（约占任务总 token 的
 19%），任务用不到时是纯成本，因此改为按需开启。该表是 MCP `tools/list`、
 JSON-RPC 传输与 `examples/agent.py` 的唯一数据源，由
@@ -294,7 +312,7 @@ SUI-Text 中所有带引号的字符串（包括 `value=`）转义 `\\`、`\"`�
 
 模型不收到句柄、坐标、`AutomationId`、进程 ID、COM 指针、原始 `control_type`
 或无名的 `Pane` 包装节点。完整示例见
-[docs/what-the-llm-sees.md](docs/what-the-llm-sees.md)。
+[docs/guides/observation-walkthrough.md](docs/guides/observation-walkthrough.md)。
 
 ### 批量调用
 
@@ -380,7 +398,7 @@ ERR ACTION_NOT_SUPPORTED q1 hint=report-user
 ```
 
 模型只看到 `set_text`；底层通道由运行时选择。实测数据、剪贴板还原保证与已否定
-的路径见 [docs/text-input-channels.md](docs/text-input-channels.md)。
+的路径见 [docs/reference/text-input-channels.md](docs/reference/text-input-channels.md)。
 
 ### 提供者
 
@@ -458,6 +476,29 @@ SETTINGS quiet_ms=80 poll_ms=20 timeout_s=3.0 post_action_enum=off scope=session
 - 实体按结构判定：带标题和动词按钮的行，或同一容器下三个以上的标题行（列表、
   工具栏、导航栏）。
 
+## 决策轨迹
+
+`somnus trace to-script DIR` 把录制过的流程蒸馏成 `run` 脚本草稿：每一步成功的
+`CALL` 变成 `AWAIT "名称"` + `CALL $it.cap(args)`，同样的任务第二次只需一次
+`run` 调用而不是逐步往返；trace 无法命名的步骤降级为 `# TODO` 注释，UI 漂移后
+由 `heal` 修复草稿。
+
+`--trace DIR`（或 `SOMNUS_TRACE=DIR`）记录运行时的决策：能力走的那条路由、
+settle 帧、增量、验证状态与错误码，以及调用前后模型看到的 SUI-Text。不指定
+`DIR` 时，会在平台数据目录（Windows 为 `%LOCALAPPDATA%\somnusui\traces`）下
+创建新的运行目录，位于仓库之外。
+
+```bash
+somnus --demo --trace /tmp/somnus-demo-trace call 'CALL p1.add()'
+somnus trace show /tmp/somnus-demo-trace                     # 时间线
+somnus trace show /tmp/somnus-demo-trace --snapshots         # 附带前后 SUI-Text
+```
+
+跟踪默认关闭，关闭时对热路径没有成本。trace 文件是开发证据：留在仓库外，
+**当前阶段未脱敏**（快照可能包含窗口标题、表单值和聊天文本）。脱敏是收尾步骤，
+只有完成脱敏后 trace 才能作为参考证据入库；入口与所需决策标记为
+`somnus/observability/jsonl.py` 中的 `TODO(stage-final)`。
+
 ## 子会话
 
 子会话是同一账户的第二次交互式登录。它拥有自己的 input desktop、前台窗口与
@@ -516,7 +557,7 @@ CLI：
 并应用 `allow_processes`。
 
 设计说明、实测数据与已否定的方案见
-[docs/child-session.md](docs/child-session.md)。
+[docs/reference/child-session.md](docs/reference/child-session.md)。
 
 ## 自检与回放
 
@@ -553,24 +594,22 @@ somnus --demo heal script.sui # 离线
 不猜测、不执行。运行时内部同样用这个定位器作为陈旧 ref 的第二重定位策略，但它
 不暴露成模型工具：工具面没有新增 `locate`。
 
-`somnus trace to-script DIR` 把录制过的流程蒸馏成 `run` 脚本草稿：每一步成功的
-`CALL` 变成 `AWAIT "名称"` + `CALL $it.cap(args)`，同样的任务第二次只需一次
-`run` 调用而不是逐步往返；trace 无法命名的步骤降级为 `# TODO` 注释，UI 漂移后
-由 `heal` 修复草稿。
-
 ## 文档索引
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md) | 一个窗口及其工具调用，附真实输出 |
-| [docs/interactive-usage.md](docs/interactive-usage.md) | REPL、单次 CLI 与脚本用法 |
-| [docs/packs.md](docs/packs.md) | App Pack 编写 |
-| [docs/child-session.md](docs/child-session.md) | 子会话设计、代价与已否定的方案 |
-| [docs/text-input-channels.md](docs/text-input-channels.md) | 文本输入路径及其代价 |
-| [docs/optimization-plan.md](docs/optimization-plan.md) | 实测、改动与剩余工作 |
-| [docs/viewport-capture-proposal.md](docs/viewport-capture-proposal.md) | 视口采集的测量与设计 |
-| [docs/scenario-suite.md](docs/scenario-suite.md) | 验收界面与通过标准 |
-| [docs/benchmark-50-tasks.md](docs/benchmark-50-tasks.md) | 50 个用户任务与实测覆盖 |
+| [docs/guides/observation-walkthrough.md](docs/guides/observation-walkthrough.md) | 一个窗口及其工具调用，附真实输出 |
+| [docs/reference/packs.md](docs/reference/packs.md) | App Pack 编写 |
+| [docs/reference/child-session.md](docs/reference/child-session.md) | 子会话设计、代价与已否定的方案 |
+| [docs/reference/text-input-channels.md](docs/reference/text-input-channels.md) | 文本输入路径及其代价 |
+| [docs/benchmarks/tool-surface.md](docs/benchmarks/tool-surface.md) | 工具档位与暴露基准（第 1–3 批） |
+| [docs/benchmarks/app-tasks.md](docs/benchmarks/app-tasks.md) | 50 个用户任务与实测覆盖 |
+| [docs/benchmarks/scenario-suite.md](docs/benchmarks/scenario-suite.md) | 验收界面与通过标准 |
+| [docs/archive/performance-2026-11.md](docs/archive/performance-2026-11.md) | 性能与视口采集：实测、改动与剩余工作 |
+
+历史材料归档在 `docs/archive/`：`interactive-usage.md`（REPL/CLI 说明已并入
+[开始使用](#开始使用)）、`viewport-capture-proposal.md`（已并入
+`performance-2026-11.md`）、`playwright-patterns.zh-CN.md` 与 `plan-v3.zh-CN.md`。
 
 ## 仓库结构
 
@@ -594,7 +633,7 @@ somnus/
 apps/restaurant-demo/   WPF（.NET 8）验收应用
 apps/scenario-suite/    WPF（.NET 8）验收应用
 tools/rdp-host/         .NET（WinForms）OLE 容器，承载 RDP 控件
-docs/                   上表所列文档
+docs/                   guides/、reference/、benchmarks/、archive/
 examples/               agent 循环、契约检查、任务评估
 bench/                  基准门槛与 LLM 控制演示
 tests/{fixtures,scenarios,golden,compiler,projection,runtime,providers,e2e}
@@ -631,14 +670,14 @@ pack 为应用增加领域词汇（`PRODUCT p1 +add`）。没有匹配 pack 的�
 路径，仍然可操作；见通用模式。
 
 ```python
-from somnus.packs.restaurant_demo import build_pack
-from somnus.runtime.session import Session
+from somnus.compiler.pack_schema import get_pack
 from somnus.providers.mock import MockProvider
+from somnus.runtime.session import Session
 
-session = Session(provider, pack=build_pack())
+session = Session(MockProvider(), pack=get_pack("restaurant-demo"))
 ```
 
-编写指南：[docs/packs.md](docs/packs.md)。
+编写指南：[docs/reference/packs.md](docs/reference/packs.md)。
 
 ## 测试
 

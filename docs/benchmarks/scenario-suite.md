@@ -2,7 +2,7 @@
 
 目标：用贴近真实用户与 Agent 使用的端到端场景，验证 SomnusUI
 「GUI → 语义 API」全链路的正确性、鲁棒性与指标承诺。
-分层：**S1 纯 mock 回放（任意平台、CI 必跑）→ S2 真实窗口 UIA（Windows 标记）→ S3 LLM-in-the-loop（夜间/手动）**。
+分层：**S1 纯 mock 回放（任意平台、CI 必跑）→ S2 真实窗口 UIA（Windows 标记）**；S3 LLM-in-the-loop 是历史规划，现由 `examples/eval_agent.py` 与 `bench/` 承担。
 
 ---
 
@@ -14,7 +14,7 @@
 |---|------|--------|----|
 | A1 | 餐厅点单：observe → find "Big Mac" → p1.add() → 验证购物车 count/total 增量 | delta 只含变化项；rev 递增；token 预算不涨 | S1/S2 |
 | A2 | 记事本输入：set_text("Hello SomnusUI") → 关闭时触发保存确认对话框 | 动态新增节点（TAB/对话框）出现在下一次 observe；confirm 流程走通 | S2 |
-| A3 | 多步会话状态：连续 5+ 次操作，ref 稳定性与指纹失效重建 | ref 失效时返回语义化错误 + 重建后 id 迁移提示，绝不泄漏 AutomationId | S1/S2 |
+| A3 | 多步会话状态：连续 5+ 次操作，ref 稳定性与指纹失效重建 | ref 失效时先尝试同窗唯一匹配重定位一次（`~ healed old→new`）；失败才返回语义化错误，绝不泄漏 AutomationId | S1/S2 |
 | A4 | 系统属性对话框（只读字段 + disabled 按钮）：observe → call b5.activate() | 返回 `TARGET_DISABLED`；readonly INPUT 正确标注 | S2 |
 | A5 | 菜单导航：activate mi "编辑" → 子菜单出现 → activate menuitem | 菜单展开的增量渲染；菜单未打开时 find 不到子项 | S1/S2 |
 
@@ -34,7 +34,7 @@
 | C1 | 错误语法：`click(312,528)` / 原语动词 | `PARSE_ERROR` + hint，单行无堆栈 | S1 |
 | C2 | 不存在的能力/引用：`CALL p1.submit()`、`CALL ghost.add()` | `CAPABILITY_NOT_FOUND` / `NOT_FOUND` + hint=inspect | S1 |
 | C3 | critical 能力：`b5.submit()` | 直接执行、动作真实下发（本构建无确认门控） | S1 |
-| C4 | UI 突变后调用：find 到 ref 后 UI 重建（fixture 注入变更）再 call | 指纹校验失败 → 明确错误 + 建议 observe，不会静默错点 | S1 |
+| C4 | UI 突变后调用：find 到 ref 后 UI 重建（fixture 注入变更）再 call | 指纹校验失败 → 先尝试同窗唯一匹配重定位；失败则明确错误 + 建议 observe，不会静默错点 | S1 |
 | C5 | 窗口关闭/崩溃后 call | 语义化错误（不是 traceback），session 可恢复或干净退出 | S2 |
 | C6 | 超时/元素永不 settle | settle 超时返回一行错误，可重试 | S1（可注入延迟）/S2 |
 
@@ -94,9 +94,12 @@ tests/e2e/test_windows_scenarios.py   # S2：同一批界面的真实窗口版�
 - `MockProvider` 新增 `callback` 变更操作，让固件可以回放"逐行行为"
   （第 5 行的加入与第 7 行不同），而不必把每个应用硬编码进 mock。
 
-## 三、S3 LLM-in-the-loop 任务清单（bench/eval 扩展）
+## 三、S3 LLM-in-the-loop 任务清单（历史计划）
 
-1. "把两个 Big Mac 加进购物车并结账"（含 confirm 交互）
+本清单是早期规划；实际的真模型回路现在由 `examples/eval_agent.py` 与
+`bench/tasks/`、`bench/loop/` 承担，本文件只保留 S1/S2 的验收口径。
+
+1. "把两个 Big Mac 加进购物车并结账"（含结账交互）
 2. "在记事本写 'meeting notes' 并另存为 xy.txt"（涉及对话框导航 + 文件名输入）
 3. "在未知应用（no-pack）里把窗口标题栏文字改掉/执行一个可见动作"，考察泛化
 4. 干扰任务：中途移动/遮挡窗口、弹出无关对话框，考察恢复

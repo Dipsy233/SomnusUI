@@ -8,9 +8,12 @@ attributes), and executes capability calls through UI Automation, with optional
 clipboard and keyboard channels for text input. The model receives SUI-Text; it
 receives no screenshots, coordinates or native identifiers.
 
-Input is one of nine tool calls: `observe`, `find`, `inspect`, `call`, `run`,
-`help`, `switch`, `launch` or `configure`. Output is SUI-Text: an observation, a
-match list, an `OK`/`ERR` line with a delta, a settings line, or a topic page.
+The full tool vocabulary is nine calls: `observe`, `find`, `inspect`, `call`,
+`run`, `help`, `switch`, `launch` or `configure`. A default MCP host exposes the
+six core tools; `switch`, `launch` and `configure` are opt-in (see
+[Progressive tool surface](#progressive-tool-surface)). Output is SUI-Text: an
+observation, a match list, an `OK`/`ERR` line with a delta, a settings line, or a
+topic page.
 
 ## Overview
 
@@ -76,6 +79,25 @@ the MCP server (one long-lived session per client), or the `run` tool (a whole
 flow inside one call). `somnus --demo` and `somnus --scenario` follow the same
 one-shot rule.
 
+### REPL, one-shot CLI and scripts
+
+`somnus repl` keeps one session alive, prints the window list first, then reads
+SUI-Text at the `sui>` prompt; `quit`, `exit` and `:q` end it. A one-shot command
+(`somnus observe`, `somnus call`) is convenient but stateless: refs die with
+the process, so multi-step work belongs in the REPL, the MCP server or one
+`run` call. `somnus --no-pack repl` drives a window with no App Pack.
+
+The three gestures are distinct and the runtime never substitutes one for
+another: `select` highlights (single click), `activate` performs the element's
+default action (double click, or "open" for a row), and `context_menu` opens
+the context menu (right click). Some applications answer `activate` by
+highlighting only; reach the real command through `context_menu` and then
+`activate` the menu item. `context_menu` uses UIA `ShowContextMenu` - it moves
+no pointer and sends no keystrokes - but a WPF `ContextMenu` declared in XAML
+cannot be triggered this way, and the reply says so instead of pretending it
+worked. The full REPL transcript and the WPF pitfalls are archived in
+[docs/archive/interactive-usage.md](docs/archive/interactive-usage.md).
+
 ### MCP server
 
 ```json
@@ -87,8 +109,9 @@ one-shot rule.
 ```
 
 The server exposes the tools listed above, filtered to the selected capability
-tiers (all nine by default). The provider is selected automatically: UI
-Automation when the `[windows]` extra is installed, recorded fixtures otherwise.
+tiers (the six `core` tools by default; the three `desktop` tools are opt-in via
+`SOMNUS_CAPABILITIES`). The provider is selected automatically: UI Automation
+when the `[windows]` extra is installed, recorded fixtures otherwise.
 The `instructions` field is sent once at `initialize`; it carries the shared
 rules plus a snapshot of the values in force at that time: `settle_quiet_ms=40`,
 `settle_poll_ms=10`, `settle_timeout_s=3.0` and `post_action_enum=on`.
@@ -135,7 +158,7 @@ SOMNUS_CAPABILITIES=all somnus mcp         # same, spelled out
 ```
 
 `core` is always included; **unset or malformed means core only** — the exposure
-benchmark ([docs/exposure-benchmark.md](docs/exposure-benchmark.md), round 3 /
+benchmark ([docs/benchmarks/tool-surface.md](docs/benchmarks/tool-surface.md), round 3 /
 T1) measured the desktop tier's three tools at ~400 extra schema tokens on
 *every* request (~19% of a task's tokens) with no upside when they go unused,
 so they are opt-in. The table is the single source of truth for the MCP
@@ -334,7 +357,7 @@ form.
 
 The model receives no handle, coordinate, `AutomationId`, process id, COM
 pointer, raw `control_type` or unnamed `Pane` wrapper. A full walkthrough is in
-[docs/what-the-llm-sees.md](docs/what-the-llm-sees.md).
+[docs/guides/observation-walkthrough.md](docs/guides/observation-walkthrough.md).
 
 ### Batch calls
 
@@ -431,7 +454,7 @@ ERR ACTION_NOT_SUPPORTED q1 hint=report-user
 
 The model sees only `set_text`; the runtime selects the channel. Measurements,
 clipboard-restore guarantees and rejected routes are in
-[docs/text-input-channels.md](docs/text-input-channels.md).
+[docs/reference/text-input-channels.md](docs/reference/text-input-channels.md).
 
 ### Providers
 
@@ -507,7 +530,7 @@ the startup values. One invalid value refuses the whole patch.
 SETTINGS quiet_ms=80 poll_ms=20 timeout_s=3.0 post_action_enum=off scope=session
 ```
 
-Two additional generic behaviours:
+Three additional generic behaviours:
 
 - `context_menu` is offered where a menu is plausible: the element exposes
   something to operate. The menu opens through UIA (`ShowContextMenu`), so the
@@ -612,7 +635,7 @@ The reply lists titles only, at most six `+ WINDOW` lines followed by
 requires `child_allow_spawn` and applies `allow_processes`.
 
 Design notes, measurements and rejected approaches are in
-[docs/child-session.md](docs/child-session.md).
+[docs/reference/child-session.md](docs/reference/child-session.md).
 
 ## Self-check and replay
 
@@ -661,15 +684,19 @@ internal: no `locate` tool is exposed on the model surface.
 
 | Document | Content |
 | --- | --- |
-| [docs/what-the-llm-sees.md](docs/what-the-llm-sees.md) | one window and its tool calls, with real output |
-| [docs/interactive-usage.md](docs/interactive-usage.md) | REPL, one-shot CLI and script usage |
-| [docs/packs.md](docs/packs.md) | App Pack authoring |
-| [docs/child-session.md](docs/child-session.md) | child session design, costs and rejected approaches |
-| [docs/text-input-channels.md](docs/text-input-channels.md) | text input routes and their costs |
-| [docs/optimization-plan.md](docs/optimization-plan.md) | measurements, changes and remaining work |
-| [docs/viewport-capture-proposal.md](docs/viewport-capture-proposal.md) | viewport collection measurements and design |
-| [docs/scenario-suite.md](docs/scenario-suite.md) | acceptance screens and pass criteria |
-| [docs/benchmark-50-tasks.md](docs/benchmark-50-tasks.md) | 50 user tasks and measured coverage |
+| [docs/guides/observation-walkthrough.md](docs/guides/observation-walkthrough.md) | one window and its tool calls, with real output |
+| [docs/reference/packs.md](docs/reference/packs.md) | App Pack authoring |
+| [docs/reference/child-session.md](docs/reference/child-session.md) | child session design, costs and rejected approaches |
+| [docs/reference/text-input-channels.md](docs/reference/text-input-channels.md) | text input routes and their costs |
+| [docs/benchmarks/tool-surface.md](docs/benchmarks/tool-surface.md) | tool tiers and the exposure benchmark (batches 1–3) |
+| [docs/benchmarks/app-tasks.md](docs/benchmarks/app-tasks.md) | 50 user tasks and measured coverage |
+| [docs/benchmarks/scenario-suite.md](docs/benchmarks/scenario-suite.md) | acceptance screens and pass criteria |
+| [docs/archive/performance-2026-11.md](docs/archive/performance-2026-11.md) | performance and viewport capture: measurements, changes and remaining work |
+
+Historical material lives under `docs/archive/`: `interactive-usage.md` (its
+REPL/CLI guidance is folded into [Getting started](#getting-started)),
+`viewport-capture-proposal.md` (merged into `performance-2026-11.md`),
+`playwright-patterns.zh-CN.md` and `plan-v3.zh-CN.md`.
 
 ## Repository layout
 
@@ -693,7 +720,7 @@ somnus/
 apps/restaurant-demo/   WPF (.NET 8) acceptance app
 apps/scenario-suite/    WPF (.NET 8) acceptance app
 tools/rdp-host/         .NET (WinForms) OLE container for the RDP control
-docs/                   documents listed above
+docs/                   guides/, reference/, benchmarks/, archive/
 examples/               agent loop, contract check, task evaluation
 bench/                  benchmark gates and LLM control demos
 tests/{fixtures,scenarios,golden,compiler,projection,runtime,providers,e2e}
@@ -733,14 +760,14 @@ without a matching pack is compiled generically and remains operable; see
 Generic mode.
 
 ```python
-from somnus.packs.restaurant_demo import build_pack
-from somnus.runtime.session import Session
+from somnus.compiler.pack_schema import get_pack
 from somnus.providers.mock import MockProvider
+from somnus.runtime.session import Session
 
-session = Session(provider, pack=build_pack())
+session = Session(MockProvider(), pack=get_pack("restaurant-demo"))
 ```
 
-Authoring guide: [docs/packs.md](docs/packs.md).
+Authoring guide: [docs/reference/packs.md](docs/reference/packs.md).
 
 ## Testing
 

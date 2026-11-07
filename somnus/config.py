@@ -55,7 +55,7 @@ hand-edited file do not fight::
     # *which* processes may be operated/spawned.
     child_allow_spawn = true
 
-    # Call timing. See docs/optimization-plan.md P1-2 for the trade-offs.
+    # Call timing. See docs/archive/performance-2026-11.md P1-2 for the trade-offs.
     settle_quiet_ms   = 40     # 10..1000: smaller = faster, can read mid-animation
     settle_poll_ms    = 10     # 1..100
     settle_timeout_s  = 3.0    # 0.5..30
@@ -95,7 +95,7 @@ ENV_POST_ACTION_ENUM = "SOMNUS_POST_ACTION_ENUM"
 #: How long a blocked action may wait for the element to become actionable.
 ENV_ACTIONABLE_TIMEOUT_S = "SOMNUS_ACTIONABLE_TIMEOUT_S"
 
-#: Built-in defaults for the timing knobs (see docs/optimization-plan.md P1-2).
+#: Built-in defaults for the timing knobs (see docs/archive/performance-2026-11.md P1-2).
 DEFAULT_SETTLE_QUIET_MS = 40
 DEFAULT_SETTLE_POLL_MS = 10
 DEFAULT_SETTLE_TIMEOUT_S = 3.0

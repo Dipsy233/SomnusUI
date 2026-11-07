@@ -36,7 +36,7 @@ DESKTOP = "desktop"
 CAPABILITY_ORDER: tuple[str, ...] = (CORE, DESKTOP)
 
 #: What an unset (or malformed) selection means: the core loop only. The
-#: desktop tiers are opt-in -- the exposure benchmark (docs/exposure-benchmark.md,
+#: desktop tiers are opt-in -- the exposure benchmark (docs/benchmarks/tool-surface.md,
 #: round 3 / T1) measured the always-on cost at ~19% of a task's tokens with no
 #: behavioural upside when the tools go unused.
 DEFAULT_CAPABILITIES: tuple[str, ...] = (CORE,)

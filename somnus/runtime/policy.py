@@ -41,7 +41,7 @@ class Policy:
     #: restore a non-text clipboard. The writes are marked opt-out so they do
     #: not enter clipboard history or cloud sync, and the channel refuses
     #: outright when the clipboard holds something that could not be put back
-    #: (docs/text-input-channels.md 3.3, 6). Turn it off with
+    #: (docs/reference/text-input-channels.md 3.2, 6). Turn it off with
     #: ``--no-allow-clipboard`` or ``allow_clipboard = false``.
     allow_clipboard: bool = True
 

@@ -1,4 +1,4 @@
-"""Viewport-aware observe projection (docs/viewport-capture-proposal.md).
+"""Viewport-aware observe projection (docs/archive/performance-2026-11.md).
 
 The contract: a container the collector had to cut at the viewport edge carries
 ``items_total`` / ``items_visible`` / ``items_truncated`` / ``scroll_pct``, and

@@ -26,7 +26,7 @@ makes the recipes testable without a Windows desktop. Nothing here is exposed
 to the model: the locator is used inside the runtime (stale-ref second
 relocation) and by the host-side ``heal`` loop. Whether it should also become
 an optional ``locate`` tool is a decision the design document leaves open
-(``scratch/playwright-patterns.zh-CN.md`` §7.2) - until that is decided, the
+(``docs/archive/playwright-patterns.zh-CN.md`` §7.2) - until that is decided, the
 model-visible tool surface stays unchanged.
 
 Name matching follows the runtime's own normalization (whitespace collapsed,

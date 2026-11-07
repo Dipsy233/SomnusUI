@@ -277,7 +277,7 @@ def test_rpc_serves_line_delimited_requests(monkeypatch):
     """`somnus rpc` reads JSON-RPC from stdin and answers on stdout.
 
     With no SOMNUS_CAPABILITIES set the default surface is core-only
-    (docs/exposure-benchmark.md, round 3 / T1), so tools/list shows the six
+    (docs/benchmarks/tool-surface.md, round 3 / T1), so tools/list shows the six
     core tools, not the full spec list.
     """
     from somnus.protocol import policy

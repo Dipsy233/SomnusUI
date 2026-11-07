@@ -194,7 +194,7 @@ def _prefers_keyboard_entry(node: RawNode) -> bool:
     Note the answer is now slightly wider than before: a node that maps a native
     HWND (``native_window_handle != 0``) also has a non-keyboard write route, so
     it is *not* keyboard-only either. That is the correction from
-    docs/text-input-channels.md 3.2 - the HWND route was hidden by the
+    docs/reference/text-input-channels.md 3.2 - the HWND route was hidden by the
     report's "does the process own an Edit child window?" criterion, which asked
     about the process instead of the element.
 

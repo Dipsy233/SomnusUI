@@ -5,7 +5,7 @@ Each case has two assertions on purpose:
 * a template match (partial: refs, volatile counts and unnamed children may
   vary) that catches structural regressions without rewriting the file;
 * one exact line (strict: refs included), because a template with wildcards can
-  hide the regression it was meant to catch (`docs/playwright-patterns.zh-CN.md`).
+  hide the regression it was meant to catch (`docs/archive/playwright-patterns.zh-CN.md`).
 
 Templates live in ``tests/templates/`` and are test-only; nothing under
 ``somnus/`` imports the matcher.

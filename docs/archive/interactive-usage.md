@@ -130,7 +130,7 @@ somnus child-session start
 somnus child-session close
 ```
 
-原理、失败模式和「为什么不用虚拟桌面」见 [child-session.md](child-session.md)。
+原理、失败模式和「为什么不用虚拟桌面」见 [child-session.md](../reference/child-session.md)。
 
 ## 手势
 
@@ -243,4 +243,4 @@ sui> CALL b213.activate()
 ```
 
 想要**完全不影响用户**，用子会话（`SWITCH child`）：那里有自己的前台窗口和
-输入队列，提窗口、打字都不影响用户桌上的东西，见 `docs/child-session.md`。
+输入队列，提窗口、打字都不影响用户桌上的东西，见 [child-session.md](../reference/child-session.md)。

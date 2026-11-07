@@ -14,7 +14,7 @@ Three pieces:
   hosted by the small .NET container in ``tools/rdp-host``.
 * :mod:`somnus.session.launch` - starting and supervising that host from Python.
 
-See ``docs/child-session.md`` for the trade-offs (Pro edition only, administrator
+See ``docs/reference/child-session.md`` for the trade-offs (Pro edition only, administrator
 rights once, one child session system-wide, no security isolation).
 """
 
