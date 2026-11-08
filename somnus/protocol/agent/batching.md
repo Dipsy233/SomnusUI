@@ -42,3 +42,28 @@ CALL $it.activate()
 - A cross-window flow must name the window explicitly: a switch reallocates
   refs. The delta is the net difference between the start and the end.
 - Limits: 40 steps. `$it` is the first hit, not a collection.
+
+## Control flow inside `run`
+
+Three more line forms organise steps. None of them is a new capability: every
+executed step goes through the same resolution and policy as a plain CALL.
+
+```
+EACH BUTTON "Add" in l1 max=10
+CALL $it.activate()
+END
+
+TRY AWAIT DIALOG "提示" timeout=0
+IF ok CALL $it.close()
+```
+
+- `EACH` re-evaluates its query at every iteration and binds `$it` to the next
+  current match, in document order. `max` defaults to 20. Zero matches: the
+  body is skipped (`ok (0 matches)`). EACH cannot nest.
+- `TRY` before CALL or AWAIT records a failure (`ERR <code>`) and runs on.
+- `IF ok` / `IF failed` runs its step only when the previously *executed* step
+  ended in that state; a `skipped` step does not become that reference. IF
+  cannot open a script or a loop body.
+- Executed steps share one budget of 40; reaching it stops the run with
+  `RUN PARTIAL ... reason=budget`. Step lines inside a loop carry the
+  iteration number (`4.2` = textual step 4, iteration 2).

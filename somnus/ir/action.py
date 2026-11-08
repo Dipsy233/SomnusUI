@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-ActionKind = Literal["call", "find", "inspect", "observe", "unknown", "await"]
+ActionKind = Literal["call", "find", "inspect", "observe", "unknown", "await", "each", "end"]
 
 
 @dataclass(slots=True)
@@ -15,6 +15,9 @@ class Action:
     ``kind="await"`` is a script's waiting step: ``query_type`` fills the
     optional TYPE, ``query`` the name, ``scope`` the optional ``in REF`` and
     ``timeout`` the optional wait in seconds (``None`` = the runtime default).
+
+    ``kind="each"`` opens a script loop block (query fields as ``await``,
+    plus ``max_iter``); the matching ``kind="end"`` step closes it.
     """
 
     kind: ActionKind
@@ -31,6 +34,13 @@ class Action:
     rev: int | None = None
     #: script AWAIT's optional wait, in seconds.
     timeout: float | None = None
+    #: Script step modifiers. TRY sets ``on_fail="continue"``: record the
+    #: failure and run on. ``IF ok`` / ``IF failed`` set ``cond``: run only
+    #: when the previously *executed* step ended in that state.
+    on_fail: str = "stop"
+    cond: str = "none"
+    #: EACH's ``max=N`` iteration cap; ``None`` = the runtime default.
+    max_iter: int | None = None
     raw: str = ""
 
 

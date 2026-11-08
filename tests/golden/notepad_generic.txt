@@ -1,0 +1,6 @@
+@rev 1
+WINDOW w1 "Untitled - Notepad" active
+  SCREEN s1 "Untitled - Notepad"
+    MENU mn1 "File" +collapse +expand
+    INPUT q1 "Text Editor" value="" +context_menu +set_text(text)
+    STATUSBAR n1 "Ln 1, Col 1"

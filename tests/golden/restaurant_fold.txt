@@ -1,0 +1,8 @@
+@rev 1
+WINDOW w1 "Restaurant Demo" active
+  SCREEN s1 "menu"
+    LIST l1 "Products" count=30 entity=product +find +30 more
+    CART c1 "Cart" count=0 total=0 +open
+      TEXT tx61 "0 items $0.00"
+      BUTTON b31 "Open Cart" +context_menu
+    CHECKOUT b32 "Checkout" +submit! +context_menu

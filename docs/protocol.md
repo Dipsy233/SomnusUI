@@ -244,7 +244,9 @@ RUN OK steps=3/3 rev=9
 
 - `AWAIT [TYPE] "name" [in ref] [timeout=s]` 把 `$it` 绑定到第一个命中。默认 2 秒；`timeout=0` 执行一次搜索。名称必须加引号。
 - `$it` 在绑定前无效。没有其他绑定形式。
-- 某一步失败时脚本停止：`RUN PARTIAL steps=2/3 failed-at=3`，随后给出每步状态与已执行步骤的合并增量。
+- 控制流三种行：`EACH [TYPE] "name" [in ref] [max=N]` 开循环块（`END` 收尾），每轮迭代对当前编译结果重新求值并把 `$it` 重绑到下一个命中，零命中跳过循环体；`TRY` 前缀让步骤失败只记录不停机；`IF ok|failed` 按上一个**执行过**的步骤状态决定是否运行。`EACH` 禁嵌套，`IF` 不能作为脚本或循环体的第一步。
+- 预算按执行步计：CALL/AWAIT 每执行一次计一步，总计最多 40；耗尽以 `RUN PARTIAL reason=budget` 停止。循环体内步骤的行号带迭代后缀（`4.2` 表示文本第 4 步第 2 轮）。
+- 某一步失败（无 `TRY`）时脚本停止：`RUN PARTIAL steps=2/3 failed-at=3`，随后给出每步状态与已执行步骤的合并增量。
 - 跨窗口流程必须显式写窗口 ref，因为切换会重新分配 ref。增量是脚本首尾的净差。
 - `window=REF` 在第一步前聚焦该窗口。`CALL wN.focus()` 作为步骤被拒绝。
 - 含 `AWAIT` 的脚本允许 `context_menu`，菜单是可以由后续 `AWAIT` 找到的真实步骤。
@@ -322,7 +324,7 @@ MCP 服务器在 `initialize` 时发送一次 `instructions`，内容包括共�
 
 ## 15. 限制
 
-- `call` 单批最多 20 步，`run` 最多 40 步。
+- `call` 单批最多 20 步，`run` 最多 40 个执行步（`EACH` 循环按实际执行计）。
 - `find` 的 `timeout` 等待成本随超时线性增长；视口截断的集合不会用全量快照重试。
 - 虚拟化列表中未 realized 的行没有节点与 ref；`FIND` 对这些行返回 0 命中或 `STALE_TARGET`。
 - `run` 的跨窗口流程需要显式窗口 ref，`$it` 只绑定第一个命中。

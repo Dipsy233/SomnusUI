@@ -7,13 +7,22 @@ The *only* action syntax is::
     INSPECT REF [depth=N] [range=A:B]
     UNKNOWN "reason"
 
-A *script* (the ``run`` tool) is those CALL steps plus one waiting statement::
+A *script* (the ``run`` tool) is those CALL steps plus waiting and control-flow
+statements::
 
     AWAIT [TYPE] "STRING" [in REF] [timeout=<s>]
+    EACH [TYPE] "STRING" [in REF] [max=N]
+    END
+    TRY <CALL|AWAIT ...>
+    IF ok|failed <CALL|AWAIT ...>
 
 ``AWAIT`` binds ``$it`` to the element that appeared, so the next step can be
 ``CALL $it.<cap>(<args>)`` without the agent spending a round trip discovering
-its ref.
+its ref. ``EACH`` … ``END`` runs its body once per current match of the query,
+rebinding ``$it`` per iteration. ``TRY`` records a step's failure and runs on;
+``IF`` gates one step on the previously executed step's state. Neither prefix
+nor loop line is a new capability: every executed step still goes through the
+same resolver and policy.
 
 Primitive verbs (``click``, ``uia_invoke``) and native identifiers
 (``AutomationId``) are rejected here, before they can reach the resolver.
@@ -87,6 +96,29 @@ _IT_CALL_RE = re.compile(
     re.VERBOSE | re.IGNORECASE | re.DOTALL,
 )
 
+#: ``EACH [TYPE] "name" [in REF] [max=N]`` opens a script loop block. Same
+#: query shape as AWAIT, so the model learns one query language. ``max`` is a
+#: defensive cap; the executed-step budget is the real bound.
+_EACH_RE = re.compile(
+    r"""^EACH\s+
+        (?:(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+)?        # then optional type
+        (?P<query>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')  # quoted name
+        (?:\s+in\s+(?P<scope>[a-z]{1,3}[0-9]+))?
+        (?:\s+max\s*=\s*(?P<max>\d+))?
+        \s*$""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_END_RE = re.compile(r"^END\s*$", re.IGNORECASE)
+
+#: Step prefixes, stripped before the step itself parses: ``TRY`` keeps the
+#: script going when the step fails; ``IF ok|failed`` gates the step on the
+#: previously executed step's state.
+_TRY_PREFIX_RE = re.compile(r"^TRY\s+(?P<rest>.+)$", re.IGNORECASE | re.DOTALL)
+_IF_PREFIX_RE = re.compile(
+    r"^IF\s+(?P<cond>ok|failed)\s+(?P<rest>.+)$", re.IGNORECASE | re.DOTALL
+)
+
 _OBSERVE_RE = re.compile(
     r"^OBSERVE(?:\s+(?P<window>[a-z]{1,3}[0-9]+))?"
     r"(?:\s+(?P<rest>windows|desktop|full|all))?"
@@ -130,7 +162,12 @@ MAX_BATCH_STATEMENTS = 20
 #: Upper bound on one ``run`` script. A script is one round trip by design, so
 #: the cap is about blast radius, not convenience: a flow longer than this is
 #: long enough that the agent should look at the result halfway through.
+#: Applies to the textual lines and, independently, to the executed steps (a
+#: loop body runs many steps from few lines).
 MAX_SCRIPT_STEPS = 40
+
+#: Iteration cap for an EACH loop without an explicit ``max=N``.
+DEFAULT_EACH_MAX = 20
 
 _ARG_RE = re.compile(
     r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?(.+?)\s*$', re.DOTALL
@@ -296,6 +333,7 @@ def parse_script(text: str, rev: int | None = None) -> list[Action]:
             f"(got {len(statements)})"
         )
     steps: list[Action] = []
+    line_nos: list[int] = []
     for line_no, stmt in statements:
         try:
             step = _parse_step(stmt, rev)
@@ -306,18 +344,116 @@ def parse_script(text: str, rev: int | None = None) -> list[Action]:
                 ErrorCode.PARSE_ERROR, message=f"line {line_no}: {err.message}"
             ) from err
         steps.append(step)
+        line_nos.append(line_no)
+    _validate_script_structure(steps, line_nos)
     return steps
 
 
+def _validate_script_structure(steps: list[Action], line_nos: list[int]) -> None:
+    """EACH/END pairing and IF placement, refused before any step moves the UI.
+
+    Nesting is out of v1: one open loop at a time. ``IF`` cannot open a script
+    or a loop body - it gates on the previously executed step, and there is no
+    such step there.
+    """
+    stack: list[int] = []
+    #: Per open block: has an executable step appeared at this level yet.
+    seen_step: list[bool] = [False]
+    for index, step in enumerate(steps):
+        if step.kind == "each":
+            if stack:
+                raise parse_error(
+                    f"line {line_nos[index]}: nested EACH is not supported"
+                )
+            stack.append(index)
+            seen_step.append(False)
+            continue
+        if step.kind == "end":
+            if not stack:
+                raise parse_error(
+                    f"line {line_nos[index]}: END without a matching EACH"
+                )
+            stack.pop()
+            seen_step.pop()
+            # The loop body may have run; an IF after END has something to read.
+            seen_step[-1] = True
+            continue
+        if step.cond != "none" and not seen_step[-1]:
+            raise parse_error(
+                f"line {line_nos[index]}: IF must follow an executable step "
+                "(it cannot open a script or a loop body)"
+            )
+        seen_step[-1] = True
+    if stack:
+        raise parse_error(
+            f"line {line_nos[stack[-1]]}: EACH without a matching END"
+        )
+
+
 def _parse_step(stmt: str, rev: int | None) -> Action:
-    """One script line: an AWAIT, a ``$it`` CALL, or an ordinary CALL."""
+    """One script line: EACH/END, or a CALL/AWAIT with optional TRY/IF prefixes."""
+    original = stmt
+    on_fail = "stop"
+    cond = "none"
+    while True:
+        m = _TRY_PREFIX_RE.match(stmt)
+        if m:
+            if on_fail != "stop":
+                raise parse_error(f"duplicate TRY prefix: {original[:60]}")
+            on_fail = "continue"
+            stmt = m.group("rest").strip()
+            continue
+        m = _IF_PREFIX_RE.match(stmt)
+        if m:
+            if cond != "none":
+                raise parse_error(f"duplicate IF prefix: {original[:60]}")
+            cond = "if_ok" if m.group("cond").lower() == "ok" else "if_failed"
+            stmt = m.group("rest").strip()
+            continue
+        break
+
+    def _modded(action: Action) -> Action:
+        action.on_fail = on_fail
+        action.cond = cond
+        action.raw = original
+        return action
+
+    m = _EACH_RE.match(stmt)
+    if m:
+        if on_fail != "stop" or cond != "none":
+            raise parse_error(
+                f"EACH does not take TRY/IF prefixes: {original[:60]}"
+            )
+        query = m.group("query").strip()
+        if query[:1] in ("\"", "'"):
+            query = query[1:-1]
+        return Action(
+            kind="each",
+            query_type=(m.group("type") or "").lower() or None,
+            query=query,
+            scope=m.group("scope"),
+            max_iter=int(m.group("max")) if m.group("max") else None,
+            raw=original,
+        )
+    if stmt.upper().startswith("EACH"):
+        raise parse_error(
+            f"invalid EACH: {original[:60]} "
+            '(want: EACH [TYPE] "name" [in REF] [max=N])'
+        )
+    if _END_RE.match(stmt):
+        if on_fail != "stop" or cond != "none":
+            raise parse_error(
+                f"END does not take TRY/IF prefixes: {original[:60]}"
+            )
+        return Action(kind="end", raw=original)
+
     m = _AWAIT_RE.match(stmt)
     if m:
         query = m.group("query").strip()
         if query[:1] in ("\"", "'"):
             query = query[1:-1]
         timeout = m.group("timeout")
-        return Action(
+        return _modded(Action(
             kind="await",
             query_type=(m.group("type") or "").lower() or None,
             # Same string handling as FIND (outer quotes only, no second escape
@@ -325,27 +461,26 @@ def _parse_step(stmt: str, rev: int | None) -> Action:
             query=query,
             scope=m.group("scope"),
             timeout=float(timeout) if timeout is not None else None,
-            raw=stmt,
-        )
+        ))
     if stmt.upper().startswith("AWAIT"):
         # A malformed AWAIT must say what an AWAIT looks like; the generic
         # parse_action pointer ("only inside a script") would be false here.
         raise parse_error(
-            f"invalid AWAIT: {stmt[:60]} "
+            f"invalid AWAIT: {original[:60]} "
             '(want: AWAIT [TYPE] "name" [in REF] [timeout=<s>])'
         )
     m = _IT_CALL_RE.match(stmt)
     if m:
-        action = _parse_call(m, rev, stmt)
+        action = _parse_call(m, rev, original)
         # Normalise the casing RE allows (`$IT`) onto the one binding name.
         action.ref = "$it"
-        return action
+        return _modded(action)
     action = parse_action(stmt, rev)
     if action.kind != "call":
         raise parse_error(
             f"a script step is CALL or AWAIT (got {action.kind.upper()})"
         )
-    return action
+    return _modded(action)
 
 
 def _split_statements(text: str) -> list[tuple[int, str]]:

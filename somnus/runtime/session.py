@@ -50,7 +50,7 @@ from somnus.sui.serialize import (
     render_document,
     render_node_line,
 )
-from somnus.sui.parse import parse_action
+from somnus.sui.parse import DEFAULT_EACH_MAX, MAX_SCRIPT_STEPS, parse_action
 
 log = logging.getLogger("somnus.session")
 
@@ -2353,6 +2353,18 @@ class Session:
             message=f"AWAIT {wanted} found nothing; the element did not appear",
         )
 
+    def _each_matches(self, step: Action) -> list[SemanticNode]:
+        """The current matches for one EACH evaluation, in document order.
+
+        The query re-runs against the latest compile result at every
+        iteration, so a list that shrinks or grows under the loop is followed
+        as it is now, not as it was when the loop opened.
+        """
+        if self.result is None:
+            self._recompile()
+        assert self.result is not None
+        return self._find_hits(step)
+
     def _find_hits(self, action: Action) -> list[SemanticNode]:
         """The matches for one search pass (no retries, no waiting)."""
         if self.result is None:
@@ -3976,6 +3988,29 @@ class Session:
             lines.append(f"  {index}. {raw} -> not-run")
         return "\n".join(lines)
 
+    @staticmethod
+    def _script_step_lines(
+        steps: list[Action],
+        entries: list[tuple[str, Action, str]],
+        covered: set[int],
+    ) -> str:
+        """One line per executed or skipped step, then the steps never reached.
+
+        Labels are 1-based textual positions; inside a loop body they carry the
+        iteration number (``4.2`` = textual step 4, iteration 2). ``END`` is
+        organisational and gets no line of its own.
+        """
+        lines = []
+        for label, step, state in entries:
+            raw = step.raw if len(step.raw) <= 60 else step.raw[:57] + "..."
+            lines.append(f"  {label}. {raw} -> {state}")
+        for index, step in enumerate(steps):
+            if index in covered or step.kind == "end":
+                continue
+            raw = step.raw if len(step.raw) <= 60 else step.raw[:57] + "..."
+            lines.append(f"  {index + 1}. {raw} -> not-run")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------- run
 
     def run_script(
@@ -3989,15 +4024,17 @@ class Session:
         There are two executors, chosen by the script itself, because the two
         kinds of script can make different promises:
 
-        * **No AWAIT** - nothing in the script depends on an earlier step's
-          effect, so the batch path is exactly right: every step is resolved
-          and authorised before the first one runs, then one settle, one delta
-          and one rev. That guarantee is kept, not weakened;
-        * **With AWAIT** - a later step names an element that only exists after
-          an earlier step settled (a menu item, a dialog button). The script is
-          therefore resolved *step by step, at execution time*, each step
-          settling before the next; the first failure stops it and reports the
-          steps that ran plus their net delta, exactly like ``BATCH PARTIAL``.
+        * **No AWAIT and no control flow** - nothing in the script depends on
+          an earlier step's effect, so the batch path is exactly right: every
+          step is resolved and authorised before the first one runs, then one
+          settle, one delta and one rev. That guarantee is kept, not weakened;
+        * **With AWAIT / EACH / TRY / IF** - a later step names an element that
+          only exists after an earlier step settled (a menu item, a dialog
+          button), loops over current matches, tolerates a step's failure, or
+          gates on it. The script is therefore resolved *step by step, at
+          execution time*, each step settling before the next; the first
+          failure stops it (unless the step says TRY) and reports the steps
+          that ran plus their net delta, exactly like ``BATCH PARTIAL``.
 
         ``window`` focuses that window before the first step, so the whole flow
         is addressable without a separate ``CALL wN.focus()`` round trip.
@@ -4012,7 +4049,10 @@ class Session:
         if window:
             self.focus_window(window)
         self._check_it_bindings(steps)
-        if not any(step.kind == "await" for step in steps):
+        if all(
+            step.kind == "call" and step.on_fail == "stop" and step.cond == "none"
+            for step in steps
+        ):
             outcome = self.call_batch(steps)
             # Same body, same step lines, same delta; only the word changes so
             # the reply names the tool the caller actually used.
@@ -4025,33 +4065,51 @@ class Session:
 
     @staticmethod
     def _check_it_bindings(steps: list[Action]) -> None:
-        """Refuse ``$it`` before the ``AWAIT`` that binds it.
+        """Refuse ``$it`` before the ``AWAIT`` or ``EACH`` that binds it.
 
         Checked for the whole script up front: the misordering is a property of
         the text, so it costs nothing to refuse before any step moves the UI.
+        An ``EACH`` binds ``$it`` for its own body only; the outer binding
+        (if any) returns at ``END``.
         """
         bound = False
+        stack: list[bool] = []
         for index, step in enumerate(steps, start=1):
             if step.kind == "await":
                 bound = True
+                continue
+            if step.kind == "each":
+                stack.append(bound)
+                bound = True
+                continue
+            if step.kind == "end":
+                bound = stack.pop() if stack else bound
                 continue
             if step.ref == "$it" and not bound:
                 raise SomnusError(
                     ErrorCode.INVALID_ARGUMENT,
                     ref="$it",
                     message=(
-                        f"step {index}: $it is not bound - an AWAIT must run "
-                        "before a step can name it"
+                        f"step {index}: $it is not bound - an AWAIT or EACH "
+                        "must run before a step can name it"
                     ),
                 )
 
     def _run_awaiting(self, steps: list[Action]) -> str:
-        """The step-by-step executor for a script that contains an AWAIT.
+        """The step-by-step executor for any script that is not a pure batch.
 
         Every step goes through the session's ``call`` path, so it keeps every
         other authorisation - the process allow-list, the route policy, the
         capability resolution - and only the confirmation gate is (deliberately)
         absent, as it is for every CALL in this build.
+
+        Control flow adds no capability of its own. ``EACH`` re-evaluates its
+        query at every iteration and rebinds ``$it`` to the next current match;
+        ``TRY`` records a step's failure and runs on; ``IF ok|failed`` gates
+        one step on the previously *executed* step's state (a ``skipped`` step
+        does not become that reference). Executed CALL/AWAIT steps share one
+        budget of :data:`MAX_SCRIPT_STEPS`; reaching it stops the script with
+        ``reason=budget``.
         """
         if self.result is None:
             self._recompile()
@@ -4060,59 +4118,153 @@ class Session:
         #: way a batch computes it - the steps in between are not observations.
         before_index = index_by_fingerprint(self.result.root)
         bound: str | None = None
-        step_states: list[str] = []
+        #: (label, step, state) per executed or skipped step, in run order.
+        entries: list[tuple[str, Action, str]] = []
+        covered: set[int] = set()
         error_line: str | None = None
-        failed_at = 0
+        failed_label = ""
         settled = True
         notes: list[str] = []
-        for index, step in enumerate(steps, start=1):
+        last_status: str | None = None
+        executed = 0
+        budget_hit = False
+        each_end = _each_end_map(steps)
+        end_each = {end: each for each, end in each_end.items()}
+        #: EACH index -> {"next": current iteration, "limit": cap}. At most one
+        #: frame is live: nesting is refused at parse time.
+        frames: dict[int, dict[str, int]] = {}
+        #: Textual index -> current iteration number, for labels like ``4.2``.
+        iteration: dict[int, int] = {}
+
+        def record(index: int, step: Action, state: str) -> None:
+            it = iteration.get(index)
+            label = f"{index + 1}.{it}" if it else str(index + 1)
+            entries.append((label, step, state))
+            covered.add(index)
+
+        def fail(index: int, step: Action, err: SomnusError) -> bool:
+            """Record a step failure; True when the script must stop."""
+            nonlocal last_status, error_line, failed_label
+            record(index, step, f"ERR {err.code}")
+            last_status = "failed"
+            if step.on_fail == "continue":
+                return False
+            error_line = err.render()
+            failed_label = entries[-1][0]
+            return True
+
+        pc = 0
+        while pc < len(steps):
+            index = pc
+            step = steps[index]
+            pc += 1
+
+            if step.kind == "each":
+                limit = step.max_iter or DEFAULT_EACH_MAX
+                hits = self._each_matches(step)
+                total = min(len(hits), limit)
+                if not total:
+                    record(index, step, "ok (0 matches)")
+                    pc = each_end[index] + 1
+                    continue
+                frames[index] = {"next": 1, "limit": total}
+                for body_index in range(index, each_end[index]):
+                    iteration[body_index] = 1
+                bound = hits[0].ref
+                record(index, step, f"ok ($it={bound} 1/{total})")
+                continue
+
+            if step.kind == "end":
+                each = end_each[index]
+                frame = frames[each]
+                hits = self._each_matches(steps[each])
+                if frame["next"] < min(len(hits), frame["limit"]):
+                    frame["next"] += 1
+                    for body_index in range(each, index):
+                        iteration[body_index] = frame["next"]
+                    bound = hits[frame["next"] - 1].ref
+                    record(
+                        each,
+                        steps[each],
+                        f"ok ($it={bound} {frame['next']}/{frame['limit']})",
+                    )
+                    pc = each + 1
+                else:
+                    frames.pop(each)
+                    for body_index in range(each, index):
+                        iteration.pop(body_index, None)
+                continue
+
+            if step.cond != "none":
+                want_ok = step.cond == "if_ok"
+                if (last_status == "ok") != want_ok:
+                    record(index, step, "skipped")
+                    continue
+
+            if executed >= MAX_SCRIPT_STEPS:
+                budget_hit = True
+                break
+
             if step.kind == "await":
+                executed += 1
                 try:
                     hit = self.await_element(step)
                 except KeyError:
                     # The window vanished mid-wait (a modal may have replaced
                     # it); a wait is a read, so report it rather than crash.
-                    step_states.append(f"ERR {ErrorCode.TARGET_NOT_FOUND}")
-                    error_line = SomnusError(
-                        ErrorCode.TARGET_NOT_FOUND,
-                        ref="window",
-                        hint="observe",
-                        message="the target window closed while waiting",
-                    ).render()
-                    failed_at = index
-                    break
+                    stop = fail(
+                        index,
+                        step,
+                        SomnusError(
+                            ErrorCode.TARGET_NOT_FOUND,
+                            ref="window",
+                            hint="observe",
+                            message="the target window closed while waiting",
+                        ),
+                    )
+                    if stop:
+                        break
+                    continue
                 except SomnusError as err:
-                    step_states.append(f"ERR {err.code}")
-                    error_line = err.render()
-                    failed_at = index
-                    break
+                    if fail(index, step, err):
+                        break
+                    continue
                 bound = hit.ref
-                step_states.append(f"ok ($it={bound})")
+                last_status = "ok"
+                record(index, step, f"ok ($it={bound})")
                 continue
+
             if step.capability == "focus" and self._window_by_ref(step.ref or ""):
                 # Focusing mid-script re-allocates refs and discards `$it`;
                 # the tool's `window` argument is the supported way.
-                step_states.append(f"ERR {ErrorCode.INVALID_ARGUMENT}")
-                error_line = SomnusError(
-                    ErrorCode.INVALID_ARGUMENT,
-                    ref=step.ref,
-                    message=(
-                        f"step {index}: CALL wN.focus() cannot be a script step - "
-                        "switching windows re-allocates refs; pass window= instead"
+                stop = fail(
+                    index,
+                    step,
+                    SomnusError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        ref=step.ref,
+                        message=(
+                            f"step {index + 1}: CALL wN.focus() cannot be a "
+                            "script step - switching windows re-allocates refs; "
+                            "pass window= instead"
+                        ),
                     ),
-                ).render()
-                failed_at = index
-                break
+                )
+                if stop:
+                    break
+                continue
+
             action = replace(step, ref=bound) if step.ref == "$it" else step
+            executed += 1
             try:
                 outcome = self.call(action)
             except SomnusError as err:
-                step_states.append(f"ERR {err.code}")
-                error_line = err.render()
-                failed_at = index
-                break
+                if fail(index, step, err):
+                    break
+                continue
             settled = outcome.settled
-            step_states.append("ok")
+            last_status = "ok"
+            record(index, step, "ok")
             # A write echo and a window appearing are not part of the tree delta
             # (and each step's own reply has already advanced the window
             # baseline), so they are carried over here rather than lost.
@@ -4122,28 +4274,45 @@ class Session:
                         notes.append(line)
                 elif line.startswith("~ ") and " text=" in line and line not in notes:
                     notes.append(line)
+
         after_index = index_by_fingerprint(self.result.root)
         delta = diff_trees(before_index, after_index)
 
-        performed = sum(1 for state in step_states if state.startswith("ok"))
+        performed = sum(1 for _, _, state in entries if state.startswith("ok"))
+        attempted = sum(1 for _, _, state in entries if state != "skipped")
+        #: The denominator is attempted plus never-reached steps, so a linear
+        #: script reads exactly as before (performed/len(steps)).
+        attempted += sum(
+            1
+            for i, s in enumerate(steps)
+            if i not in covered and s.kind != "end"
+        )
         settled_tag = "" if settled else " settled=false"
         if error_line:
             head = (
-                f"RUN PARTIAL steps={performed}/{len(steps)} "
-                f"failed-at={failed_at} rev={self.rev}{settled_tag}"
+                f"RUN PARTIAL steps={performed}/{attempted} "
+                f"failed-at={failed_label} rev={self.rev}{settled_tag}"
+            )
+        elif budget_hit:
+            head = (
+                f"RUN PARTIAL steps={performed}/{attempted} "
+                f"reason=budget rev={self.rev}{settled_tag}"
             )
         else:
-            head = (
-                f"RUN OK steps={performed}/{len(steps)} rev={self.rev}{settled_tag}"
-            )
-        text = head + "\n" + self._step_lines(steps, step_states)
+            head = f"RUN OK steps={performed}/{attempted} rev={self.rev}{settled_tag}"
+        text = head + "\n" + self._script_step_lines(steps, entries, covered)
         if error_line:
             text += f"\n{error_line}"
             text += (
-                f"\n~ steps 1-{performed} really ran; fix the failing step and "
-                "continue with a fresh RUN"
+                f"\n~ steps up to {failed_label} really ran; fix the failing "
+                "step and continue with a fresh RUN"
                 if performed
                 else "\n~ the failing step ran first; nothing else was sent"
+            )
+        elif budget_hit:
+            text += (
+                f"\n~ executed-step budget ({MAX_SCRIPT_STEPS}) reached; "
+                "continue with a fresh RUN"
             )
         if notes:
             text += "\n" + "\n".join(notes)
@@ -4820,6 +4989,18 @@ def _watch_signature(tree: RawTree, watch: list) -> str | None:
             return None
         parts.append(_shallow_signature(node))
     return "\x1f".join(parts)
+
+
+def _each_end_map(steps: list[Action]) -> dict[int, int]:
+    """EACH index -> matching END index. Pairing was validated at parse time."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for i, step in enumerate(steps):
+        if step.kind == "each":
+            stack.append(i)
+        elif step.kind == "end":
+            pairs[stack.pop()] = i
+    return pairs
 
 
 def _unique_natives(result: CompileResult) -> list:
