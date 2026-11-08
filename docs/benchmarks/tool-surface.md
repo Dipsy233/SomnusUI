@@ -229,6 +229,42 @@ live 层用假模型冒烟通过：H0 与 H4 都能在真实 ScenarioSuite 窗�
 - 端点上游拒绝带点号的工具名（`tools.0.function.name`，`trae 4027`），H5 整批 502，标记 `NOT_RUNNABLE(endpoint)`，以 H5u 替代测量；
 - 网关偶发 502/503，`LlmClient.chat` 增加三次退避重试。
 
+## 12. ego 借鉴的落地与修复（2026-11-08）
+
+ego 分支两笔提交（EACH/TRY/IF 控制流 + 编译幂等黄金门）评审后的修复与补全：
+
+**修 1 —— EACH 冻结命中集。** 原实现每次 END 重新查询并按索引推进活列表，
+体里删除匹配行会在收缩列表上静默跳行（3 行只处理 1、3 行，回执仍
+`RUN OK`）。现改为：循环打开时冻结命中集（ref + 指纹 + automation_id）；
+每次 END 按指纹在当前树重定位（refs 是位置性的，删行会整体重排，指纹失配
+时以**当前树中唯一**的 automation_id 兜底；两路都失即该匹配已消失，跳过并
+注记 `~ N match(es) left the tree …`）。循环中新出现的匹配不处理（冻结
+语义），需要新集合就重新 FIND。测试：删除逐行/新增行/删除他行三个世界。
+
+**修 2 —— TRY 收窄。** 原 `TRY` 容错一切错误，连 `INVALID_ARGUMENT` 与
+`CALL wN.focus()` 的合同性拒绝都被吞掉。现只容许世界状态错误
+（TARGET_NOT_FOUND / STALE_TARGET / TARGET_DISABLED / NOT_ACTIONABLE /
+TIMEOUT / EFFECT_NOT_CONFIRMED，见 `somnus/errors.py` 的
+`TOLERATED_BY_TRY`）；脚本错误照常终止并在回执说明原因。
+
+**落地 3 —— 严格自证 locator 行。** STALE_TARGET 自动重绑本就存在
+（registry 结构重定位 → locator 二段策略 → `~ healed old→new`）。新增的
+是模型可见输出：`INSPECT` 头节点在定位符**自证通过**（当前树唯一命中且
+胜者即本节点，指纹一致）时输出一行 `locator role=… name="…"`；合成名不作为
+配方证据；任何疑点整行省略，永不输出 unstable 占位。
+
+**落地 4 —— 指纹位置污染修复（ref 跨轮持有的身份基础）。** 评审中实证：
+`ancestor_path` 每层嵌兄弟位置 `#pos`，而 identity 节点并未豁免——删除一行
+会让所有后续行的指纹漂移，registry 的 ref 合并随之失效（正是 ego 点 1 担心
+的身份冲突）。修复：编译前置一次全窗 automation_id 普查，**全窗唯一**的 id
+（`identity_unique`）指纹彻底去位置化；模板重复 id（每行都叫
+`item_title`）仍是类而非元素，保留位置区分。修复后删行时幸存行的 ref 由
+registry 原样保留（`b1→b2→b3`，不再重排），身份冲突三例（跨父重复 id、
+同父重复 id、兄弟删除）各有测试锁定（`tests/runtime/test_fingerprint_identity.py`）。
+
+全套 992 项测试通过；`bench/run_control_flow.py` 数字不变（A 省 1 调用
+−29.5% 回执 token，B 无对话框世界省 1 调用 −50%）。
+
 ## 11. 分支对比：main 出厂形态 vs play 默认（2026-11-08）
 
 问题：三批实验的结论落到分支上，`play` 相对 `main` 的黑盒表现差多少。

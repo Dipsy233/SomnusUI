@@ -257,6 +257,7 @@ def compute_fingerprint(
     role_index: int | None = None,
     runtime_id: tuple[int, ...] = (),
     name_synthetic: bool = False,
+    identity_unique: bool = False,
 ) -> str:
     """Build a stable identity hash for a semantic node.
 
@@ -333,7 +334,14 @@ def compute_fingerprint(
     # sibling list would change the path - and therefore the fingerprint - of
     # every descendant, which is precisely the retargeting this guards against.
     # The id is the better evidence and the two must not be mixed.
-    position_free = bool(rid_part)
+    #
+    # `identity_unique` narrows that to ids that actually name one element in
+    # the whole window: an id a row template repeats ("item_title" on every
+    # row) is a *class*, not an element, and its copies still need position to
+    # stay distinct - measured: deleting one row shifted every later row's
+    # ancestor path and re-fingerprinted the survivors, which silently retired
+    # the registry records the ref-merge depends on.
+    position_free = bool(rid_part) or identity_unique
     payload = "\x1f".join(
         (
             entity or "",

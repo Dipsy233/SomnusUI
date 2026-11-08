@@ -57,10 +57,20 @@ TRY AWAIT DIALOG "提示" timeout=0
 IF ok CALL $it.close()
 ```
 
-- `EACH` re-evaluates its query at every iteration and binds `$it` to the next
-  current match, in document order. `max` defaults to 20. Zero matches: the
-  body is skipped (`ok (0 matches)`). EACH cannot nest.
-- `TRY` before CALL or AWAIT records a failure (`ERR <code>`) and runs on.
+- `EACH` freezes its match set when the loop opens and binds `$it` to one
+  frozen match per iteration, in document order. `max` defaults to 20. Zero
+  matches: the body is skipped (`ok (0 matches)`). EACH cannot nest.
+  - A body that mutates the tree is safe: each frozen match is relocated by
+    fingerprint (automation id as fallback) even after a deletion re-allocates
+    refs, and a match that truly left the tree is skipped with a note
+    (`~ N match(es) left the tree …`) instead of failing or retargeting.
+  - Matches that appear while the loop runs are **not** processed - the set
+    was matched at open. Re-run `FIND` afterwards if you need the new rows.
+- `TRY` before CALL or AWAIT records a *world-state* failure (`ERR
+  TARGET_NOT_FOUND`, `STALE_TARGET`, `TARGET_DISABLED`, `NOT_ACTIONABLE`,
+  `TIMEOUT`, `EFFECT_NOT_CONFIRMED`) and runs on. A script mistake - a bad
+  argument, a missing capability, a refused permission - still stops the run,
+  so `TRY` cannot hide it.
 - `IF ok` / `IF failed` runs its step only when the previously *executed* step
   ended in that state; a `skipped` step does not become that reference. IF
   cannot open a script or a loop body.

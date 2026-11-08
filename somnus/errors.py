@@ -26,6 +26,22 @@ class ErrorCode:
     UNKNOWN_CONTENT = "UNKNOWN_CONTENT"
 
 
+#: Error classes a ``TRY`` step tolerates: the world was not in the state the
+#: step assumed, so running on is honest. Everything else -- a bad argument, a
+#: missing capability, a refused permission -- is a *script* mistake, and
+#: swallowing it would hide the bug from the model that wrote the script.
+TOLERATED_BY_TRY: frozenset[str] = frozenset(
+    {
+        ErrorCode.TARGET_NOT_FOUND,
+        ErrorCode.STALE_TARGET,
+        ErrorCode.TARGET_DISABLED,
+        ErrorCode.NOT_ACTIONABLE,
+        ErrorCode.TIMEOUT,
+        ErrorCode.EFFECT_NOT_CONFIRMED,
+    }
+)
+
+
 #: Recovery hint per error code (rendered as ``hint=``).
 HINTS: dict[str, str] = {
     ErrorCode.PARSE_ERROR: "fix-syntax",

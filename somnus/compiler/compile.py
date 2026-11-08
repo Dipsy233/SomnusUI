@@ -183,6 +183,17 @@ class Compiler:
         """
         raw_root = tree.root
 
+        # 0. Window-wide automation-id census, for fingerprint identity: an id
+        #    that names exactly one element in the whole window is *element
+        #    identity* and makes the fingerprint position-free; an id shared by
+        #    a template's rows (every row titling its own "item_title") is only
+        #    a class, and those copies stay distinguished by position.
+        aid_counts: dict[str, int] = {}
+        for raw in raw_root.walk():
+            aid = raw.native.automation_id
+            if aid:
+                aid_counts[aid] = aid_counts.get(aid, 0) + 1
+
         # 1. Normalize (in place is fine; the tree is a fresh snapshot).
         normalize(raw_root)
 
@@ -228,6 +239,7 @@ class Compiler:
                 ancestors=[],
                 depth=0,
                 ancestor_path="",
+                aid_counts=aid_counts,
             )
             root.layer = "window"
             root.role = "window"
@@ -286,6 +298,7 @@ class Compiler:
             depth=0,
             ancestor_path="window",
             role_index=0,
+            aid_counts=aid_counts,
         )
 
         # 6. Collection annotation: a container whose children are all entities
@@ -366,6 +379,7 @@ class Compiler:
         ancestor_path: str,
         role_index: int | None = None,
         position: int | None = None,
+        aid_counts: dict[str, int] | None = None,
     ) -> SemanticNode:
         em = matches.get(id(raw))
         node = SemanticNode(
@@ -434,6 +448,12 @@ class Compiler:
             ancestor_path=ancestor_path,
             role_index=role_index,
             runtime_id=raw.native.runtime_id,
+            identity_unique=(
+                identity is not None
+                and identity == raw.native.automation_id
+                and aid_counts is not None
+                and aid_counts.get(raw.native.automation_id, 0) == 1
+            ),
         )
         result.fingerprints[ref] = node.fingerprint
         result.ref_by_raw[id(raw)] = ref
@@ -503,6 +523,7 @@ class Compiler:
                 ancestor_path=child_path,
                 role_index=idx if needs_index else None,
                 position=idx,
+                aid_counts=aid_counts,
             )
 
         # Fill member refs now that children exist.

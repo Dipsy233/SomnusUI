@@ -27,7 +27,7 @@ from typing import Any, Callable
 from somnus.compiler.compile import CompileResult, Compiler
 from somnus.compiler.pack_schema import Pack, select_pack
 from somnus.config import DEFAULT_ACTIONABLE_TIMEOUT_S
-from somnus.errors import ErrorCode, SomnusError, target_not_found
+from somnus.errors import TOLERATED_BY_TRY, ErrorCode, SomnusError, target_not_found
 from somnus.ir.action import Action
 from somnus.ir.node import RawTree, Relation, SemanticNode, WindowInfo
 from somnus.observability.trace import NullTraceSink, TraceSink
@@ -2527,9 +2527,41 @@ class Session:
         opts = RenderOptions(include_default_caps=True, show_relations=True)
         depth = action.depth if action.depth is not None else self.budget.max_depth
         lines = [render_node_line(display_node(node), opts)]
+        locator_line = self._strict_locator_line(node)
+        if locator_line:
+            lines.append(locator_line)
         _render_subtree(node, lines, opts, depth, 1)
         text = f"@rev {self.rev}\n" + "\n".join(lines)
         return Observation(text=text, rev=self.rev, tokens=count_tokens(text))
+
+    def _strict_locator_line(self, node: SemanticNode) -> str | None:
+        """A re-resolvable recipe for this node -- but only if it proves itself.
+
+        The strict validity rule: a locator is printed only when it matches
+        exactly one node in the current tree *and* that winner is this node
+        (fingerprint-identical). Any doubt -- a tie, a zero match, a lookalike
+        -- omits the line entirely; there is no "unstable" placeholder, because
+        a recipe the model cannot rely on is worse than no recipe.
+        """
+        if self.result is None or node.role == "window":
+            return None
+        # A synthesised name (a counter, a price) is not identity evidence: a
+        # recipe built on it re-resolves to whatever displays that text next.
+        name = None if node.name_synthetic else node.name
+        if not name and not node.entity:
+            return None  # a bare role is not a recipe worth printing
+        recipe = locators.Locator(
+            role=node.role,
+            name=name,
+            entity=node.entity,
+        )
+        found = locators.match(self.result.root, recipe)
+        if not found.unique:
+            return None
+        winner = self.result.find(found.ref or "")
+        if winner is None or winner.fingerprint != node.fingerprint:
+            return None
+        return found.locator.describe()
 
     # ------------------------------------------------------------------ call
 
@@ -4148,7 +4180,17 @@ class Session:
             record(index, step, f"ERR {err.code}")
             last_status = "failed"
             if step.on_fail == "continue":
-                return False
+                if err.code in TOLERATED_BY_TRY:
+                    return False
+                # TRY is for world-state uncertainty, not for script mistakes:
+                # a bad argument or a missing capability would be swallowed
+                # here, and the model would never learn the step was wrong.
+                error_line = err.render() + (
+                    "\n~ TRY tolerates world-state failures only "
+                    f"({err.code} is a script mistake); the run stopped"
+                )
+                failed_label = entries[-1][0]
+                return True
             error_line = err.render()
             failed_label = entries[-1][0]
             return True
@@ -4162,34 +4204,93 @@ class Session:
             if step.kind == "each":
                 limit = step.max_iter or DEFAULT_EACH_MAX
                 hits = self._each_matches(step)
-                total = min(len(hits), limit)
-                if not total:
+                # The match set is frozen at open: refs AND their fingerprints.
+                # A body that mutates the tree (deleting rows, renaming titles)
+                # must not be able to make the index advance skip a match on a
+                # shrunk list, and a ref that now names a *different* element
+                # (fingerprint drifted) is that match being gone, not a target.
+                frozen = [
+                    (hit.ref, hit.fingerprint) for hit in hits[:limit]
+                ]
+                if not frozen:
                     record(index, step, "ok (0 matches)")
                     pc = each_end[index] + 1
                     continue
-                frames[index] = {"next": 1, "limit": total}
+                #: The frozen match's own automation_id, captured at open: the
+                #: relocation fallback at END must not read the CURRENT tree at
+                #: the frozen ref, because a body that removed rows has already
+                #: re-allocated that ref to someone else.
+                aids = {
+                    hit.ref: (
+                        self.result.sources.get(hit.ref).native.automation_id
+                        if self.result.sources.get(hit.ref)
+                        else None
+                    )
+                    for hit in hits[:limit]
+                }
+                frames[index] = {"refs": frozen, "next": 0, "aids": aids}
                 for body_index in range(index, each_end[index]):
                     iteration[body_index] = 1
-                bound = hits[0].ref
-                record(index, step, f"ok ($it={bound} 1/{total})")
+                bound = frozen[0][0]
+                record(index, step, f"ok ($it={bound} 1/{len(frozen)})")
                 continue
 
             if step.kind == "end":
                 each = end_each[index]
                 frame = frames[each]
-                hits = self._each_matches(steps[each])
-                if frame["next"] < min(len(hits), frame["limit"]):
-                    frame["next"] += 1
+                refs = frame["refs"]
+                next_i = frame["next"] + 1
+                skipped = 0
+                # Relocate each frozen match in the CURRENT tree: refs are
+                # positional and a body that removes a row re-allocates every
+                # later ref, so the match may be alive under a different name.
+                # Primary evidence is the fingerprint; when that drifted
+                # (ancestor paths embed sibling positions, so a deletion shifts
+                # every later fingerprint too), the node's own automation_id is
+                # the fallback - but only when it is unique right now, because
+                # two candidates would make the relocation a guess.
+                now_fp = index_by_fingerprint(self.result.root)
+                now_by_aid: dict[str, list[str]] = {}
+                for node in self.result.root.walk():
+                    source = self.result.sources.get(node.ref)
+                    aid = source.native.automation_id if source else None
+                    if aid:
+                        now_by_aid.setdefault(aid, []).append(node.ref)
+                while next_i < len(refs):
+                    frozen_ref, fingerprint = refs[next_i]
+                    node = now_fp.get(fingerprint)
+                    current = node.ref if node is not None else None
+                    if current is None:
+                        aid = frame["aids"].get(frozen_ref)
+                        candidates = now_by_aid.get(aid, []) if aid else []
+                        if len(candidates) == 1:
+                            current = candidates[0]
+                    if current is not None:
+                        break
+                    skipped += 1
+                    next_i += 1
+                if next_i < len(refs):
+                    frame["next"] = next_i
                     for body_index in range(each, index):
-                        iteration[body_index] = frame["next"]
-                    bound = hits[frame["next"] - 1].ref
+                        iteration[body_index] = next_i + 1
+                    bound = current
                     record(
                         each,
                         steps[each],
-                        f"ok ($it={bound} {frame['next']}/{frame['limit']})",
+                        f"ok ($it={bound} {next_i + 1}/{len(refs)})",
                     )
+                    if skipped:
+                        notes.append(
+                            f"~ {skipped} match(es) left the tree or changed "
+                            "identity mid-loop; skipped"
+                        )
                     pc = each + 1
                 else:
+                    if skipped:
+                        notes.append(
+                            f"~ {skipped} match(es) left the tree or changed "
+                            "identity mid-loop; skipped"
+                        )
                     frames.pop(each)
                     for body_index in range(each, index):
                         iteration.pop(body_index, None)
